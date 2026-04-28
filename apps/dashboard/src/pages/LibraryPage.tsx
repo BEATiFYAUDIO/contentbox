@@ -143,6 +143,130 @@ type NormalizedLibraryItem = {
   participation: LibraryParticipation | null;
 };
 
+function extractOriginFromUrl(raw: string | null | undefined): string | null {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  try {
+    const u = new URL(value);
+    if (!u.origin) return null;
+    return u.origin.replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function canonicalEntryOrigin(entry: NormalizedLibraryItem): string | null {
+  const itemRemoteOrigin = String(entry.item?.remoteOrigin || "").trim() || null;
+  const participationRemoteOrigin = String(entry.participation?.remoteOrigin || "").trim() || null;
+  return (
+    itemRemoteOrigin ||
+    participationRemoteOrigin ||
+    extractOriginFromUrl(entry.item?.buyUrl || null) ||
+    extractOriginFromUrl(entry.item?.attributionUrl || null) ||
+    extractOriginFromUrl(entry.publicPageUrl || null) ||
+    null
+  );
+}
+
+function derivativeClassifier(input: {
+  type?: string | null;
+  appearsBecause?: Set<string>;
+  contentId: string;
+  derivativeChildContentIds: Set<string>;
+  derivativeParentContentIds: Set<string>;
+  upstreamDerivativeChildContentIds: Set<string>;
+  participation?: LibraryParticipation | null;
+  relation?: LibraryRelation;
+}): { isDerivativeChild: boolean; isDerivativeParent: boolean; isDerivative: boolean } {
+  const typeNormalized = String(input.type || "").trim().toLowerCase();
+  const appearsBecause = input.appearsBecause || new Set<string>();
+  const relation = String(input.relation || "").trim().toLowerCase();
+  const isDerivativeByType = ["derivative", "remix", "mashup"].includes(typeNormalized);
+  const isDerivativeChild =
+    isDerivativeByType ||
+    input.derivativeChildContentIds.has(input.contentId) ||
+    input.upstreamDerivativeChildContentIds.has(input.contentId) ||
+    appearsBecause.has("derivative_child");
+  const isDerivativeParent =
+    input.derivativeParentContentIds.has(input.contentId) ||
+    appearsBecause.has("derivative_parent") ||
+    Boolean(input.participation?.derivativeContext?.parentContentId) ||
+    relation === "participant" && appearsBecause.has("remote_mirror") && appearsBecause.has("split_participant");
+  return {
+    isDerivativeChild,
+    isDerivativeParent,
+    isDerivative: isDerivativeChild || isDerivativeParent
+  };
+}
+
+function libraryAccessRank(value: LibraryItem["libraryAccess"] | null | undefined): number {
+  const access = String(value || "").trim().toLowerCase();
+  if (access === "owned") return 5;
+  if (access === "shared" || access === "participant") return 4;
+  if (access === "purchased") return 3;
+  if (access === "preview") return 2;
+  if (access === "local") return 1;
+  return 0;
+}
+
+function relationRank(value: LibraryRelation | null | undefined): number {
+  const relation = String(value || "").trim().toLowerCase();
+  if (relation === "owner") return 5;
+  if (relation === "participant") return 4;
+  if (relation === "buyer") return 3;
+  if (relation === "preview") return 2;
+  return 1;
+}
+
+function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): NormalizedLibraryItem[] {
+  const deduped = new Map<string, NormalizedLibraryItem>();
+  for (const entry of entries) {
+    const contentId = String(entry.item?.id || "").trim();
+    if (!contentId) continue;
+    const origin = canonicalEntryOrigin(entry) || "local";
+    const key = `${origin}::${contentId}`;
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, entry);
+      continue;
+    }
+    const existingScore = libraryAccessRank(existing.item.libraryAccess) * 10 + relationRank(existing.relation);
+    const incomingScore = libraryAccessRank(entry.item.libraryAccess) * 10 + relationRank(entry.relation);
+    const winner = incomingScore >= existingScore ? entry : existing;
+    const loser = winner === entry ? existing : entry;
+    const mergedAppearsBecause = Array.from(
+      new Set([
+        ...(Array.isArray(winner.item?.appearsBecause) ? winner.item.appearsBecause : []),
+        ...(Array.isArray(loser.item?.appearsBecause) ? loser.item.appearsBecause : [])
+      ])
+    );
+    const mergedRelationshipTags = Array.from(new Set([...(winner.relationshipTags || []), ...(loser.relationshipTags || [])]));
+    deduped.set(key, {
+      ...winner,
+      item: {
+        ...winner.item,
+        appearsBecause: mergedAppearsBecause,
+        remoteOrigin: winner.item.remoteOrigin || loser.item.remoteOrigin || (origin === "local" ? null : origin),
+        buyUrl: winner.item.buyUrl || loser.item.buyUrl || winner.publicPageUrl || loser.publicPageUrl || null,
+        attributionUrl: winner.item.attributionUrl || loser.item.attributionUrl || null
+      },
+      relationshipTags: mergedRelationshipTags,
+      relationshipType: mergedRelationshipTags.includes("derivatives")
+        ? "derivatives"
+        : mergedRelationshipTags.includes("shared_splits")
+          ? "shared_splits"
+          : mergedRelationshipTags.includes("authored_work")
+            ? "authored_work"
+            : "other",
+      isDerivativeChild: winner.isDerivativeChild || loser.isDerivativeChild,
+      isDerivativeParent: winner.isDerivativeParent || loser.isDerivativeParent,
+      publicPageUrl: winner.publicPageUrl || loser.publicPageUrl || null,
+      participation: winner.participation || loser.participation
+    });
+  }
+  return Array.from(deduped.values());
+}
+
 type DerivativeApprovalRow = {
   authorizationId: string;
   linkId?: string | null;
@@ -281,7 +405,9 @@ function applyLibraryFilters(
     const typeMatch = typeFilter === "all" || entry.contentType === typeFilter;
     const relationMatch =
       relationshipFilter === "all" ||
-      entry.relationshipTags.includes(relationshipFilter);
+      (relationshipFilter === "derivatives"
+        ? entry.isDerivativeChild || entry.isDerivativeParent || entry.relationshipTags.includes("derivatives")
+        : entry.relationshipTags.includes(relationshipFilter));
     const include = typeMatch && relationMatch;
     if (import.meta.env.DEV) {
       // eslint-disable-next-line no-console
@@ -719,22 +845,25 @@ export default function LibraryPage() {
             libraryAccess: section
           };
           const contentType = mapContentType(normalizedItem.type);
-          const derivativeByType = ["derivative", "remix", "mashup"].includes(String(normalizedItem.type || "").toLowerCase());
           const viewerOwnsItem = section === "owned" || appearsBecause.has("owned");
           const viewerParticipatesInSplit = section === "participant" || appearsBecause.has("split_participant");
           const explicitSharedMembership =
             appearsBecause.has("split_participant") ||
             appearsBecause.has("shared_with_me") ||
             appearsBecause.has("remote_mirror");
-          const isDerivativeChild =
-            derivativeByType ||
-            derivativeChildContentIds.has(contentId) ||
-            upstreamDerivativeChildContentIds.has(contentId) ||
-            appearsBecause.has("derivative_child");
-          const isDerivativeParent =
-            derivativeParentContentIds.has(contentId) ||
-            appearsBecause.has("derivative_parent");
-          const derivativeLinked = isDerivativeChild || isDerivativeParent;
+          const derivativeFlags = derivativeClassifier({
+            type: normalizedItem.type,
+            appearsBecause,
+            contentId,
+            derivativeChildContentIds,
+            derivativeParentContentIds,
+            upstreamDerivativeChildContentIds,
+            participation,
+            relation
+          });
+          const isDerivativeChild = derivativeFlags.isDerivativeChild;
+          const isDerivativeParent = derivativeFlags.isDerivativeParent;
+          const derivativeLinked = derivativeFlags.isDerivative;
           const hasSharedSplitMembership =
             explicitSharedMembership || (viewerParticipatesInSplit && !viewerOwnsItem);
           const relationshipTagSet = new Set<LibraryRelationshipFilter>();
@@ -762,8 +891,9 @@ export default function LibraryPage() {
             participation
           });
         }
+        const dedupedNormalized = dedupeCanonicalLibraryEntries(normalized);
         setParticipationByContentId(nextParticipationByContentId);
-        setItems(applyLibraryFilters(normalized, libraryTypeFilter, libraryRelationshipFilter));
+        setItems(applyLibraryFilters(dedupedNormalized, libraryTypeFilter, libraryRelationshipFilter));
       } catch (e: any) {
         const err = String(e?.message || "Failed to load library");
         setMsg(err.includes("INVALID_TYPE") ? "Invalid type filter." : err);

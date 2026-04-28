@@ -21059,6 +21059,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     createdAt: true,
     repoPath: true,
     deletedAt: true,
+    deletedReason: true,
     ownerUserId: true,
     owner: { select: { displayName: true, email: true } },
     manifest: { select: { sha256: true } },
@@ -21276,7 +21277,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     // Derivative membership should surface for both:
     // - split participants on parent works
     // - owners of parent works
-    // and must include approved shadow children (deleted hard mirrors).
+    // and should include active remote-shadow children (hard-deleted local mirrors
+    // that carry a remote-origin marker), while still excluding stale deleted rows.
     const derivativeParentIds = Array.from(new Set([...participantIds, ...ownedIds]));
     if (derivativeParentIds.length > 0) {
       const derivativeChildren = await prisma.contentLink.findMany({
@@ -21294,15 +21296,16 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         const childType = asString(child?.type || link?.relation || "file").trim().toLowerCase();
         if (!matchesRequestedType(childType)) continue;
         const childStatus = asString(child?.status || "").trim().toLowerCase();
-        const childDeleted = Boolean(child?.deletedAt);
-        // Active library should not surface stale/tombstoned/deleted derivative rows.
-        // Require the child row itself to be actively published.
-        const includeByState = childStatus === "published" && !childDeleted;
+        const childPublished = childStatus === "published" && !child?.deletedAt;
+        const childActionableShadow = isActionableDerivativeChildForClearanceInbox(child);
+        const includeByState = childPublished || childActionableShadow;
         if (!includeByState) continue;
+        const shadowOrigin = childActionableShadow ? getRemoteOriginFromDescription(asString(child?.description || "").trim() || null) : null;
         const surfaced = {
           ...child,
           status: "published",
-          deletedAt: null
+          deletedAt: null,
+          remoteOrigin: shadowOrigin
         };
         appendLibraryItem(surfaced, "shared", "derivative_child");
         appendLibraryItem(surfaced, "shared", "derivative_parent");
@@ -21338,66 +21341,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         };
       })
       .filter((row: any) => Boolean(asString(row?.id || "").trim()));
-    const mirroredSharedDerivativeRows = (
-      await Promise.all(
-        mirroredRemoteInvites
-          .filter((inv: any) => normalizeRemoteInviteStatusForList(inv) === "accepted")
-          .map(async (inv: any) => {
-            const origin = pickShareableOrigin(inv?.remoteOrigin || null, inv?.inviteUrl || null);
-            const inviteToken = extractInviteTokenFromUrl(inv?.inviteUrl || null);
-            const parentContentId = asString(inv?.contentId || "").trim();
-            if (!origin || !inviteToken || !parentContentId) return [] as any[];
-            const accounting = await fetchRemoteInviteAccounting(origin, inviteToken).catch(() => null);
-            const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
-            return inbox
-              .map((entry: any) => {
-                const status = asString(entry?.status || "").trim().toLowerCase();
-                const childContentId = asString(entry?.childContentId || "").trim();
-                const entryParentContentId = asString(entry?.parentContentId || "").trim();
-                const childStatus = asString(entry?.childStatus || "").trim().toLowerCase();
-                const childDeletedAt = asString(entry?.childDeletedAt || "").trim();
-                if (!childContentId || !entryParentContentId) return null;
-                if (entryParentContentId !== parentContentId) return null;
-                if (!["pending", "rejected", "approved", "cleared"].includes(status)) return null;
-                if (childDeletedAt) return null;
-                if (childStatus && childStatus !== "published") return null;
-                const relation = asString(entry?.relation || "").trim().toLowerCase();
-                const derivedTypeRaw = asString(entry?.childType || inv?.contentType || "").trim().toLowerCase();
-                const derivedType =
-                  derivedTypeRaw === "song" || derivedTypeRaw === "video" || derivedTypeRaw === "book" || derivedTypeRaw === "file"
-                    ? derivedTypeRaw
-                    : relation === "song" || relation === "video" || relation === "book" || relation === "file"
-                      ? relation
-                      : "file";
-                if (!matchesRequestedType(derivedType)) return null;
-                const childOrigin = pickShareableOrigin(entry?.childOrigin || null, origin);
-                const reviewPreviewUrl = asString(entry?.reviewPreviewUrl || "").trim() || null;
-                return {
-                  id: childContentId,
-                  title: asString(entry?.childTitle || "").trim() || "Untitled derivative",
-                  description: buildRemoteDescription(childOrigin || origin, reviewPreviewUrl),
-                  type: derivedType,
-                  status: "published",
-                  previousVersionContentId: null,
-                  previousVersion: null,
-                  featureOnProfile: false,
-                  storefrontStatus: "UNLISTED",
-                  deliveryMode: null,
-                  priceSats: null,
-                  createdAt: inv?.acceptedAt || inv?.createdAt || new Date().toISOString(),
-                  repoPath: null,
-                  deletedAt: null,
-                  ownerUserId: null,
-                  owner: null,
-                  manifest: null,
-                  _count: { files: 0, entitlements: 0 },
-                  remoteOrigin: childOrigin || origin
-                };
-              })
-              .filter(Boolean) as any[];
-          })
-      )
-    ).flat();
+    // Do not rely on live remote fetch for core library cards.
+    // Derivative shared membership should come from durable local rows
+    // (remote invites + mirrored/local content links).
+    const mirroredSharedDerivativeRows: any[] = [];
     const mirroredRemoteOriginByParentId = new Map<string, string>();
     for (const row of mirroredSharedRows) {
       const parentContentId = asString(row?.id || "").trim();
@@ -21442,13 +21389,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           parentRemoteOrigin
         );
         const childIsPublished = asString(child?.status || "").trim().toLowerCase() === "published" && !child?.deletedAt;
-        const surfacedStatus = childIsPublished || Boolean(link?.approvedAt) ? "published" : "draft";
+        const childActionableShadow = isActionableDerivativeChildForClearanceInbox(child);
+        if (!childIsPublished && !childActionableShadow) continue;
         const derivativeRow = {
           id: childContentId,
           title: asString(child?.title || "").trim() || "Untitled derivative",
           description: rowRemoteOrigin ? buildRemoteDescription(rowRemoteOrigin) : childDescription,
           type: derivedType || "file",
-          status: surfacedStatus,
+          status: "published",
           previousVersionContentId: null,
           previousVersion: null,
           featureOnProfile: false,
@@ -21474,14 +21422,22 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     for (const i of publicPreview) appendLibraryItem(i, "preview", "preview_access");
   }
 
-  // de-dupe by content id while preserving membership reasons.
+  // de-dupe by (origin + content id) while preserving membership reasons.
+  // This prevents accidental local/remote row collapse while still merging
+  // multiple membership paths for the same canonical card.
   const deduped = new Map<string, any>();
   for (const row of items) {
     const contentId = asString(row?.id || "").trim();
     if (!contentId) continue;
-    const existing = deduped.get(contentId);
+    const rowDescription = asString(row?.description || "").trim() || null;
+    const rowOrigin = pickShareableOrigin(
+      asString(row?.remoteOrigin || "").trim() || null,
+      getRemoteOriginFromDescription(rowDescription)
+    );
+    const dedupeKey = `${rowOrigin || "local"}::${contentId}`;
+    const existing = deduped.get(dedupeKey);
     if (!existing) {
-      deduped.set(contentId, row);
+      deduped.set(dedupeKey, row);
       continue;
     }
     const mergedReasons = Array.from(
@@ -21493,7 +21449,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const existingPriority = accessPriority(existing.libraryAccess);
     const incomingPriority = accessPriority(row.libraryAccess);
     const preferred = incomingPriority > existingPriority ? row : existing;
-    deduped.set(contentId, {
+    deduped.set(dedupeKey, {
       ...preferred,
       appearsBecause: mergedReasons
     });
