@@ -21320,8 +21320,11 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         if (!matchesRequestedType(childType)) continue;
         const childStatus = asString(child?.status || "").trim().toLowerCase();
         const childPublished = childStatus === "published" && !child?.deletedAt;
-        // Library should surface active derivative cards, not deleted remote-shadow placeholders.
-        const includeByState = childPublished;
+        // Reuse shared-split style durable local mirror behavior: allow active
+        // remote-shadow child rows (hard-delete + remote-origin marker) while
+        // still excluding stale deleted/tombstoned rows.
+        const childActionableShadow = Boolean(child?.deletedAt) && isActionableDerivativeChildForClearanceInbox(child);
+        const includeByState = childPublished || childActionableShadow;
         if (!includeByState) continue;
         const surfaced = {
           ...child,
@@ -21419,7 +21422,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           parentRemoteOrigin
         );
         const childIsPublished = asString(child?.status || "").trim().toLowerCase() === "published" && !child?.deletedAt;
-        if (!childIsPublished) continue;
+        const childActionableShadow = Boolean(child?.deletedAt) && isActionableDerivativeChildForClearanceInbox(child);
+        if (!childIsPublished && !childActionableShadow) continue;
         const derivativeRow = {
           id: childContentId,
           title: asString(child?.title || "").trim() || "Untitled derivative",
