@@ -1004,8 +1004,25 @@ export default function LibraryPage() {
               availabilityState: getAvailabilityState(item)
             }
           });
-          if (!decision.included) continue;
-          const section = decision.section as Exclude<LibrarySection, "excluded">;
+          const actionableDerivativeChildShadow =
+            Boolean(normalizedItemForEligibility.isActionableShadow) &&
+            scopes.has("derivatives") &&
+            appearsBecause.has("derivative_child") &&
+            !Boolean(normalizedItemForEligibility.isParentOfDerivative);
+          if (!decision.included && !actionableDerivativeChildShadow) continue;
+          const section: Exclude<LibrarySection, "excluded"> = decision.included
+            ? (decision.section as Exclude<LibrarySection, "excluded">)
+            : "participant";
+          if (import.meta.env.DEV && actionableDerivativeChildShadow) {
+            // eslint-disable-next-line no-console
+            console.debug("libraryEligibility.override_actionable_derivative_shadow", {
+              contentId,
+              title: item.title || null,
+              originalReason: decision.reason || null,
+              appearsBecause: Array.from(appearsBecause),
+              libraryScopes: Array.from(scopes)
+            });
+          }
           const normalizedItem: LibraryItem = {
             ...normalizedItemForEligibility,
             libraryAccess: section
