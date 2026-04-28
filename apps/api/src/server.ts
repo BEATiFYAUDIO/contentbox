@@ -21171,13 +21171,56 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     }
     return { eligible: true, actionableShadow: isActionableShadowCandidate };
   };
+  const shouldTraceLibraryRow = (item: any): boolean => {
+    if (process.env.NODE_ENV === "production") return false;
+    if (asString(process.env.LIBRARY_TRACE || "").trim() === "1") return true;
+    const needle = asString(process.env.LIBRARY_TRACE_TITLE || "").trim().toLowerCase();
+    if (!needle) return false;
+    const title = asString(item?.title || "").toLowerCase();
+    return title.includes(needle);
+  };
+  const traceLibraryRow = (phase: string, sourcePath: string, item: any, extra?: Record<string, unknown>) => {
+    if (!shouldTraceLibraryRow(item) || !req?.log) return;
+    req.log.info(
+      {
+        route: "/content",
+        scope,
+        phase,
+        sourcePath,
+        id: asString(item?.id || "").trim() || null,
+        title: asString(item?.title || "").trim() || null,
+        status: asString(item?.status || "").trim() || null,
+        deletedAt: item?.deletedAt || null,
+        deletedReason: asString(item?.deletedReason || "").trim() || null,
+        tombstoned: Boolean(item?.tombstoned) || Boolean(item?.tombstonedAt),
+        remoteOrigin:
+          pickShareableOrigin(
+            asString(item?.remoteOrigin || "").trim() || null,
+            getRemoteOriginFromDescription(asString(item?.description || "").trim() || null)
+          ) || null,
+        appearsBecause: Array.isArray(item?.appearsBecause) ? item.appearsBecause : [],
+        isActionableShadow: Boolean(item?.isActionableShadow),
+        isDerivativeWork: Boolean(item?.isDerivativeWork),
+        isUpstreamRoyaltyWork: Boolean(item?.isUpstreamRoyaltyWork),
+        ...extra
+      },
+      "library.trace.row"
+    );
+  };
   const appendLibraryItem = (
     item: any,
     libraryAccess: "owned" | "purchased" | "preview" | "local" | "participant" | "shared",
-    reason: string
+    reason: string,
+    sourcePath: string
   ) => {
+    traceLibraryRow("candidate", sourcePath, item, { libraryAccess, reason });
     const eligibility = isLibraryRowEligible(item, reason, { allowActionableShadow: true });
     if (!eligibility.eligible) {
+      traceLibraryRow("excluded", sourcePath, item, {
+        libraryAccess,
+        reason,
+        exclusionReason: eligibility.exclusionReason || null
+      });
       if (process.env.NODE_ENV !== "production" && req?.log) {
         req.log.debug(
           {
@@ -21201,7 +21244,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       ...toVersionSummary(item),
       libraryAccess,
       appearsBecause: [reason],
+      _libraryPath: sourcePath,
       isActionableShadow: eligibility.actionableShadow || Boolean(item?.isActionableShadow)
+    });
+    traceLibraryRow("included", sourcePath, item, {
+      libraryAccess,
+      reason,
+      actionableShadow: eligibility.actionableShadow
     });
   };
 
@@ -21357,8 +21406,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         })
       : [];
 
-    for (const i of owned) appendLibraryItem(i, "owned", "owned");
-    for (const p of purchased.filter((p) => p.content)) appendLibraryItem(p.content, "purchased", "purchased");
+    for (const i of owned) appendLibraryItem(i, "owned", "owned", "owned");
+    for (const p of purchased.filter((p) => p.content)) appendLibraryItem(p.content, "purchased", "purchased", "purchased");
 
     const combinedParticipantLinks = [...participantLinks, ...identityTargetedLinks];
     const participantIds = Array.from(
@@ -21377,7 +21426,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         orderBy: { createdAt: "desc" },
         select: selectBase
       });
-      for (const i of participantContent) appendLibraryItem(i, "participant", "split_participant");
+      for (const i of participantContent) appendLibraryItem(i, "participant", "split_participant", "participant_content");
     }
 
     // Derivative membership should surface for both:
@@ -21402,23 +21451,59 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
               derivativeLinkId: { in: derivativeChildren.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) },
               status: { in: ["PENDING", "REJECTED"] as any }
             },
-            select: { derivativeLinkId: true }
+            select: { derivativeLinkId: true, updatedAt: true }
           })
         : [];
-      const actionableDerivativeLinkIds = new Set(
-        derivativeAuthRows.map((row: any) => asString(row?.derivativeLinkId || "").trim()).filter(Boolean)
-      );
+      const derivativeAuthByLinkId = new Map<string, { updatedAt: Date | null }>();
+      for (const row of derivativeAuthRows) {
+        const linkId = asString((row as any)?.derivativeLinkId || "").trim();
+        if (!linkId) continue;
+        derivativeAuthByLinkId.set(linkId, { updatedAt: (row as any)?.updatedAt || null });
+      }
+      const derivativeWorkflowKey = (link: any, child: any) =>
+        [
+          asString(link?.parentContentId || "").trim(),
+          asString(link?.relation || "").trim().toLowerCase(),
+          asString(link?.upstreamBps ?? "").trim(),
+          asString(child?.ownerUserId || "").trim() || "unknown_owner"
+        ].join("::");
+      const localPublishedWorkflows = new Set<string>();
+      const latestLocalShadowByWorkflow = new Map<string, { linkId: string; updatedAtMs: number }>();
+      for (const link of derivativeChildren) {
+        const child = (link as any)?.childContent;
+        if (!child) continue;
+        const workflowKey = derivativeWorkflowKey(link, child);
+        const childStatus = asString(child?.status || "").trim().toLowerCase();
+        const childPublished = childStatus === "published" && !child?.deletedAt;
+        if (childPublished) {
+          localPublishedWorkflows.add(workflowKey);
+          continue;
+        }
+        if (!Boolean(child?.deletedAt) || asString(child?.deletedReason || "").trim().toLowerCase() !== "hard") continue;
+        const linkId = asString(link?.id || "").trim();
+        const auth = derivativeAuthByLinkId.get(linkId);
+        if (!linkId || !auth) continue;
+        const updatedAtMs = auth.updatedAt instanceof Date ? auth.updatedAt.getTime() : 0;
+        const current = latestLocalShadowByWorkflow.get(workflowKey);
+        if (!current || updatedAtMs > current.updatedAtMs) {
+          latestLocalShadowByWorkflow.set(workflowKey, { linkId, updatedAtMs });
+        }
+      }
       for (const link of derivativeChildren) {
         const child = link.childContent as any;
         if (!child) continue;
+        const workflowKey = derivativeWorkflowKey(link, child);
         const childType = asString(child?.type || link?.relation || "file").trim().toLowerCase();
         if (!matchesRequestedType(childType)) continue;
         const childStatus = asString(child?.status || "").trim().toLowerCase();
         const childPublished = childStatus === "published" && !child?.deletedAt;
+        const latestShadowForWorkflow = latestLocalShadowByWorkflow.get(workflowKey);
         const childActionableShadow =
           Boolean(child?.deletedAt) &&
           !link?.approvedAt &&
-          actionableDerivativeLinkIds.has(asString(link?.id || "").trim()) &&
+          Boolean(latestShadowForWorkflow) &&
+          latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
+          !localPublishedWorkflows.has(workflowKey) &&
           isActionableDerivativeChildForClearanceInbox(child);
         const includeByState = childPublished || childActionableShadow;
         if (!includeByState) continue;
@@ -21433,8 +21518,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           ),
           _libraryHasActiveClearanceContext: childActionableShadow
         };
-        appendLibraryItem(surfaced, "shared", "derivative_child");
-        appendLibraryItem(surfaced, "shared", "derivative_parent");
+        appendLibraryItem(surfaced, "shared", "derivative_child", "derivative_children_local");
+        appendLibraryItem(surfaced, "shared", "derivative_parent", "derivative_children_local");
       }
     }
 
@@ -21483,14 +21568,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       if (parentContentId && parentRemoteOrigin && !mirroredRemoteOriginByParentId.has(parentContentId)) {
         mirroredRemoteOriginByParentId.set(parentContentId, parentRemoteOrigin);
       }
-      appendLibraryItem(row, "shared", "split_participant");
-      appendLibraryItem(row, "shared", "shared_with_me");
-      appendLibraryItem(row, "shared", "remote_mirror");
+      appendLibraryItem(row, "shared", "split_participant", "mirrored_shared_rows");
+      appendLibraryItem(row, "shared", "shared_with_me", "mirrored_shared_rows");
+      appendLibraryItem(row, "shared", "remote_mirror", "mirrored_shared_rows");
     }
     for (const row of mirroredSharedDerivativeRows) {
-      appendLibraryItem(row, "shared", "derivative_child");
-      appendLibraryItem(row, "shared", "derivative_parent");
-      appendLibraryItem(row, "shared", "remote_mirror");
+      appendLibraryItem(row, "shared", "derivative_child", "mirrored_shared_derivative_rows");
+      appendLibraryItem(row, "shared", "derivative_parent", "mirrored_shared_derivative_rows");
+      appendLibraryItem(row, "shared", "remote_mirror", "mirrored_shared_derivative_rows");
     }
 
     if (mirroredRemoteOriginByParentId.size > 0) {
@@ -21510,16 +21595,49 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
               derivativeLinkId: { in: mirroredDerivativeLinks.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) },
               status: { in: ["PENDING", "REJECTED"] as any }
             },
-            select: { derivativeLinkId: true }
+            select: { derivativeLinkId: true, updatedAt: true }
           })
         : [];
-      const actionableMirroredDerivativeLinkIds = new Set(
-        mirroredDerivativeAuthRows.map((row: any) => asString(row?.derivativeLinkId || "").trim()).filter(Boolean)
-      );
+      const mirroredDerivativeAuthByLinkId = new Map<string, { updatedAt: Date | null }>();
+      for (const row of mirroredDerivativeAuthRows) {
+        const linkId = asString((row as any)?.derivativeLinkId || "").trim();
+        if (!linkId) continue;
+        mirroredDerivativeAuthByLinkId.set(linkId, { updatedAt: (row as any)?.updatedAt || null });
+      }
+      const mirroredWorkflowKey = (link: any, child: any) =>
+        [
+          asString(link?.parentContentId || "").trim(),
+          asString(link?.relation || "").trim().toLowerCase(),
+          asString(link?.upstreamBps ?? "").trim(),
+          asString(child?.ownerUserId || "").trim() || "unknown_owner"
+        ].join("::");
+      const mirroredPublishedWorkflows = new Set<string>();
+      const latestMirroredShadowByWorkflow = new Map<string, { linkId: string; updatedAtMs: number }>();
+      for (const link of mirroredDerivativeLinks) {
+        const child = (link as any)?.childContent;
+        if (!child) continue;
+        const workflowKey = mirroredWorkflowKey(link, child);
+        const childStatus = asString(child?.status || "").trim().toLowerCase();
+        const childPublished = childStatus === "published" && !child?.deletedAt;
+        if (childPublished) {
+          mirroredPublishedWorkflows.add(workflowKey);
+          continue;
+        }
+        if (!Boolean(child?.deletedAt) || asString(child?.deletedReason || "").trim().toLowerCase() !== "hard") continue;
+        const linkId = asString(link?.id || "").trim();
+        const auth = mirroredDerivativeAuthByLinkId.get(linkId);
+        if (!linkId || !auth) continue;
+        const updatedAtMs = auth.updatedAt instanceof Date ? auth.updatedAt.getTime() : 0;
+        const current = latestMirroredShadowByWorkflow.get(workflowKey);
+        if (!current || updatedAtMs > current.updatedAtMs) {
+          latestMirroredShadowByWorkflow.set(workflowKey, { linkId, updatedAtMs });
+        }
+      }
       for (const link of mirroredDerivativeLinks) {
         const childContentId = asString(link?.childContentId || link?.childContent?.id || "").trim();
         if (!childContentId) continue;
         const child = link?.childContent as any;
+        const workflowKey = mirroredWorkflowKey(link, child);
         const derivedType = asString(child?.type || link?.relation || "file")
           .trim()
           .toLowerCase();
@@ -21532,10 +21650,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           parentRemoteOrigin
         );
         const childIsPublished = asString(child?.status || "").trim().toLowerCase() === "published" && !child?.deletedAt;
+        const latestShadowForWorkflow = latestMirroredShadowByWorkflow.get(workflowKey);
         const childActionableShadow =
           Boolean(child?.deletedAt) &&
           !link?.approvedAt &&
-          actionableMirroredDerivativeLinkIds.has(asString(link?.id || "").trim()) &&
+          Boolean(latestShadowForWorkflow) &&
+          latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
+          !mirroredPublishedWorkflows.has(workflowKey) &&
           isActionableDerivativeChildForClearanceInbox(child);
         if (!childIsPublished && !childActionableShadow) continue;
         const derivativeRow = {
@@ -21561,14 +21682,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           remoteOrigin: rowRemoteOrigin,
           _libraryHasActiveClearanceContext: childActionableShadow
         };
-        appendLibraryItem(derivativeRow, "shared", "derivative_child");
-        appendLibraryItem(derivativeRow, "shared", "derivative_parent");
-        appendLibraryItem(derivativeRow, "shared", "remote_mirror");
+        appendLibraryItem(derivativeRow, "shared", "derivative_child", "mirrored_derivative_links");
+        appendLibraryItem(derivativeRow, "shared", "derivative_parent", "mirrored_derivative_links");
+        appendLibraryItem(derivativeRow, "shared", "remote_mirror", "mirrored_derivative_links");
       }
     }
 
     // Keep preview-only rows last so attributed participant rows win de-dupe.
-    for (const i of publicPreview) appendLibraryItem(i, "preview", "preview_access");
+    for (const i of publicPreview) appendLibraryItem(i, "preview", "preview_access", "public_preview");
   }
 
   // de-dupe by (origin + content id) while preserving membership reasons.
@@ -21616,6 +21737,11 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     deduped.set(dedupeKey, {
       ...preferred,
       appearsBecause: mergedReasons,
+      _libraryPath: Array.from(
+        new Set(
+          [asString(preferred?._libraryPath || "").trim(), asString(fallback?._libraryPath || "").trim()].filter(Boolean)
+        )
+      ).join(","),
       remoteOrigin:
         asString(preferred?.remoteOrigin || "").trim() ||
         asString(fallback?.remoteOrigin || "").trim() ||
