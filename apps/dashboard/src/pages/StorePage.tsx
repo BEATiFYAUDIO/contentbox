@@ -469,6 +469,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [providerExecuteTest, setProviderExecuteTest] = React.useState<ProviderExecuteTestResult | null>(null);
   const [providerExecuteTestLoading, setProviderExecuteTestLoading] = React.useState(false);
   const [providerExecuteTestErr, setProviderExecuteTestErr] = React.useState<string | null>(null);
+  const providerAutoHandshakeAttemptedRef = React.useRef(false);
   const [runtimeStatus, setRuntimeStatus] = React.useState<RuntimeStatus | null>(null);
   const [runtimeRestarting, setRuntimeRestarting] = React.useState(false);
   const [runtimeMsg, setRuntimeMsg] = React.useState<string | null>(null);
@@ -1021,6 +1022,25 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setProviderHandshakeLoading(false);
     }
   }
+
+  React.useEffect(() => {
+    if (providerAutoHandshakeAttemptedRef.current) return;
+    if (providerLoading || providerVerificationLoading || providerHandshakeLoading) return;
+    if (!providerConfig?.configured || !providerConfig?.enabled) return;
+    const status = String(providerVerification?.verification?.status || "").trim();
+    const shouldAutoHandshake =
+      !status || status === "unreachable" || status === "not_configured" || status === "missing_provider_role";
+    if (!shouldAutoHandshake) return;
+    providerAutoHandshakeAttemptedRef.current = true;
+    void testProviderHandshake();
+  }, [
+    providerLoading,
+    providerVerificationLoading,
+    providerHandshakeLoading,
+    providerConfig?.configured,
+    providerConfig?.enabled,
+    providerVerification?.verification?.status
+  ]);
 
   async function requestProviderAcknowledgment() {
     setProviderAckErr(null);
