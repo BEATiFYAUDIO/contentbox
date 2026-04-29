@@ -21554,11 +21554,21 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         const latestShadowForWorkflow = latestLocalShadowByWorkflow.get(workflowKey);
         const shadowIsApprovedWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank >= 2);
         const shadowIsCurrentPendingWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank === 1);
+        const fallbackApprovedShadow =
+          Boolean(child?.deletedAt) &&
+          !latestShadowForWorkflow &&
+          Boolean(link?.approvedAt) &&
+          isActionableDerivativeChildForClearanceInbox(child);
         const childActionableShadow =
           Boolean(child?.deletedAt) &&
-          Boolean(latestShadowForWorkflow) &&
-          latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
-          (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !localPublishedWorkflows.has(workflowKey))) &&
+          (
+            (
+              Boolean(latestShadowForWorkflow) &&
+              latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
+              (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !localPublishedWorkflows.has(workflowKey)))
+            ) ||
+            fallbackApprovedShadow
+          ) &&
           isActionableDerivativeChildForClearanceInbox(child);
         const includeByState = childPublished || childActionableShadow;
         if (!includeByState) continue;
@@ -21711,11 +21721,21 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         const latestShadowForWorkflow = latestMirroredShadowByWorkflow.get(workflowKey);
         const shadowIsApprovedWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank >= 2);
         const shadowIsCurrentPendingWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank === 1);
+        const fallbackApprovedShadow =
+          Boolean(child?.deletedAt) &&
+          !latestShadowForWorkflow &&
+          Boolean(link?.approvedAt) &&
+          isActionableDerivativeChildForClearanceInbox(child);
         const childActionableShadow =
           Boolean(child?.deletedAt) &&
-          Boolean(latestShadowForWorkflow) &&
-          latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
-          (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !mirroredPublishedWorkflows.has(workflowKey))) &&
+          (
+            (
+              Boolean(latestShadowForWorkflow) &&
+              latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
+              (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !mirroredPublishedWorkflows.has(workflowKey)))
+            ) ||
+            fallbackApprovedShadow
+          ) &&
           isActionableDerivativeChildForClearanceInbox(child);
         if (!childIsPublished && !childActionableShadow) continue;
         const derivativeRow = {
@@ -22367,7 +22387,37 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
     });
   }
   if (!parent) return notFound(reply, "parent content not found");
-  const parentLockedSplit = await getLockedSplitForContent(parent.id);
+  let parentLockedSplit = await getLockedSplitForContent(parent.id);
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    parentLockedSplit = await ensureRemoteShadowLockedSplitForParent({
+      parentContentId: parent.id,
+      parentOrigin: parentOrigin || null,
+      fallbackUserId: userId
+    });
+  }
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    const anchoredLink = await prisma.contentLink.findFirst({
+      where: {
+        parentContentId: parent.id,
+        parentSplitVersionId: { not: null }
+      },
+      orderBy: [{ approvedAt: "desc" }, { id: "desc" }],
+      select: { parentSplitVersionId: true }
+    });
+    const anchoredSplitId = asString(anchoredLink?.parentSplitVersionId || "").trim();
+    if (anchoredSplitId) {
+      const anchoredSplit = await prisma.splitVersion.findUnique({
+        where: { id: anchoredSplitId },
+        include: { participants: true }
+      });
+      if (anchoredSplit && anchoredSplit.status === "locked") {
+        parentLockedSplit = {
+          ...anchoredSplit,
+          participants: filterCommerceEligibleParticipants(anchoredSplit.participants || [])
+        } as any;
+      }
+    }
+  }
   if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before creating derivative links." });
   }
@@ -23422,7 +23472,37 @@ app.post("/content/:id/parent-link", { preHandler: requireAuth }, async (req: an
 
   const parent = await prisma.contentItem.findUnique({ where: { id: parentContentId } });
   if (!parent) return notFound(reply, "Parent content not found");
-  const parentLockedSplit = await getLockedSplitForContent(parentContentId);
+  let parentLockedSplit = await getLockedSplitForContent(parentContentId);
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    parentLockedSplit = await ensureRemoteShadowLockedSplitForParent({
+      parentContentId,
+      parentOrigin: getRemoteOriginFromDescription(parent.description || null),
+      fallbackUserId: userId
+    });
+  }
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    const anchoredLink = await prisma.contentLink.findFirst({
+      where: {
+        parentContentId,
+        parentSplitVersionId: { not: null }
+      },
+      orderBy: [{ approvedAt: "desc" }, { id: "desc" }],
+      select: { parentSplitVersionId: true }
+    });
+    const anchoredSplitId = asString(anchoredLink?.parentSplitVersionId || "").trim();
+    if (anchoredSplitId) {
+      const anchoredSplit = await prisma.splitVersion.findUnique({
+        where: { id: anchoredSplitId },
+        include: { participants: true }
+      });
+      if (anchoredSplit && anchoredSplit.status === "locked") {
+        parentLockedSplit = {
+          ...anchoredSplit,
+          participants: filterCommerceEligibleParticipants(anchoredSplit.participants || [])
+        } as any;
+      }
+    }
+  }
   if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before linking derivatives." });
   }
@@ -34406,6 +34486,52 @@ async function getLockedSplitVersion(input: { contentId?: string | null; splitVe
 
 async function getLockedSplitForContent(contentId: string) {
   return getLockedSplitVersion({ contentId });
+}
+
+async function ensureRemoteShadowLockedSplitForParent(input: {
+  parentContentId: string;
+  parentOrigin?: string | null;
+  fallbackUserId: string;
+}): Promise<any | null> {
+  const parentContentId = asString(input.parentContentId || "").trim();
+  if (!parentContentId) return null;
+  const parent = await prisma.contentItem.findUnique({ where: { id: parentContentId } });
+  if (!parent) return null;
+  const inferredOrigin = pickShareableOrigin(
+    asString(input.parentOrigin || "").trim() || null,
+    getRemoteOriginFromDescription(parent.description || null)
+  );
+  const isRemoteShadowParent =
+    Boolean(inferredOrigin) &&
+    asString(parent.deletedReason || "").trim().toLowerCase() === "hard" &&
+    !parent.repoPath;
+  if (!isRemoteShadowParent) return null;
+
+  const lockedExisting = await getLockedSplitForContent(parentContentId);
+  if (lockedExisting && lockedExisting.status === "locked") return lockedExisting;
+
+  const latest = await prisma.splitVersion.findFirst({
+    where: { contentId: parentContentId },
+    orderBy: { versionNumber: "desc" },
+    include: { participants: true }
+  });
+  if (latest && latest.status === "locked") return latest;
+
+  const nextVersion = Math.max(1, Number(latest?.versionNumber || 0) + 1);
+  const createdByUserId = asString(parent.ownerUserId || "").trim() || asString(input.fallbackUserId || "").trim();
+  if (!createdByUserId) return null;
+
+  const created = await prisma.splitVersion.create({
+    data: {
+      contentId: parentContentId,
+      versionNumber: nextVersion,
+      status: "locked",
+      createdByUserId,
+      lockedAt: new Date()
+    },
+    include: { participants: true }
+  });
+  return created;
 }
 
 async function getLockedSplitVersionById(splitVersionId: string) {
