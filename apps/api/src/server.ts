@@ -1298,17 +1298,6 @@ const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
   .filter(Boolean);
-function isLoopbackOrigin(origin: string): boolean {
-  try {
-    const parsed = new URL(origin);
-    const host = String(parsed.hostname || "").trim().toLowerCase();
-    if (host !== "localhost" && host !== "127.0.0.1") return false;
-    if (!parsed.port) return false;
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
@@ -9917,11 +9906,8 @@ app.register(cors, {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
-    if (isLoopbackOrigin(origin)) return cb(null, true);
     if (process.env.NODE_ENV !== "production") {
       const devAllowed = [
-        "http://localhost:4000",
-        "http://127.0.0.1:4000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://192.168.100.109:5173"
@@ -9931,8 +9917,7 @@ app.register(cors, {
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key", "Range"],
-  exposedHeaders: ["Content-Length", "Content-Range", "Accept-Ranges", "Content-Type"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key"],
   credentials: true,
   preflightContinue: false,
   optionsSuccessStatus: 204
@@ -10420,24 +10405,15 @@ async function ensurePreviewFile(content: any, files: any[]) {
 
     return fileEntry.path || previewObjectKey;
   } catch (e: any) {
-    const code = asString((e as any)?.code || "").trim().toUpperCase();
-    const message = asString((e as any)?.message || "").trim();
-    if (code === "ENOENT" || message.includes("ENOENT")) {
-      previewGenerationDisabled = true;
-      app.log.warn({ err: e }, "preview.generate.skipped.ffmpeg_unavailable");
-    } else {
-      app.log.warn({ err: e }, "preview.generate.failed");
-    }
+    app.log.warn({ err: e }, "preview.generate.failed");
     return null;
   }
 }
 
 const previewGenerationInflight = new Map<string, Promise<string | null>>();
-let previewGenerationDisabled = false;
 async function ensurePreviewFileOnce(content: any, files: any[]): Promise<string | null> {
   const contentId = asString(content?.id || "").trim();
   if (!contentId) return null;
-  if (previewGenerationDisabled) return null;
   const inflight = previewGenerationInflight.get(contentId);
   if (inflight) return inflight;
   const task = ensurePreviewFile(content, files).finally(() => {
@@ -11967,7 +11943,7 @@ app.get("/content/:id/history", { preHandler: requireAuth }, async (req: any, re
       ts: e.createdAt.toISOString(),
       category: "split",
       type: e.action,
-      title: `Split v${splitVersionMap.get(e.entityId) || "?"}  -  ${e.action.replace(/\./g, " ")}`,
+      title: `Split v${splitVersionMap.get(e.entityId) || "?"} - ${e.action.replace(/\./g, " ")}`,
       summary: content.title || "Content",
       actor: actorFromUser(e.user),
       details: e.payloadJson || null,
@@ -12008,7 +11984,7 @@ app.get("/content/:id/split-history", { preHandler: requireAuth }, async (req: a
     ts: e.createdAt.toISOString(),
     category: "split",
     type: e.action,
-    title: `Split v${splitVersionMap.get(e.entityId) || "?"}  -  ${e.action.replace(/\./g, " ")}`,
+    title: `Split v${splitVersionMap.get(e.entityId) || "?"} - ${e.action.replace(/\./g, " ")}`,
     summary: content.title || "Content",
     actor: actorFromUser(e.user),
     details: e.payloadJson || null,
@@ -12064,7 +12040,7 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
       ts: s.createdAt.toISOString(),
       category: "royalty",
       type: "settlement.created",
-      title: `Settlement  -  ${s.content?.title || "Content"}`,
+      title: `Settlement - ${s.content?.title || "Content"}`,
       summary: `${sumLines.toString()} sats`,
       actor: actorFromUser(s.content?.owner ? { id: s.content.owner.id, email: s.content.owner.email, displayName: s.content.owner.displayName } : null),
       details: {
@@ -12091,8 +12067,8 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
     ts: p.createdAt.toISOString(),
     category: "royalty",
     type: "payment.intent",
-    title: `Purchase  -  ${p.content?.title || "Content"}`,
-    summary: `${BigInt(p.amountSats as any).toString()} sats  -  ${p.status}`,
+    title: `Purchase - ${p.content?.title || "Content"}`,
+    summary: `${BigInt(p.amountSats as any).toString()} sats - ${p.status}`,
     actor: actorFromUser(me),
     details: {
       amountSats: BigInt(p.amountSats as any).toString(),
@@ -12138,7 +12114,7 @@ app.get("/content-links/:id/clearance-history", { preHandler: requireAuth }, asy
       ts: r.createdAt.toISOString(),
       category: "clearance",
       type: "clearance.requested",
-      title: `Clearance requested  -  ${link.childContent?.title || "Derivative"}`,
+      title: `Clearance requested - ${link.childContent?.title || "Derivative"}`,
       summary: r.status,
       actor: actorFromUser(r.requestedByUserId ? { id: r.requestedByUserId } as any : null),
       details: { status: r.status }
@@ -12231,7 +12207,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.createdAt.toISOString(),
         category: "invite",
         type: "invite.sent",
-        title: `Invite sent  -  ${contentTitle}`,
+        title: `Invite sent - ${contentTitle}`,
         summary: inv.splitParticipant?.participantEmail || null,
         actor: actorFromUser(me),
         details: { expiresAt: inv.expiresAt.toISOString() }
@@ -12242,7 +12218,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
       ts: inv.createdAt.toISOString(),
       category: "invite",
       type: "invite.received",
-      title: `Invite received  -  ${contentTitle}`,
+      title: `Invite received - ${contentTitle}`,
       summary: inv.splitParticipant?.participantEmail || null,
       actor: actorFromUser(me),
       details: { expiresAt: inv.expiresAt.toISOString() }
@@ -12253,7 +12229,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.acceptedAt.toISOString(),
         category: "invite",
         type: "invite.accepted",
-        title: `Invite accepted  -  ${contentTitle}`,
+        title: `Invite accepted - ${contentTitle}`,
         summary: inv.splitParticipant?.participantEmail || null,
         actor: actorFromUser(me)
       });
@@ -12271,7 +12247,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
       ts: inv.createdAt.toISOString(),
       category: "invite",
       type: "invite.remote.received",
-      title: `Remote invite received  -  ${contentTitle}`,
+      title: `Remote invite received - ${contentTitle}`,
       summary: inv.participantEmail || null,
       actor: actorFromUser(me),
       details: { remoteOrigin: inv.remoteOrigin, inviteUrl: inv.inviteUrl }
@@ -12282,7 +12258,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.acceptedAt.toISOString(),
         category: "invite",
         type: "invite.remote.accepted",
-        title: `Remote invite accepted  -  ${contentTitle}`,
+        title: `Remote invite accepted - ${contentTitle}`,
         summary: inv.participantEmail || null,
         actor: actorFromUser(me),
         details: { remoteOrigin: inv.remoteOrigin, inviteUrl: inv.inviteUrl }
@@ -19941,7 +19917,7 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       return reply.code(409).send({
         ...getPublicStatus(),
         lastError: "named_token_missing",
-        message: "Named tunnel requires a connector token. Add it in Config &#8594; Tunnel & routing."
+        message: "Named tunnel requires a connector token. Add it in Config -> Tunnel & routing."
       });
     }
     const defer = shouldDeferNamedTunnelToServiceControl();
@@ -20484,7 +20460,7 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
 
       if (beatifyHandle || altHandle) {
         const chosenHandle = beatifyHandle || altHandle;
-        // Prefer the Beatify username when parsing Beatify hosts  -  override other name candidates
+        // Prefer the Beatify username when parsing Beatify hosts - override other name candidates
         try {
           const host = new URL(targetUrl).hostname.toLowerCase();
           if (host.includes("beatify")) {
@@ -21578,11 +21554,21 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         const latestShadowForWorkflow = latestLocalShadowByWorkflow.get(workflowKey);
         const shadowIsApprovedWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank >= 2);
         const shadowIsCurrentPendingWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank === 1);
+        const fallbackApprovedShadow =
+          Boolean(child?.deletedAt) &&
+          !latestShadowForWorkflow &&
+          Boolean(link?.approvedAt) &&
+          isActionableDerivativeChildForClearanceInbox(child);
         const childActionableShadow =
           Boolean(child?.deletedAt) &&
-          Boolean(latestShadowForWorkflow) &&
-          latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
-          (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !localPublishedWorkflows.has(workflowKey))) &&
+          (
+            (
+              Boolean(latestShadowForWorkflow) &&
+              latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
+              (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !localPublishedWorkflows.has(workflowKey)))
+            ) ||
+            fallbackApprovedShadow
+          ) &&
           isActionableDerivativeChildForClearanceInbox(child);
         const includeByState = childPublished || childActionableShadow;
         if (!includeByState) continue;
@@ -21735,11 +21721,21 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         const latestShadowForWorkflow = latestMirroredShadowByWorkflow.get(workflowKey);
         const shadowIsApprovedWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank >= 2);
         const shadowIsCurrentPendingWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank === 1);
+        const fallbackApprovedShadow =
+          Boolean(child?.deletedAt) &&
+          !latestShadowForWorkflow &&
+          Boolean(link?.approvedAt) &&
+          isActionableDerivativeChildForClearanceInbox(child);
         const childActionableShadow =
           Boolean(child?.deletedAt) &&
-          Boolean(latestShadowForWorkflow) &&
-          latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
-          (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !mirroredPublishedWorkflows.has(workflowKey))) &&
+          (
+            (
+              Boolean(latestShadowForWorkflow) &&
+              latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
+              (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !mirroredPublishedWorkflows.has(workflowKey)))
+            ) ||
+            fallbackApprovedShadow
+          ) &&
           isActionableDerivativeChildForClearanceInbox(child);
         if (!childIsPublished && !childActionableShadow) continue;
         const derivativeRow = {
@@ -22391,7 +22387,37 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
     });
   }
   if (!parent) return notFound(reply, "parent content not found");
-  const parentLockedSplit = await getLockedSplitForContent(parent.id);
+  let parentLockedSplit = await getLockedSplitForContent(parent.id);
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    parentLockedSplit = await ensureRemoteShadowLockedSplitForParent({
+      parentContentId: parent.id,
+      parentOrigin: parentOrigin || null,
+      fallbackUserId: userId
+    });
+  }
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    const anchoredLink = await prisma.contentLink.findFirst({
+      where: {
+        parentContentId: parent.id,
+        parentSplitVersionId: { not: null }
+      },
+      orderBy: [{ approvedAt: "desc" }, { id: "desc" }],
+      select: { parentSplitVersionId: true }
+    });
+    const anchoredSplitId = asString(anchoredLink?.parentSplitVersionId || "").trim();
+    if (anchoredSplitId) {
+      const anchoredSplit = await prisma.splitVersion.findUnique({
+        where: { id: anchoredSplitId },
+        include: { participants: true }
+      });
+      if (anchoredSplit && anchoredSplit.status === "locked") {
+        parentLockedSplit = {
+          ...anchoredSplit,
+          participants: filterCommerceEligibleParticipants(anchoredSplit.participants || [])
+        } as any;
+      }
+    }
+  }
   if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before creating derivative links." });
   }
@@ -23446,7 +23472,37 @@ app.post("/content/:id/parent-link", { preHandler: requireAuth }, async (req: an
 
   const parent = await prisma.contentItem.findUnique({ where: { id: parentContentId } });
   if (!parent) return notFound(reply, "Parent content not found");
-  const parentLockedSplit = await getLockedSplitForContent(parentContentId);
+  let parentLockedSplit = await getLockedSplitForContent(parentContentId);
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    parentLockedSplit = await ensureRemoteShadowLockedSplitForParent({
+      parentContentId,
+      parentOrigin: getRemoteOriginFromDescription(parent.description || null),
+      fallbackUserId: userId
+    });
+  }
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    const anchoredLink = await prisma.contentLink.findFirst({
+      where: {
+        parentContentId,
+        parentSplitVersionId: { not: null }
+      },
+      orderBy: [{ approvedAt: "desc" }, { id: "desc" }],
+      select: { parentSplitVersionId: true }
+    });
+    const anchoredSplitId = asString(anchoredLink?.parentSplitVersionId || "").trim();
+    if (anchoredSplitId) {
+      const anchoredSplit = await prisma.splitVersion.findUnique({
+        where: { id: anchoredSplitId },
+        include: { participants: true }
+      });
+      if (anchoredSplit && anchoredSplit.status === "locked") {
+        parentLockedSplit = {
+          ...anchoredSplit,
+          participants: filterCommerceEligibleParticipants(anchoredSplit.participants || [])
+        } as any;
+      }
+    }
+  }
   if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before linking derivatives." });
   }
@@ -26308,16 +26364,15 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     }
   }
 
-  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-  const manifestJson = (manifest?.json || {}) as any;
-  const previewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview) || "";
-  const primaryFileId =
-    (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
-    (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
-    null;
-
   let objectKey = objectKeyRaw;
   if (!objectKey) {
+    const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+    const manifestJson = (manifest?.json || {}) as any;
+    const primaryFileId =
+      (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+      (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
+      null;
+    const previewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview) || "";
     objectKey = previewFromManifest || "";
     const contentType = asString(content?.type || "").trim().toLowerCase();
     const isVideoLike = contentType === "video" || contentType === "movie" || contentType === "clip";
@@ -26325,7 +26380,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     const shouldAttemptPreviewGeneration =
       (isVideoLike || isAudioLike) &&
       (!objectKey || (typeof primaryFileId === "string" && objectKey === primaryFileId));
-    if (shouldAttemptPreviewGeneration && !previewGenerationDisabled) {
+    if (shouldAttemptPreviewGeneration) {
       const files = await prisma.contentFile.findMany({
         where: { contentId },
         orderBy: { createdAt: "asc" }
@@ -26372,38 +26427,14 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
   if (!content.repoPath) return notFound(reply, "Content not found");
   const repoRoot = path.resolve(content.repoPath);
-  let absPath = path.resolve(repoRoot, objectKey);
+  const absPath = path.resolve(repoRoot, objectKey);
   if (!absPath.startsWith(repoRoot)) return forbidden(reply);
-
-  const fallbackToPrimaryIfNeeded = (): boolean => {
-    const fallbackKey = asString(primaryFileId || "").trim();
-    if (!fallbackKey || fallbackKey === objectKey) return false;
-    const fallbackAbs = path.resolve(repoRoot, fallbackKey);
-    if (!fallbackAbs.startsWith(repoRoot) || !fsSync.existsSync(fallbackAbs)) return false;
-    try {
-      const fallbackStat = fsSync.statSync(fallbackAbs);
-      if (!fallbackStat.isFile() || fallbackStat.size <= 0) return false;
-    } catch {
-      return false;
-    }
-    objectKey = fallbackKey;
-    absPath = fallbackAbs;
-    return true;
-  };
-
-  if (!fsSync.existsSync(absPath)) {
-    if (!fallbackToPrimaryIfNeeded()) return notFound(reply, "File not found");
-  }
-
-  let stat = fsSync.statSync(absPath);
-  if (!stat.isFile() || stat.size <= 0) {
-    if (!fallbackToPrimaryIfNeeded()) return notFound(reply, "File not found");
-    stat = fsSync.statSync(absPath);
-    if (!stat.isFile() || stat.size <= 0) return notFound(reply, "File not found");
-  }
+  if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
   const mime = file?.mime || "application/octet-stream";
+
+  const stat = fsSync.statSync(absPath);
   const range = req.headers.range;
   if (range) {
     const m = /bytes=(\d+)-(\d+)?/.exec(range);
@@ -27039,9 +27070,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeAccount = escHtml(displayAccount || "unknown");
             const safeProvider = escHtml(providerLabel);
             if (href) {
-              return `<div class="line muted">${providerBadgeHtml} ${safeProvider}  -  <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">&#8599;</span>${tierBadge}</div>`;
+              return `<div class="line muted">${providerBadgeHtml} ${safeProvider} - <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">&#8599;</span>${tierBadge}</div>`;
             }
-            return `<div class="line muted">${providerBadgeHtml} ${safeProvider}  -  <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
+            return `<div class="line muted">${providerBadgeHtml} ${safeProvider} - <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -27073,9 +27104,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const hrefValue = npub || pubkey;
             const href = hrefValue ? `https://njump.me/${encodeURIComponent(hrefValue)}` : "";
             if (href) {
-              return `<div class="line muted">&#10003; Nostr  -  <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">&#8599;</span></div>`;
+              return `<div class="line muted">&#10003; Nostr - <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">&#8599;</span></div>`;
             }
-            return `<div class="line muted">&#10003; Nostr  -  <span class="mono">${escHtml(shortValue)}</span></div>`;
+            return `<div class="line muted">&#10003; Nostr - <span class="mono">${escHtml(shortValue)}</span></div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -27090,7 +27121,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           .join("")
       : "";
   const creatorSignalCompactHtml = `<div class="signal-compact-title">Trust Score</div>
-      <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">Â· ${escHtml(creatorSignal.tier)}</span></div>
+      <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">· ${escHtml(creatorSignal.tier)}</span></div>
       <div class="signal-meter signal-compact-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
         <div class="signal-meter-fill" style="width:${creatorSignalPercent}%"></div>
       </div>
@@ -27196,7 +27227,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">${supportLine}</div>
-                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} &rarr;</a></div>
+                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} &#8594;</a></div>
               </div>
             </article>`;
   };
@@ -27461,7 +27492,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const shareLabel =
               Number.isFinite(Number(item.participantBps)) && Number(item.participantBps) > 0
                 ? `${(Number(item.participantBps) / 100).toFixed(2)}%`
-                : " - ";
+                : "-";
             const safeShare = escHtml(shareLabel);
             const buyUrl = asString(item.buyUrl || "").trim();
             const attributionUrl = asString(item.attributionUrl || "").trim();
@@ -27485,10 +27516,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="featured-support">Role: ${safeRole}  -  Share: ${safeShare}</div>
+                <div class="featured-support">Role: ${safeRole} - Share: ${safeShare}</div>
                 ${
                   linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &rarr;</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &#8599;</a></div>`
                     : ""
                 }
               </div>
@@ -27502,7 +27533,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeType = escHtml(asString(item.contentType || "Participation"));
             const shareLabel = Number.isFinite(Number(percentToPrimitive(item.percent ?? null)))
               ? `${Number(percentToPrimitive(item.percent ?? null)).toFixed(2)}%`
-              : " - ";
+              : "-";
             const safeShare = escHtml(shareLabel);
             const base = normalizeOrigin(item.remoteOrigin || "") || "";
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
@@ -27531,7 +27562,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="featured-support">Role: ${safeRole}  -  Share: ${safeShare}</div>
+                <div class="featured-support">Role: ${safeRole} - Share: ${safeShare}</div>
                 ${
                   isDerivative
                     ? `<div class="featured-support">Derivative of ${
@@ -27541,7 +27572,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 }
                 ${
                   linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &rarr;</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &#8599;</a></div>`
                     : ""
                 }
               </div>
@@ -27767,7 +27798,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, #121419 0%, #0f1013 100%); }
     .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:#0d0f13; display:flex; align-items:center; justify-content:center; }
     .featured-video-thumb { width:100%; height:100%; object-fit:cover; display:block; }
-    .featured-video-preview { width:100%; height:100%; object-fit:cover; display:block; background:#000; }
+    .featured-video-preview { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
     .featured-video-fallback { position:absolute; inset:0; min-height:0; z-index:2; }
     .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:rgba(9,12,18,0.72); border:1px solid rgba(154,206,255,0.35); color:#d7ecff; font-size:12px; line-height:1; z-index:3; }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
@@ -28594,7 +28625,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     } catch {}
   }
 
-  return reply.type("text/plain").send("Thanks  -  your clearance response has been recorded.");
+  return reply.type("text/plain").send("Thanks - your clearance response has been recorded.");
 });
 
 // External clearance page (no login required)
@@ -28805,7 +28836,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     } catch {}
   }
 
-  return reply.send("Thanks  -  your clearance response has been recorded.");
+  return reply.send("Thanks - your clearance response has been recorded.");
 });
 
 function resolveTabIconPath(): string | null {
@@ -29228,7 +29259,7 @@ async function handleBuyPage(req: any, reply: any) {
   function heartFor(c){
     if (c?.verification?.badge !== "beatify_heart") return "";
     const tier = (c?.verification?.tier === "gold") ? "gold" : "grey";
-    return " <span class=\\"cb-heart cb-heart--" + tier + "\\" title=\\"Verified on Beatify (node operator)\\" aria-label=\\"Verified on Beatify (node operator)\\">&#9829;</span>";
+    return " <span class=\\"cb-heart cb-heart--" + tier + "\\" title=\\"Verified on Beatify (node operator)\\" aria-label=\\"Verified on Beatify (node operator)\\">&hearts;</span>";
   }
 
   function resolveAttributionContentId(){
@@ -29295,7 +29326,7 @@ async function handleBuyPage(req: any, reply: any) {
               ? ("(@" + esc(normalizedContributorHandle) + ")")
               : "";
           const roleRaw = String(c?.role || "").trim();
-          const role = roleRaw ? ("  -  " + esc(roleRaw)) : "";
+          const role = roleRaw ? (" - " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
           const nameLabel = ch ? (cn + " " + ch) : cn;
           const contributorNameHtml = profilePathRaw
@@ -29303,7 +29334,7 @@ async function handleBuyPage(req: any, reply: any) {
             : nameLabel;
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
-          return "<li>" + contributorNameHtml + role + (pct ? ("  -  " + pct) : "") + "</li>";
+          return "<li>" + contributorNameHtml + role + (pct ? (" - " + pct) : "") + "</li>";
         }).join("") +
       "</ul>";
     } else if (split?.state === "draft") {
@@ -29317,7 +29348,7 @@ async function handleBuyPage(req: any, reply: any) {
       if (items.length > 0) {
         upstreamHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Upstream creators:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
           items.map((it) => {
-            const t = it?.title ? (esc(it.title) + "  -  ") : "";
+            const t = it?.title ? (esc(it.title) + " - ") : "";
             const pc = it?.primaryCreator || {};
             const pn = esc(pc.displayName || pc.name || pc.handle || "Creator");
             const phRaw = String(pc.handle || "").trim();
@@ -29346,8 +29377,8 @@ async function handleBuyPage(req: any, reply: any) {
                       : shLabel;
                     return linked + (pct ? " (" + esc(pct) + ")" : "");
                   })
-                  .join("  -  ") +
-                (shareholders.length > 6 ? "  -  ..." : "") +
+                  .join(" - ") +
+                (shareholders.length > 6 ? " - ..." : "") +
                 "</div>"
               : "";
             const attributionLinkHtml = parentContentUrl
@@ -29374,7 +29405,7 @@ async function handleBuyPage(req: any, reply: any) {
 
   function formatProofTime(v){
     const s = String(v || "").trim();
-    if (!s) return " - ";
+    if (!s) return "-";
     const d = new Date(s);
     if (Number.isNaN(d.getTime())) return s;
     return d.toLocaleString();
@@ -29472,10 +29503,10 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderPaymentAccessProofBlock(offer, entitlement, owned){
     const proof = resolvePaymentAccessProof(offer, entitlement, owned);
-    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : " - ";
-    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : " - ";
-    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : " - ";
-    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : " - ";
+    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : "-";
+    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : "-";
+    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : "-";
+    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "-";
     const entitlementLabel = proof.entitlementState === "entitled" ? "Entitled" : proof.entitlementState === "preview" ? "Preview" : "Locked";
     return "<div class=\\"access-card\\">" +
       "<div class=\\"access-title\\">Payment confirmation</div>" +
@@ -29674,15 +29705,15 @@ async function handleBuyPage(req: any, reply: any) {
   const suggestedTipSats = (priceSats && Number(priceSats) > 0) ? Number(priceSats) : null;
 
   function previewFallbackUrl(offer){
-    if (!offer) return null;
+    if (!offer?.previewObjectKey) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/public/content/" + contentId + "/preview-file?inline=1" + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
   }
 
   function basicPrimaryUrl(offer){
-    if (!offer) return null;
+    if (!offer?.primaryFileId) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/public/content/" + contentId + "/preview-file?inline=1" + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
   }
 
   function offerCoverUrl(offer){
@@ -34455,6 +34486,52 @@ async function getLockedSplitVersion(input: { contentId?: string | null; splitVe
 
 async function getLockedSplitForContent(contentId: string) {
   return getLockedSplitVersion({ contentId });
+}
+
+async function ensureRemoteShadowLockedSplitForParent(input: {
+  parentContentId: string;
+  parentOrigin?: string | null;
+  fallbackUserId: string;
+}): Promise<any | null> {
+  const parentContentId = asString(input.parentContentId || "").trim();
+  if (!parentContentId) return null;
+  const parent = await prisma.contentItem.findUnique({ where: { id: parentContentId } });
+  if (!parent) return null;
+  const inferredOrigin = pickShareableOrigin(
+    asString(input.parentOrigin || "").trim() || null,
+    getRemoteOriginFromDescription(parent.description || null)
+  );
+  const isRemoteShadowParent =
+    Boolean(inferredOrigin) &&
+    asString(parent.deletedReason || "").trim().toLowerCase() === "hard" &&
+    !parent.repoPath;
+  if (!isRemoteShadowParent) return null;
+
+  const lockedExisting = await getLockedSplitForContent(parentContentId);
+  if (lockedExisting && lockedExisting.status === "locked") return lockedExisting;
+
+  const latest = await prisma.splitVersion.findFirst({
+    where: { contentId: parentContentId },
+    orderBy: { versionNumber: "desc" },
+    include: { participants: true }
+  });
+  if (latest && latest.status === "locked") return latest;
+
+  const nextVersion = Math.max(1, Number(latest?.versionNumber || 0) + 1);
+  const createdByUserId = asString(parent.ownerUserId || "").trim() || asString(input.fallbackUserId || "").trim();
+  if (!createdByUserId) return null;
+
+  const created = await prisma.splitVersion.create({
+    data: {
+      contentId: parentContentId,
+      versionNumber: nextVersion,
+      status: "locked",
+      createdByUserId,
+      lockedAt: new Date()
+    },
+    include: { participants: true }
+  });
+  return created;
 }
 
 async function getLockedSplitVersionById(splitVersionId: string) {
@@ -41061,10 +41138,10 @@ async function handlePublicInvitePage(req: any, reply: any) {
     app.innerHTML = \`
       <div style="font-size:22px;font-weight:700;">You've been invited to a split</div>
       <div class="muted" style="margin-top:6px;">Content: \${c.title || "Unknown"} (\${c.type || "content"})</div>
-      <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"}  -  Share: \${sp.percent || "?"}%</div>
-      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || " - ") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
+      <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} - Share: \${sp.percent || "?"}%</div>
+      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "-") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
       <div class="muted" style="margin-top:4px;">Backend key verification: \${auth?.keyVerified === true ? "verified" : auth?.keyVerified === false ? "unverified" : "unknown"}</div>
-      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || " - "}: \${inv?.targetValue || " - "}</div>
+      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "-"}: \${inv?.targetValue || "-"}</div>
       \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
       <button id="primaryBtn" class="btn" style="margin-top:14px;">\${canAccept ? "Accept invite" : "Open in creator dashboard"}</button>
       <div id="status" class="muted" style="margin-top:8px;"></div>

@@ -1601,6 +1601,20 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
   }
 }
 
+function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
+  const source = String(raw || "").trim();
+  if (!source) return false;
+  try {
+    const u = new URL(source, window.location.origin);
+    const objectKey = String(u.searchParams.get("objectKey") || "").trim().toLowerCase();
+    const path = String(u.pathname || "").toLowerCase();
+    const candidate = objectKey || path;
+    return /\.(mp4|mov|m4v|webm|mkv|avi|wmv|ogv)(\?|$)/.test(candidate);
+  } catch {
+    return /\.(mp4|mov|m4v|webm|mkv|avi|wmv|ogv)(\?|$)/i.test(source);
+  }
+}
+
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 sm:p-5">
@@ -1716,6 +1730,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                     const isImageByPath = /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(mediaPathHint);
                     const derivativeLinked = entry.isDerivativeChild || entry.isDerivativeParent;
                     const derivativeParentOnly = entry.isDerivativeParent && !entry.isDerivativeChild;
+                    const allowUnknownVideoFallback = entry.isDerivativeChild;
                     const isVideo = mime.startsWith("video/") || type === "video" || type === "remix" || isVideoByPath;
                     const isAudio = mime.startsWith("audio/") || type === "song" || isAudioByPath;
                     const isImage = mime.startsWith("image/") || isImageByPath;
@@ -1787,6 +1802,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                           previewAvObjectKey
                         )}`
                       : null;
+                    const hasVideoMimeCandidate = candidateFiles.some((f: any) =>
+                      String(f?.mime || "").toLowerCase().startsWith("video/")
+                    );
                     const genericPreviewFallback = buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase);
                     const rankedPlaybackCandidates = rankLibraryMediaCandidates(apiBase, cardAssetOrigin || apiBase, [
                       genericPreviewFallback,
@@ -1810,6 +1828,25 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       ? lockedPlaybackUrl
                       : fallbackPlaybackUrl;
                     const hasPlaybackCandidate = Boolean(effectivePlaybackUrl && isUsableLibraryAssetUrl(effectivePlaybackUrl));
+                    const hasVideoLikePlaybackCandidate =
+                      hasVideoMimeCandidate ||
+                      isVideoByPath ||
+                      looksLikeVideoAssetUrl(effectivePlaybackUrl) ||
+                      rankedPlaybackCandidates.some((url) => looksLikeVideoAssetUrl(url));
+                    const playbackPathHint = String(effectivePlaybackUrl || mediaPathHint || "")
+                      .trim()
+                      .toLowerCase();
+                    const isDocLikeByPath = /\.(pdf|md|markdown|txt|doc|docx|xls|xlsx|csv|ppt|pptx)(\?|$)/.test(
+                      playbackPathHint
+                    );
+                    const isFileLikeDoc =
+                      type === "file" &&
+                      (mime.includes("pdf") ||
+                        mime.includes("word") ||
+                        mime.includes("excel") ||
+                        mime.includes("spreadsheet") ||
+                        mime.startsWith("text/") ||
+                        isDocLikeByPath);
                     const prioritizedParticipantCover = entry.relation === "participant" ? participantCoverFallback : null;
                     const manifestArtworkObjectKey = String(preview?.manifest?.artwork || "").trim();
                     const manifestArtworkFallback = manifestArtworkObjectKey
@@ -1922,13 +1959,14 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                           : rightsSummary.ownershipKind === "derivative"
                             ? "border-amber-600/40 bg-amber-500/10 text-amber-200"
                             : "border-neutral-700 bg-neutral-700/20 text-neutral-300";
+                    const showRightsBadge = derivativeParentOnly || rightsSummary.ownershipKind === "derivative";
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
                         {hasMediaCard ? (
                           <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
                             {coverRenderable ? (
                               <img
-                                className="w-full h-full object-cover object-center bg-black"
+                                className="w-full h-full object-contain object-center bg-black"
                                 src={coverUrl || undefined}
                                 alt={`${it.title || "Content"} cover`}
                                 loading="lazy"
@@ -1963,7 +2001,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                               />
                             ) : hasInlineImagePreview ? (
                               <img
-                                className="w-full h-full object-cover object-center bg-black"
+                                className="w-full h-full object-contain object-center bg-black"
                                 src={previewUrl as string}
                                 alt={it.title || "Preview"}
                               />
@@ -1988,9 +2026,11 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                             <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${access.cls}`}>
                               {access.label}
                             </span>
-                            <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${rightsBadgeClass}`}>
-                              {rightsBadgeLabel}
-                            </span>
+                            {showRightsBadge ? (
+                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${rightsBadgeClass}`}>
+                                {rightsBadgeLabel}
+                              </span>
+                            ) : null}
                             <span className="text-[11px] text-neutral-500">Created {formatDateLabel(it.createdAt)}</span>
                           </div>
                           {it.owner?.displayName || it.owner?.email ? (
@@ -2130,7 +2170,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                   return (
                                     <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
                                       <video
-                                        className="w-full h-full object-cover object-center bg-black"
+                                        className="w-full h-full object-contain object-center bg-black"
                                         controls
                                         src={effectivePlaybackUrl}
                                         onLoadedData={() => {
@@ -2167,12 +2207,21 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                     </div>
                                   );
                                 }
-                                if (effectivePlaybackUrl && !isAudio && !isImage && hasPlaybackCandidate) {
+                                if (
+                                  effectivePlaybackUrl &&
+                                  !isAudio &&
+                                  !isImage &&
+                                  !looksLikeImageAssetUrl(effectivePlaybackUrl) &&
+                                  !isFileLikeDoc &&
+                                  hasPlaybackCandidate &&
+                                  allowUnknownVideoFallback &&
+                                  hasVideoLikePlaybackCandidate
+                                ) {
                                   // For remote shadow rows, mime/type hints can be absent; try video playback first.
                                   return (
                                     <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
                                       <video
-                                        className="w-full h-full object-cover object-center bg-black"
+                                        className="w-full h-full object-contain object-center bg-black"
                                         controls
                                         src={effectivePlaybackUrl}
                                       />
@@ -2224,7 +2273,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                   return (
                                     <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden flex items-center justify-center">
                                       <img
-                                        className="w-full h-full object-cover object-center bg-black"
+                                        className="w-full h-full object-contain object-center bg-black"
                                         src={effectivePlaybackUrl}
                                         alt={it.title || "Preview"}
                                         onLoad={() => {
@@ -2257,6 +2306,29 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                             return { ...prev, [it.id]: next };
                                           });
                                         }}
+                                      />
+                                    </div>
+                                  );
+                                }
+                                if (type === "file" && coverRenderable && coverUrl) {
+                                  return (
+                                    <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden flex items-center justify-center">
+                                      <img
+                                        className="w-full h-full object-contain object-center bg-black"
+                                        src={coverUrl}
+                                        alt={it.title || "File preview"}
+                                        loading="lazy"
+                                      />
+                                    </div>
+                                  );
+                                }
+                                if (effectivePlaybackUrl && hasPlaybackCandidate && isFileLikeDoc) {
+                                  return (
+                                    <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-neutral-950 overflow-hidden">
+                                      <iframe
+                                        className="w-full h-full bg-white"
+                                        src={effectivePlaybackUrl}
+                                        title={`${it.title || "File"} preview`}
                                       />
                                     </div>
                                   );
