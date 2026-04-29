@@ -10405,15 +10405,24 @@ async function ensurePreviewFile(content: any, files: any[]) {
 
     return fileEntry.path || previewObjectKey;
   } catch (e: any) {
-    app.log.warn({ err: e }, "preview.generate.failed");
+    const code = asString((e as any)?.code || "").trim().toUpperCase();
+    const message = asString((e as any)?.message || "").trim();
+    if (code === "ENOENT" || message.includes("ENOENT")) {
+      previewGenerationDisabled = true;
+      app.log.warn({ err: e }, "preview.generate.skipped.ffmpeg_unavailable");
+    } else {
+      app.log.warn({ err: e }, "preview.generate.failed");
+    }
     return null;
   }
 }
 
 const previewGenerationInflight = new Map<string, Promise<string | null>>();
+let previewGenerationDisabled = false;
 async function ensurePreviewFileOnce(content: any, files: any[]): Promise<string | null> {
   const contentId = asString(content?.id || "").trim();
   if (!contentId) return null;
+  if (previewGenerationDisabled) return null;
   const inflight = previewGenerationInflight.get(contentId);
   if (inflight) return inflight;
   const task = ensurePreviewFile(content, files).finally(() => {
@@ -26284,15 +26293,16 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     }
   }
 
+  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+  const manifestJson = (manifest?.json || {}) as any;
+  const previewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview) || "";
+  const primaryFileId =
+    (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+    (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
+    null;
+
   let objectKey = objectKeyRaw;
   if (!objectKey) {
-    const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-    const manifestJson = (manifest?.json || {}) as any;
-    const primaryFileId =
-      (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
-      (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
-      null;
-    const previewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview) || "";
     objectKey = previewFromManifest || "";
     const contentType = asString(content?.type || "").trim().toLowerCase();
     const isVideoLike = contentType === "video" || contentType === "movie" || contentType === "clip";
@@ -26300,7 +26310,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     const shouldAttemptPreviewGeneration =
       (isVideoLike || isAudioLike) &&
       (!objectKey || (typeof primaryFileId === "string" && objectKey === primaryFileId));
-    if (shouldAttemptPreviewGeneration) {
+    if (shouldAttemptPreviewGeneration && !previewGenerationDisabled) {
       const files = await prisma.contentFile.findMany({
         where: { contentId },
         orderBy: { createdAt: "asc" }
@@ -26347,14 +26357,38 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
   if (!content.repoPath) return notFound(reply, "Content not found");
   const repoRoot = path.resolve(content.repoPath);
-  const absPath = path.resolve(repoRoot, objectKey);
+  let absPath = path.resolve(repoRoot, objectKey);
   if (!absPath.startsWith(repoRoot)) return forbidden(reply);
-  if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
+
+  const fallbackToPrimaryIfNeeded = (): boolean => {
+    const fallbackKey = asString(primaryFileId || "").trim();
+    if (!fallbackKey || fallbackKey === objectKey) return false;
+    const fallbackAbs = path.resolve(repoRoot, fallbackKey);
+    if (!fallbackAbs.startsWith(repoRoot) || !fsSync.existsSync(fallbackAbs)) return false;
+    try {
+      const fallbackStat = fsSync.statSync(fallbackAbs);
+      if (!fallbackStat.isFile() || fallbackStat.size <= 0) return false;
+    } catch {
+      return false;
+    }
+    objectKey = fallbackKey;
+    absPath = fallbackAbs;
+    return true;
+  };
+
+  if (!fsSync.existsSync(absPath)) {
+    if (!fallbackToPrimaryIfNeeded()) return notFound(reply, "File not found");
+  }
+
+  let stat = fsSync.statSync(absPath);
+  if (!stat.isFile() || stat.size <= 0) {
+    if (!fallbackToPrimaryIfNeeded()) return notFound(reply, "File not found");
+    stat = fsSync.statSync(absPath);
+    if (!stat.isFile() || stat.size <= 0) return notFound(reply, "File not found");
+  }
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
   const mime = file?.mime || "application/octet-stream";
-
-  const stat = fsSync.statSync(absPath);
   const range = req.headers.range;
   if (range) {
     const m = /bytes=(\d+)-(\d+)?/.exec(range);
