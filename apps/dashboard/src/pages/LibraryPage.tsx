@@ -1421,7 +1421,9 @@ function scoreLibraryAssetUrl(
   if (/^https?:\/\//i.test(normalized)) score += 50;
   if (normalized.startsWith("/public/content/")) score += 25;
   if (normalized.includes("/public/content/")) score += 10;
-  if (normalized.includes("objectKey=")) score += 5;
+  // Object-key specific URLs can go stale when preview artifacts are rotated.
+  // Prefer stable preview-file routes that let the backend choose the best source.
+  if (normalized.includes("objectKey=")) score -= 5;
   const origin = toOrigin(normalized);
   if (origin && preferred && origin === preferred) score += 40;
   if (origin && localOrigin && origin === localOrigin) score += 20;
@@ -1787,6 +1789,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       : null;
                     const genericPreviewFallback = buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase);
                     const rankedPlaybackCandidates = rankLibraryMediaCandidates(apiBase, cardAssetOrigin || apiBase, [
+                      genericPreviewFallback,
                       ...apiPreviewCandidates,
                       it.manifestPrimaryFileUrl,
                       it.previewFileUrl,
@@ -1797,8 +1800,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       previewAvObjectUrl,
                       preferredPublishedPlaybackUrl,
                       previewUrl,
-                      participantPreviewFallback,
-                      genericPreviewFallback
+                      participantPreviewFallback
                     ]);
                     const selectedPlaybackIndex = Math.max(0, Number(previewCandidateIndexById[it.id] || 0));
                     const fallbackPlaybackUrl =

@@ -29674,15 +29674,15 @@ async function handleBuyPage(req: any, reply: any) {
   const suggestedTipSats = (priceSats && Number(priceSats) > 0) ? Number(priceSats) : null;
 
   function previewFallbackUrl(offer){
-    if (!offer?.previewObjectKey) return null;
+    if (!offer) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?inline=1" + shareQ;
   }
 
   function basicPrimaryUrl(offer){
-    if (!offer?.primaryFileId) return null;
+    if (!offer) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?inline=1" + shareQ;
   }
 
   function offerCoverUrl(offer){
