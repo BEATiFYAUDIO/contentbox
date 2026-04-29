@@ -23,10 +23,14 @@ type LibraryItem = {
   title: string;
   type: string;
   status: string;
+  lifecycle?: "active" | "shadow" | "tombstone" | null;
+  isShadow?: boolean;
   archivedAt?: string | null;
   trashedAt?: string | null;
   deletedAt?: string | null;
+  deletedReason?: string | null;
   tombstonedAt?: string | null;
+  tombstoned?: boolean;
   storefrontStatus?: string | null;
   priceSats?: string | null;
   createdAt: string;
@@ -35,10 +39,32 @@ type LibraryItem = {
   owner?: { displayName?: string | null; email?: string | null } | null;
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant" | "shared";
   appearsBecause?: string[] | null;
+  libraryScopes?: Array<"all" | "authored" | "shared_splits" | "derivatives"> | null;
   coverUrl?: string | null;
+  coverImageUrl?: string | null;
+  artworkUrl?: string | null;
+  thumbnailUrl?: string | null;
+  posterUrl?: string | null;
+  manifestCoverPath?: string | null;
+  manifestCoverUrl?: string | null;
+  libraryCoverCandidates?: string[] | null;
+  manifestPrimaryFilePath?: string | null;
+  manifestPrimaryFileUrl?: string | null;
+  libraryPreviewCandidates?: string[] | null;
+  primaryFile?: string | null;
+  fileUrl?: string | null;
+  previewFileUrl?: string | null;
+  previewUrl?: string | null;
+  mediaUrl?: string | null;
   attributionUrl?: string | null;
   buyUrl?: string | null;
   remoteOrigin?: string | null;
+  isLocalAuthored?: boolean;
+  isDirectSharedSplit?: boolean;
+  isUpstreamRoyaltyWork?: boolean;
+  isDerivativeWork?: boolean;
+  isActionableShadow?: boolean;
+  isParentOfDerivative?: boolean;
   manifest?: { sha256?: string | null } | null;
   featureOnProfile?: boolean;
   _count?: { files: number };
@@ -72,6 +98,7 @@ type LibraryParticipation = {
     parentSplitVersionId?: string | null;
     upstreamBps?: number | null;
   } | null;
+  libraryScopes?: Array<"all" | "authored" | "shared_splits" | "derivatives">;
 };
 
 type EntitlementInventoryRow = {
@@ -132,9 +159,15 @@ type LibraryRelationshipType = "authored_work" | "shared_splits" | "derivatives"
 
 type NormalizedLibraryItem = {
   item: LibraryItem;
+  libraryScopes: Set<"all" | "authored" | "shared_splits" | "derivatives">;
   contentType: LibraryTypeFilter;
   relationshipType: LibraryRelationshipType;
   relationshipTags: LibraryRelationshipFilter[];
+  isLocalAuthored: boolean;
+  isDirectSharedSplit: boolean;
+  isUpstreamRoyaltyWork: boolean;
+  isDerivativeWork: boolean;
+  isActionableShadow: boolean;
   isDerivativeChild: boolean;
   isDerivativeParent: boolean;
   availabilityState: ReturnType<typeof getAvailabilityState>;
@@ -142,6 +175,231 @@ type NormalizedLibraryItem = {
   publicPageUrl: string | null;
   participation: LibraryParticipation | null;
 };
+
+function extractOriginFromUrl(raw: string | null | undefined): string | null {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  try {
+    const u = new URL(value);
+    if (!u.origin) return null;
+    return u.origin.replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function canonicalEntryOrigin(entry: NormalizedLibraryItem): string | null {
+  const itemRemoteOrigin = String(entry.item?.remoteOrigin || "").trim() || null;
+  const participationRemoteOrigin = String(entry.participation?.remoteOrigin || "").trim() || null;
+  return (
+    itemRemoteOrigin ||
+    participationRemoteOrigin ||
+    extractOriginFromUrl(entry.item?.buyUrl || null) ||
+    extractOriginFromUrl(entry.item?.attributionUrl || null) ||
+    extractOriginFromUrl(entry.publicPageUrl || null) ||
+    null
+  );
+}
+
+function firstNonEmptyString(...values: Array<unknown>): string | null {
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function derivativeClassifier(input: {
+  type?: string | null;
+  appearsBecause?: Set<string>;
+  contentId: string;
+  derivativeChildContentIds: Set<string>;
+  derivativeParentContentIds: Set<string>;
+  upstreamDerivativeChildContentIds: Set<string>;
+  participation?: LibraryParticipation | null;
+  relation?: LibraryRelation;
+  itemIsParentOfDerivative?: boolean;
+}): { isDerivativeChild: boolean; isDerivativeParent: boolean; isDerivative: boolean } {
+  const typeNormalized = String(input.type || "").trim().toLowerCase();
+  const appearsBecause = input.appearsBecause || new Set<string>();
+  const isDerivativeByType = ["derivative", "remix", "mashup"].includes(typeNormalized);
+  const isDerivativeChild =
+    isDerivativeByType ||
+    input.derivativeChildContentIds.has(input.contentId) ||
+    input.upstreamDerivativeChildContentIds.has(input.contentId) ||
+    appearsBecause.has("derivative_child");
+  const isDerivativeParent =
+    Boolean(input.itemIsParentOfDerivative) ||
+    input.derivativeParentContentIds.has(input.contentId);
+  return {
+    isDerivativeChild,
+    isDerivativeParent,
+    isDerivative: isDerivativeChild || isDerivativeParent
+  };
+}
+
+function toOrigin(raw: string | null | undefined): string | null {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  try {
+    return new URL(value).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function hasLocalOriginMismatch(apiBase: string, item: LibraryItem): boolean {
+  const localOrigin = toOrigin(apiBase);
+  const rowRemoteOrigin = toOrigin(String(item.remoteOrigin || "").trim());
+  const rowBuyOrigin = toOrigin(String(item.buyUrl || "").trim());
+  const rowAttributionOrigin = toOrigin(String(item.attributionUrl || "").trim());
+  const foreignOrigin = rowRemoteOrigin || rowBuyOrigin || rowAttributionOrigin;
+  if (!localOrigin || !foreignOrigin) return false;
+  return localOrigin !== foreignOrigin;
+}
+
+function isActionableShadowRow(item: LibraryItem, appearsBecause: Set<string>): boolean {
+  if (!Boolean(item.isActionableShadow)) return false;
+  return appearsBecause.has("derivative_parent") || appearsBecause.has("derivative_child");
+}
+
+function shouldRenderActiveLibraryRow(entry: NormalizedLibraryItem): boolean {
+  const item = entry.item;
+  const deletedReason = String(item.deletedReason || "").trim().toLowerCase();
+  const isDeleted = Boolean(String(item.deletedAt || "").trim());
+  const isTombstoned = Boolean(item.tombstoned) || Boolean(String(item.tombstonedAt || "").trim());
+  const isStaleDeletedReason = [
+    "tombstone",
+    "stale",
+    "remote_deleted",
+    "local_deleted",
+    "deleted",
+    "hard_deleted",
+    "reformulation_cleanup",
+    "superseded"
+  ].includes(deletedReason);
+  if ((isDeleted || isTombstoned || isStaleDeletedReason) && !entry.isActionableShadow) return false;
+  const status = String(item.status || "").trim().toLowerCase();
+  if (["deleted", "archived", "inactive", "tombstoned"].includes(status) && !entry.isActionableShadow) return false;
+  if (status !== "published" && !entry.isActionableShadow) return false;
+  return true;
+}
+
+function libraryAccessRank(value: LibraryItem["libraryAccess"] | null | undefined): number {
+  const access = String(value || "").trim().toLowerCase();
+  if (access === "owned") return 5;
+  if (access === "shared" || access === "participant") return 4;
+  if (access === "purchased") return 3;
+  if (access === "preview") return 2;
+  if (access === "local") return 1;
+  return 0;
+}
+
+function relationRank(value: LibraryRelation | null | undefined): number {
+  const relation = String(value || "").trim().toLowerCase();
+  if (relation === "owner") return 5;
+  if (relation === "participant") return 4;
+  if (relation === "buyer") return 3;
+  if (relation === "preview") return 2;
+  return 1;
+}
+
+function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): NormalizedLibraryItem[] {
+  const deduped = new Map<string, NormalizedLibraryItem>();
+  for (const entry of entries) {
+    const contentId = String(entry.item?.id || "").trim();
+    if (!contentId) continue;
+    const origin = canonicalEntryOrigin(entry) || "local";
+    const key = `${origin}::${contentId}`;
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, entry);
+      continue;
+    }
+    const existingScore = libraryAccessRank(existing.item.libraryAccess) * 10 + relationRank(existing.relation);
+    const incomingScore = libraryAccessRank(entry.item.libraryAccess) * 10 + relationRank(entry.relation);
+    const winner = incomingScore >= existingScore ? entry : existing;
+    const loser = winner === entry ? existing : entry;
+    const mergedAppearsBecause = Array.from(
+      new Set([
+        ...(Array.isArray(winner.item?.appearsBecause) ? winner.item.appearsBecause : []),
+        ...(Array.isArray(loser.item?.appearsBecause) ? loser.item.appearsBecause : [])
+      ])
+    );
+    const mergedRelationshipTags = Array.from(new Set([...(winner.relationshipTags || []), ...(loser.relationshipTags || [])]));
+    deduped.set(key, {
+      ...winner,
+      item: {
+        ...winner.item,
+        appearsBecause: mergedAppearsBecause,
+        remoteOrigin: firstNonEmptyString(
+          winner.item.remoteOrigin,
+          loser.item.remoteOrigin,
+          origin === "local" ? null : origin
+        ),
+        coverUrl: firstNonEmptyString(winner.item.coverUrl, loser.item.coverUrl),
+        coverImageUrl: firstNonEmptyString(winner.item.coverImageUrl, loser.item.coverImageUrl),
+        artworkUrl: firstNonEmptyString(winner.item.artworkUrl, loser.item.artworkUrl),
+        thumbnailUrl: firstNonEmptyString(winner.item.thumbnailUrl, loser.item.thumbnailUrl),
+        posterUrl: firstNonEmptyString(winner.item.posterUrl, loser.item.posterUrl),
+        manifestCoverPath: firstNonEmptyString(winner.item.manifestCoverPath, loser.item.manifestCoverPath),
+        manifestCoverUrl: firstNonEmptyString(winner.item.manifestCoverUrl, loser.item.manifestCoverUrl),
+        manifestPrimaryFilePath: firstNonEmptyString(winner.item.manifestPrimaryFilePath, loser.item.manifestPrimaryFilePath),
+        manifestPrimaryFileUrl: firstNonEmptyString(winner.item.manifestPrimaryFileUrl, loser.item.manifestPrimaryFileUrl),
+        primaryFile: firstNonEmptyString(winner.item.primaryFile, loser.item.primaryFile),
+        fileUrl: firstNonEmptyString(winner.item.fileUrl, loser.item.fileUrl),
+        previewFileUrl: firstNonEmptyString(winner.item.previewFileUrl, loser.item.previewFileUrl),
+        previewUrl: firstNonEmptyString(winner.item.previewUrl, loser.item.previewUrl),
+        mediaUrl: firstNonEmptyString(winner.item.mediaUrl, loser.item.mediaUrl),
+        libraryCoverCandidates: Array.from(
+          new Set([
+            ...(Array.isArray(winner.item.libraryCoverCandidates) ? winner.item.libraryCoverCandidates : []),
+            ...(Array.isArray(loser.item.libraryCoverCandidates) ? loser.item.libraryCoverCandidates : [])
+          ])
+        ),
+        libraryPreviewCandidates: Array.from(
+          new Set([
+            ...(Array.isArray(winner.item.libraryPreviewCandidates) ? winner.item.libraryPreviewCandidates : []),
+            ...(Array.isArray(loser.item.libraryPreviewCandidates) ? loser.item.libraryPreviewCandidates : [])
+          ])
+        ),
+        deletedReason: winner.item.deletedReason || loser.item.deletedReason || null,
+        tombstoned: Boolean(winner.item.tombstoned || loser.item.tombstoned),
+        buyUrl: firstNonEmptyString(winner.item.buyUrl, loser.item.buyUrl, winner.publicPageUrl, loser.publicPageUrl),
+        attributionUrl: firstNonEmptyString(winner.item.attributionUrl, loser.item.attributionUrl),
+        isLocalAuthored: Boolean(winner.item.isLocalAuthored || loser.item.isLocalAuthored),
+        isDirectSharedSplit: Boolean(winner.item.isDirectSharedSplit || loser.item.isDirectSharedSplit),
+        isUpstreamRoyaltyWork: Boolean(winner.item.isUpstreamRoyaltyWork || loser.item.isUpstreamRoyaltyWork),
+        isDerivativeWork: Boolean(winner.item.isDerivativeWork || loser.item.isDerivativeWork),
+        isActionableShadow: Boolean(winner.item.isActionableShadow || loser.item.isActionableShadow),
+        isParentOfDerivative: Boolean(winner.item.isParentOfDerivative || loser.item.isParentOfDerivative),
+        libraryScopes: Array.from(new Set([...(winner.item.libraryScopes || []), ...(loser.item.libraryScopes || [])]))
+      },
+      libraryScopes: new Set([...(winner.libraryScopes || new Set()), ...(loser.libraryScopes || new Set())]),
+      relationshipTags: mergedRelationshipTags,
+      relationshipType: mergedRelationshipTags.includes("derivatives")
+        ? "derivatives"
+        : mergedRelationshipTags.includes("shared_splits")
+          ? "shared_splits"
+          : mergedRelationshipTags.includes("authored_work")
+            ? "authored_work"
+            : "other",
+      isDerivativeChild: winner.isDerivativeChild || loser.isDerivativeChild,
+      isDerivativeParent: winner.isDerivativeParent || loser.isDerivativeParent,
+      isLocalAuthored: winner.isLocalAuthored || loser.isLocalAuthored || Boolean(winner.item.isLocalAuthored || loser.item.isLocalAuthored),
+      isDirectSharedSplit:
+        winner.isDirectSharedSplit || loser.isDirectSharedSplit || Boolean(winner.item.isDirectSharedSplit || loser.item.isDirectSharedSplit),
+      isUpstreamRoyaltyWork:
+        winner.isUpstreamRoyaltyWork || loser.isUpstreamRoyaltyWork || Boolean(winner.item.isUpstreamRoyaltyWork || loser.item.isUpstreamRoyaltyWork),
+      isDerivativeWork: winner.isDerivativeWork || loser.isDerivativeWork || Boolean(winner.item.isDerivativeWork || loser.item.isDerivativeWork),
+      isActionableShadow:
+        winner.isActionableShadow || loser.isActionableShadow || Boolean(winner.item.isActionableShadow || loser.item.isActionableShadow),
+      publicPageUrl: winner.publicPageUrl || loser.publicPageUrl || null,
+      participation: winner.participation || loser.participation
+    });
+  }
+  return Array.from(deduped.values());
+}
 
 type DerivativeApprovalRow = {
   authorizationId: string;
@@ -278,10 +536,16 @@ function applyLibraryFilters(
   relationshipFilter: LibraryRelationshipFilter
 ): NormalizedLibraryItem[] {
   return items.filter((entry) => {
+    if (!shouldRenderActiveLibraryRow(entry)) return false;
     const typeMatch = typeFilter === "all" || entry.contentType === typeFilter;
-    const relationMatch =
-      relationshipFilter === "all" ||
-      entry.relationshipTags.includes(relationshipFilter);
+    const relationMatch = (() => {
+      const hasScope = (scope: "all" | "authored" | "shared_splits" | "derivatives") => entry.libraryScopes.has(scope);
+      if (relationshipFilter === "all") return true;
+      if (relationshipFilter === "authored_work") return hasScope("authored");
+      if (relationshipFilter === "shared_splits") return hasScope("shared_splits");
+      if (relationshipFilter === "derivatives") return hasScope("derivatives");
+      return entry.relationshipTags.includes(relationshipFilter);
+    })();
     const include = typeMatch && relationMatch;
     if (import.meta.env.DEV) {
       // eslint-disable-next-line no-console
@@ -317,6 +581,10 @@ export default function LibraryPage() {
   const [previewLoading, setPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = React.useState<Record<string, string>>({});
   const [previewOpenById, setPreviewOpenById] = React.useState<Record<string, boolean>>({});
+  const [coverCandidateIndexById, setCoverCandidateIndexById] = React.useState<Record<string, number>>({});
+  const [lockedCoverUrlById, setLockedCoverUrlById] = React.useState<Record<string, string | null>>({});
+  const [previewCandidateIndexById, setPreviewCandidateIndexById] = React.useState<Record<string, number>>({});
+  const [lockedPlaybackUrlById, setLockedPlaybackUrlById] = React.useState<Record<string, string | null>>({});
   const [entitlementByContentId, setEntitlementByContentId] = React.useState<Record<string, EntitlementInventoryRow>>({});
   const [attributionByContentId, setAttributionByContentId] = React.useState<Record<string, PublicAttributionPayload | null>>({});
   const attributionLoadingRef = React.useRef<Set<string>>(new Set());
@@ -419,7 +687,8 @@ export default function LibraryPage() {
             participantRole: row?.participantRole || null,
             participantBps: Number.isFinite(Number(row?.participantBps)) ? Number(row?.participantBps) : null,
             participantPercent: Number.isFinite(Number(row?.participantPercent)) ? Number(row?.participantPercent) : null,
-            derivativeContext: row?.derivativeContext || null
+            derivativeContext: row?.derivativeContext || null,
+            libraryScopes: ["all", "shared_splits"]
         }));
         const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
         const remoteOriginByParentContentId = new Map<string, string>();
@@ -463,7 +732,8 @@ export default function LibraryPage() {
               buyUrl: remoteOrigin ? `${remoteOrigin}/buy/${encodeURIComponent(contentId)}` : null,
               creatorUserId: null,
               creatorDisplayName: null,
-              creatorEmail: null
+              creatorEmail: null,
+              libraryScopes: ["all", "shared_splits"]
             };
           });
         const remoteDerivativeParticipations: LibraryParticipation[] = remoteParticipationsRaw
@@ -522,7 +792,8 @@ export default function LibraryPage() {
                     : null,
                   creatorUserId: null,
                   creatorDisplayName: null,
-                  creatorEmail: null
+                  creatorEmail: null,
+                  libraryScopes: ["all", "derivatives"]
                 } as LibraryParticipation;
               })
               .filter(Boolean) as LibraryParticipation[];
@@ -565,7 +836,8 @@ export default function LibraryPage() {
               buyUrl: origin ? `${origin}/buy/${encodeURIComponent(childContentId)}` : null,
               creatorUserId: null,
               creatorDisplayName: null,
-              creatorEmail: null
+              creatorEmail: null,
+              libraryScopes: ["all", "derivatives"]
             } satisfies LibraryParticipation;
           });
 
@@ -646,6 +918,7 @@ export default function LibraryPage() {
               email: p.creatorEmail || null
             },
             libraryAccess: "participant",
+            libraryScopes: Array.isArray(p.libraryScopes) ? p.libraryScopes : ["all"],
             attributionUrl: p.attributionUrl || null,
             buyUrl: p.buyUrl || null,
             remoteOrigin: p.remoteOrigin || null
@@ -660,6 +933,17 @@ export default function LibraryPage() {
               .map((value) => String(value || "").trim().toLowerCase())
               .filter(Boolean)
           );
+          const normalizeScopes = (raw: unknown): Array<"all" | "authored" | "shared_splits" | "derivatives"> => {
+            const allowed = new Set(["all", "authored", "shared_splits", "derivatives"]);
+            const values = Array.isArray(raw) ? raw : [];
+            return Array.from(
+              new Set(
+                values
+                  .map((value) => String(value || "").trim().toLowerCase())
+                  .filter((value) => allowed.has(value))
+              )
+            ) as Array<"all" | "authored" | "shared_splits" | "derivatives">;
+          };
           const hasParticipantReason =
             appearsBecause.has("split_participant") ||
             appearsBecause.has("shared_with_me") ||
@@ -669,9 +953,19 @@ export default function LibraryPage() {
             hasParticipantReason && !explicitOwnedReason
               ? "participant"
               : (item.libraryAccess as LibraryItem["libraryAccess"]);
+          const scopes = new Set<"all" | "authored" | "shared_splits" | "derivatives">(
+            normalizeScopes(item.libraryScopes)
+          );
+          if (scopes.size === 0) {
+            if (normalizedAccess === "owned" && !hasLocalOriginMismatch(apiBase, item)) scopes.add("authored");
+            if (appearsBecause.has("split_participant") || appearsBecause.has("shared_with_me")) scopes.add("shared_splits");
+            if (appearsBecause.has("derivative_parent")) scopes.add("derivatives");
+          }
+          if (!scopes.has("all")) scopes.add("all");
           const normalizedItemForEligibility: LibraryItem = {
             ...item,
-            libraryAccess: normalizedAccess
+            libraryAccess: normalizedAccess,
+            libraryScopes: Array.from(scopes)
           };
           const relation: LibraryRelation =
             normalizedAccess === "owned"
@@ -712,35 +1006,76 @@ export default function LibraryPage() {
               availabilityState: getAvailabilityState(item)
             }
           });
-          if (!decision.included) continue;
-          const section = decision.section as Exclude<LibrarySection, "excluded">;
+          const actionableDerivativeChildShadow =
+            Boolean(normalizedItemForEligibility.isActionableShadow) &&
+            scopes.has("derivatives") &&
+            appearsBecause.has("derivative_child") &&
+            !Boolean(normalizedItemForEligibility.isParentOfDerivative);
+          if (!decision.included && !actionableDerivativeChildShadow) continue;
+          const section: Exclude<LibrarySection, "excluded"> = decision.included
+            ? (decision.section as Exclude<LibrarySection, "excluded">)
+            : "participant";
+          if (import.meta.env.DEV && actionableDerivativeChildShadow) {
+            // eslint-disable-next-line no-console
+            console.debug("libraryEligibility.override_actionable_derivative_shadow", {
+              contentId,
+              title: item.title || null,
+              originalReason: decision.reason || null,
+              appearsBecause: Array.from(appearsBecause),
+              libraryScopes: Array.from(scopes)
+            });
+          }
           const normalizedItem: LibraryItem = {
             ...normalizedItemForEligibility,
             libraryAccess: section
           };
           const contentType = mapContentType(normalizedItem.type);
-          const derivativeByType = ["derivative", "remix", "mashup"].includes(String(normalizedItem.type || "").toLowerCase());
           const viewerOwnsItem = section === "owned" || appearsBecause.has("owned");
           const viewerParticipatesInSplit = section === "participant" || appearsBecause.has("split_participant");
           const explicitSharedMembership =
             appearsBecause.has("split_participant") ||
             appearsBecause.has("shared_with_me") ||
             appearsBecause.has("remote_mirror");
-          const isDerivativeChild =
-            derivativeByType ||
-            derivativeChildContentIds.has(contentId) ||
-            upstreamDerivativeChildContentIds.has(contentId) ||
-            appearsBecause.has("derivative_child");
-          const isDerivativeParent =
-            derivativeParentContentIds.has(contentId) ||
-            appearsBecause.has("derivative_parent");
-          const derivativeLinked = isDerivativeChild || isDerivativeParent;
+          const derivativeFlags = derivativeClassifier({
+            type: normalizedItem.type,
+            appearsBecause,
+            contentId,
+            derivativeChildContentIds,
+            derivativeParentContentIds,
+            upstreamDerivativeChildContentIds,
+            participation,
+            relation,
+            itemIsParentOfDerivative: Boolean(normalizedItemForEligibility?.isParentOfDerivative)
+          });
+          const isDerivativeChild = derivativeFlags.isDerivativeChild;
+          const isDerivativeParent = derivativeFlags.isDerivativeParent;
+          const derivativeLinked = derivativeFlags.isDerivative;
+          const ownedByViewer = section === "owned" || appearsBecause.has("owned");
+          const localAuthoredFallback =
+            ownedByViewer &&
+            !hasLocalOriginMismatch(apiBase, normalizedItemForEligibility);
+          const localAuthored =
+            scopes.has("authored") ||
+            Boolean(normalizedItemForEligibility?.isLocalAuthored) ||
+            localAuthoredFallback;
+          const directSharedSplit =
+            scopes.has("shared_splits") ||
+            Boolean(normalizedItemForEligibility?.isDirectSharedSplit) ||
+            appearsBecause.has("split_participant") ||
+            appearsBecause.has("shared_with_me") ||
+            (section === "participant" && !appearsBecause.has("derivative_parent"));
+          const upstreamRoyaltyWork =
+            scopes.has("derivatives") ||
+            Boolean(normalizedItemForEligibility?.isUpstreamRoyaltyWork) ||
+            (appearsBecause.has("derivative_parent") &&
+              (isDerivativeChild || appearsBecause.has("derivative_child")));
+          const actionableShadow = isActionableShadowRow(normalizedItemForEligibility, appearsBecause);
           const hasSharedSplitMembership =
             explicitSharedMembership || (viewerParticipatesInSplit && !viewerOwnsItem);
           const relationshipTagSet = new Set<LibraryRelationshipFilter>();
-          if (section === "owned") relationshipTagSet.add("authored_work");
-          if (hasSharedSplitMembership) relationshipTagSet.add("shared_splits");
-          if (derivativeLinked) relationshipTagSet.add("derivatives");
+          if (scopes.has("authored")) relationshipTagSet.add("authored_work");
+          if (scopes.has("shared_splits") || hasSharedSplitMembership) relationshipTagSet.add("shared_splits");
+          if (scopes.has("derivatives") || derivativeLinked) relationshipTagSet.add("derivatives");
           const relationshipTags = Array.from(relationshipTagSet);
           const relationshipType: LibraryRelationshipType = relationshipTags.includes("derivatives")
             ? "derivatives"
@@ -751,9 +1086,15 @@ export default function LibraryPage() {
                 : "other";
           normalized.push({
             item: normalizedItem,
+            libraryScopes: scopes,
             contentType,
             relationshipType,
             relationshipTags: relationshipTags.length ? relationshipTags : ["all"],
+            isLocalAuthored: localAuthored,
+            isDirectSharedSplit: directSharedSplit,
+            isUpstreamRoyaltyWork: upstreamRoyaltyWork,
+            isDerivativeWork: derivativeLinked,
+            isActionableShadow: actionableShadow,
             isDerivativeChild,
             isDerivativeParent,
             availabilityState: getAvailabilityState(normalizedItem),
@@ -762,8 +1103,9 @@ export default function LibraryPage() {
             participation
           });
         }
+        const dedupedNormalized = dedupeCanonicalLibraryEntries(normalized);
         setParticipationByContentId(nextParticipationByContentId);
-        setItems(applyLibraryFilters(normalized, libraryTypeFilter, libraryRelationshipFilter));
+        setItems(applyLibraryFilters(dedupedNormalized, libraryTypeFilter, libraryRelationshipFilter));
       } catch (e: any) {
         const err = String(e?.message || "Failed to load library");
         setMsg(err.includes("INVALID_TYPE") ? "Invalid type filter." : err);
@@ -917,6 +1259,13 @@ export default function LibraryPage() {
     try {
       const participation = entry.participation || participationByContentId[contentId] || null;
       const shouldUseParticipationHighlight = shouldUseParticipationFeatureHighlight(entry, participation);
+      const stakeholderScopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
+      const isShadowLifecycle = entry.item.lifecycle === "shadow" || Boolean(entry.item.isShadow);
+      const isVisibleActionableState = entry.availabilityState === "active" || isShadowLifecycle;
+      const hasPublicTarget = Boolean(entry.publicPageUrl) || Boolean(String(contentId || "").trim());
+      const isStakeholderScope =
+        stakeholderScopes.has("derivatives") || stakeholderScopes.has("shared_splits") || stakeholderScopes.has("all");
+      const shadowStakeholderFeatureEligible = isVisibleActionableState && hasPublicTarget && isStakeholderScope;
 
       if (shouldUseParticipationHighlight) {
         if (!participation) throw new Error("Participation info not found.");
@@ -955,7 +1304,7 @@ export default function LibraryPage() {
         return;
       }
 
-      if (entry.relation === "owner") {
+      if (entry.relation === "owner" || shadowStakeholderFeatureEligible) {
         const res = await api<{ featureOnProfile: boolean }>(
           `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
           "PATCH",
@@ -1040,6 +1389,89 @@ function normalizeAssetUrl(
   }
 }
 
+function isLocalDevAssetOrigin(origin: string | null | undefined): boolean {
+  const value = String(origin || "").trim().toLowerCase();
+  if (!value) return false;
+  return value.includes("localhost") || value.includes("127.0.0.1") || value.includes(":5173");
+}
+
+function isUsableLibraryAssetUrl(url: string | null | undefined): boolean {
+  const value = String(url || "").trim();
+  if (!value) return false;
+  if (value.startsWith("/public/content/")) return true;
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function scoreLibraryAssetUrl(
+  apiBase: string,
+  url: string | null | undefined,
+  preferredOrigin?: string | null
+): number {
+  const normalized = String(url || "").trim();
+  if (!isUsableLibraryAssetUrl(normalized)) return -1;
+  const preferred = toOrigin(preferredOrigin || null);
+  const localOrigin = toOrigin(apiBase);
+  let score = 0;
+  if (/^https?:\/\//i.test(normalized)) score += 50;
+  if (normalized.startsWith("/public/content/")) score += 25;
+  if (normalized.includes("/public/content/")) score += 10;
+  if (normalized.includes("objectKey=")) score += 5;
+  const origin = toOrigin(normalized);
+  if (origin && preferred && origin === preferred) score += 40;
+  if (origin && localOrigin && origin === localOrigin) score += 20;
+  if (origin && preferred && origin !== preferred) score -= 10;
+  if (origin && preferred && isLocalDevAssetOrigin(origin)) score -= 20;
+  return score;
+}
+
+function rankLibraryCoverCandidates(
+  apiBase: string,
+  preferredOrigin: string | null,
+  candidates: Array<string | null | undefined>
+): string[] {
+  const scored = candidates
+    .map((candidate) => normalizeAssetUrl(apiBase, candidate || null, preferredOrigin))
+    .filter((value): value is string => Boolean(value))
+    .map((url) => ({ url, score: scoreLibraryAssetUrl(apiBase, url, preferredOrigin) }))
+    .filter((row) => row.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const row of scored) {
+    if (seen.has(row.url)) continue;
+    seen.add(row.url);
+    unique.push(row.url);
+  }
+  return unique;
+}
+
+function rankLibraryMediaCandidates(
+  apiBase: string,
+  preferredOrigin: string | null,
+  candidates: Array<string | null | undefined>
+): string[] {
+  const scored = candidates
+    .map((candidate) => normalizeAssetUrl(apiBase, candidate || null, preferredOrigin))
+    .filter((value): value is string => Boolean(value))
+    .map((url) => ({ url, score: scoreLibraryAssetUrl(apiBase, url, preferredOrigin) }))
+    .filter((row) => row.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const row of scored) {
+    if (seen.has(row.url)) continue;
+    seen.add(row.url);
+    unique.push(row.url);
+  }
+  return unique;
+}
+
 function isForbiddenPreviewError(message?: string | null): boolean {
   const text = String(message || "").toLowerCase();
   return text.includes("403") || text.includes("forbidden");
@@ -1073,6 +1505,35 @@ function splitSummaryLabel(summary: LibraryRightsSummary): string {
   if (summary.splitState === "draft_incomplete") return "Split draft incomplete";
   if (summary.splitState === "missing") return "Needs split setup";
   return "Split state unknown";
+}
+
+function relationshipDisplayLabel(
+  entry: NormalizedLibraryItem,
+  relationshipFilter: LibraryRelationshipFilter
+): string {
+  const scopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
+  const appearsBecause = new Set(
+    (Array.isArray(entry.item?.appearsBecause) ? entry.item.appearsBecause : [])
+      .map((v) => String(v || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const isShadowDerivativeChild =
+    (entry.item.lifecycle === "shadow" || Boolean(entry.item.isShadow)) &&
+    scopes.has("derivatives") &&
+    appearsBecause.has("derivative_child");
+  if (relationshipFilter === "derivatives" && (isShadowDerivativeChild || scopes.has("derivatives"))) {
+    return "Derivative";
+  }
+  if (
+    (isShadowDerivativeChild || scopes.has("derivatives")) &&
+    !(relationshipFilter === "shared_splits" || (scopes.has("shared_splits") && !scopes.has("derivatives")))
+  ) {
+    return "Upstream royalty";
+  }
+  if (relationshipFilter === "shared_splits" || (scopes.has("shared_splits") && !scopes.has("derivatives"))) {
+    return "Shared splits";
+  }
+  return LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType];
 }
 
 function toPercentLabel(bps: number | null | undefined): string {
@@ -1214,6 +1675,13 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       entry,
                       participationInfo
                     );
+                    const stakeholderScopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
+                    const isShadowLifecycle = it.lifecycle === "shadow" || Boolean(it.isShadow);
+                    const isVisibleActionableState = entry.availabilityState === "active" || isShadowLifecycle;
+                    const hasPublicTarget = Boolean(entry.publicPageUrl) || Boolean(String(it.id || "").trim());
+                    const isStakeholderScope =
+                      stakeholderScopes.has("derivatives") || stakeholderScopes.has("shared_splits") || stakeholderScopes.has("all");
+                    const shadowStakeholderFeatureEligible = isVisibleActionableState && hasPublicTarget && isStakeholderScope;
                     const featureAllowed = canFeatureOnProfile({
                       item: {
                         ...it,
@@ -1226,18 +1694,29 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                               : it.libraryAccess
                       },
                       participation: participationInfo
-                    }).allowed;
+                    }).allowed || shadowStakeholderFeatureEligible;
                     const currentlyFeatured = shouldUseParticipationHighlight ? participationFeatured : ownerFeatured;
                     const preview = previewById[it.id];
                     const previewUrl = preview?.previewUrl || null;
                     const pf = previewFileFor(previewUrl, preview?.files || []);
                     const mime = String(pf?.mime || "").toLowerCase();
                     const type = String(it.type || "").toLowerCase();
+                    const mediaPathHint = String(
+                      it.manifestPrimaryFilePath ||
+                        it.primaryFile ||
+                        preview?.manifest?.primaryFile ||
+                        ""
+                    )
+                      .trim()
+                      .toLowerCase();
+                    const isVideoByPath = /\.(mp4|mov|m4v|webm|mkv|avi|wmv|ogv)$/.test(mediaPathHint);
+                    const isAudioByPath = /\.(mp3|m4a|aac|wav|flac|ogg|oga|opus)$/.test(mediaPathHint);
+                    const isImageByPath = /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(mediaPathHint);
                     const derivativeLinked = entry.isDerivativeChild || entry.isDerivativeParent;
                     const derivativeParentOnly = entry.isDerivativeParent && !entry.isDerivativeChild;
-                    const isVideo = mime.startsWith("video/") || type === "video";
-                    const isAudio = mime.startsWith("audio/") || type === "song";
-                    const isImage = mime.startsWith("image/");
+                    const isVideo = mime.startsWith("video/") || type === "video" || type === "remix" || isVideoByPath;
+                    const isAudio = mime.startsWith("audio/") || type === "song" || isAudioByPath;
+                    const isImage = mime.startsWith("image/") || isImageByPath;
                     const version =
                       String(it.manifest?.sha256 || "").trim() ||
                       String(preview?.manifest?.sha256 || "").trim() ||
@@ -1247,13 +1726,13 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       (participationInfo?.kind === "remote"
                         ? participationInfo.remoteOrigin
                         : null) || asNonEmptyString(it.remoteOrigin) || null;
-                    const participantCoverFallback =
-                      entry.relation === "participant" && remoteAssetOrigin
-                        ? buildPublicAssetUrl(it.id, "cover", remoteAssetOrigin)
-                        : null;
+                    const participantCoverFallback = entry.relation === "participant"
+                      ? buildPublicAssetUrl(it.id, "cover", remoteAssetOrigin || apiBase)
+                      : null;
                     const remoteCoverFallback = remoteAssetOrigin
                       ? buildPublicAssetUrl(it.id, "cover", remoteAssetOrigin)
                       : null;
+                    const localCoverFallback = buildPublicAssetUrl(it.id, "cover", apiBase);
                     const cardAssetOrigin = remoteAssetOrigin;
                     const participantPreviewFallback =
                       entry.relation === "participant"
@@ -1284,23 +1763,84 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                             preferredPublishedObjectKey
                           )}`
                         : null;
-                    const effectivePlaybackUrl = preferredPublishedPlaybackUrl || previewUrl || participantPreviewFallback;
+                    const apiPreviewCandidates = Array.isArray(it.libraryPreviewCandidates) ? it.libraryPreviewCandidates : [];
+                    const previewPrimaryObjectKey = String(preview?.manifest?.primaryFile || "").trim();
+                    const previewPrimaryObjectUrl = previewPrimaryObjectKey
+                      ? `${buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase)}?objectKey=${encodeURIComponent(
+                          previewPrimaryObjectKey
+                        )}`
+                      : null;
+                    const previewAvObjectKey = (() => {
+                      const files = Array.isArray(preview?.files) ? preview.files : [];
+                      for (const file of files) {
+                        const mime = String(file?.mime || "").toLowerCase();
+                        if (!mime.startsWith("video/") && !mime.startsWith("audio/")) continue;
+                        const key = String(file?.objectKey || "").trim();
+                        if (key) return key;
+                      }
+                      return null;
+                    })();
+                    const previewAvObjectUrl = previewAvObjectKey
+                      ? `${buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase)}?objectKey=${encodeURIComponent(
+                          previewAvObjectKey
+                        )}`
+                      : null;
+                    const genericPreviewFallback = buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase);
+                    const rankedPlaybackCandidates = rankLibraryMediaCandidates(apiBase, cardAssetOrigin || apiBase, [
+                      ...apiPreviewCandidates,
+                      it.manifestPrimaryFileUrl,
+                      it.previewFileUrl,
+                      it.previewUrl,
+                      it.mediaUrl,
+                      it.fileUrl,
+                      previewPrimaryObjectUrl,
+                      previewAvObjectUrl,
+                      preferredPublishedPlaybackUrl,
+                      previewUrl,
+                      participantPreviewFallback,
+                      genericPreviewFallback
+                    ]);
+                    const selectedPlaybackIndex = Math.max(0, Number(previewCandidateIndexById[it.id] || 0));
+                    const fallbackPlaybackUrl =
+                      rankedPlaybackCandidates[selectedPlaybackIndex] || rankedPlaybackCandidates[0] || null;
+                    const lockedPlaybackUrl = lockedPlaybackUrlById[it.id];
+                    const effectivePlaybackUrl = isUsableLibraryAssetUrl(lockedPlaybackUrl)
+                      ? lockedPlaybackUrl
+                      : fallbackPlaybackUrl;
+                    const hasPlaybackCandidate = Boolean(effectivePlaybackUrl && isUsableLibraryAssetUrl(effectivePlaybackUrl));
                     const prioritizedParticipantCover = entry.relation === "participant" ? participantCoverFallback : null;
-                    const rawCoverUrl = isAudio
-                      ? prioritizedParticipantCover ||
-                        manifestCoverFallback ||
-                        songCoverUrl(it.id, preview, it.coverUrl || null, cardAssetOrigin) ||
-                        remoteCoverFallback ||
-                        participantCoverFallback
-                      : prioritizedParticipantCover ||
-                        manifestCoverFallback ||
-                        normalizeAssetUrl(apiBase, it.coverUrl || null, cardAssetOrigin) ||
-                        remoteCoverFallback ||
-                        participantCoverFallback;
-                    const coverUrl =
-                      rawCoverUrl && version
-                        ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
-                        : rawCoverUrl;
+                    const manifestArtworkObjectKey = String(preview?.manifest?.artwork || "").trim();
+                    const manifestArtworkFallback = manifestArtworkObjectKey
+                      ? `${buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase)}?objectKey=${encodeURIComponent(
+                          manifestArtworkObjectKey
+                        )}`
+                      : null;
+                    const songCoverFallback = songCoverUrl(it.id, preview, it.coverUrl || null, cardAssetOrigin || apiBase);
+                    const apiCoverCandidates = Array.isArray(it.libraryCoverCandidates) ? it.libraryCoverCandidates : [];
+                    const mediaCoverCandidates = [
+                      ...apiCoverCandidates,
+                      it.manifestCoverUrl,
+                      it.coverUrl,
+                      it.coverImageUrl,
+                      it.artworkUrl,
+                      it.thumbnailUrl,
+                      it.posterUrl,
+                      manifestCoverFallback,
+                      manifestArtworkFallback,
+                      songCoverFallback,
+                      remoteCoverFallback,
+                      localCoverFallback,
+                      prioritizedParticipantCover,
+                      participantCoverFallback
+                    ];
+                    const rankedCoverCandidates = rankLibraryCoverCandidates(apiBase, cardAssetOrigin || apiBase, mediaCoverCandidates);
+                    const selectedCoverIndex = Math.max(0, Number(coverCandidateIndexById[it.id] || 0));
+                    const fallbackCoverUrl = rankedCoverCandidates[selectedCoverIndex] || rankedCoverCandidates[0] || null;
+                    const lockedCoverUrl = lockedCoverUrlById[it.id];
+                    const chosenCoverBaseUrl = isUsableLibraryAssetUrl(lockedCoverUrl) ? lockedCoverUrl : fallbackCoverUrl;
+                    const coverUrl = chosenCoverBaseUrl
+                      ? `${chosenCoverBaseUrl}${chosenCoverBaseUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
+                      : null;
                     const coverRenderable = Boolean(coverUrl);
                     const isOpen = previewOpenById[it.id] ?? true;
                     const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && isImage);
@@ -1390,6 +1930,34 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                 src={coverUrl || undefined}
                                 alt={`${it.title || "Content"} cover`}
                                 loading="lazy"
+                                onLoad={() => {
+                                  if (!chosenCoverBaseUrl) return;
+                                  setLockedCoverUrlById((prev) => {
+                                    const existing = String(prev[it.id] || "").trim();
+                                    if (!existing) return { ...prev, [it.id]: chosenCoverBaseUrl };
+                                    const existingScore = scoreLibraryAssetUrl(apiBase, existing, cardAssetOrigin || apiBase);
+                                    const incomingScore = scoreLibraryAssetUrl(
+                                      apiBase,
+                                      chosenCoverBaseUrl,
+                                      cardAssetOrigin || apiBase
+                                    );
+                                    if (incomingScore >= existingScore) return { ...prev, [it.id]: chosenCoverBaseUrl };
+                                    return prev;
+                                  });
+                                }}
+                                onError={() => {
+                                  setLockedCoverUrlById((prev) => {
+                                    const existing = String(prev[it.id] || "").trim();
+                                    if (!existing) return prev;
+                                    return { ...prev, [it.id]: null };
+                                  });
+                                  setCoverCandidateIndexById((prev) => {
+                                    const current = Math.max(0, Number(prev[it.id] || 0));
+                                    const next = Math.min(current + 1, Math.max(0, rankedCoverCandidates.length - 1));
+                                    if (next === current && rankedCoverCandidates.length <= 1) return prev;
+                                    return { ...prev, [it.id]: next };
+                                  });
+                                }}
                               />
                             ) : hasInlineImagePreview ? (
                               <img
@@ -1429,9 +1997,11 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                             </div>
                           ) : null}
                           <div className="mt-1 text-[11px] text-neutral-500">
-                            Relationship: {LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType]}
+                            Relationship: {relationshipDisplayLabel(entry, libraryRelationshipFilter)}
                           </div>
-                          <div className="mt-1 text-[11px] text-neutral-400">{splitSummaryLabel(rightsSummary)}</div>
+                          <div className="mt-1 text-[11px] text-neutral-400">
+                            {entry.isDerivativeChild ? "Upstream royalty" : splitSummaryLabel(rightsSummary)}
+                          </div>
                           {contributors.length > 0 ? (
                             <div className="mt-1 rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2">
                               <div className="text-[11px] font-medium text-neutral-300">Attribution split</div>
@@ -1557,14 +2127,94 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                 if (effectivePlaybackUrl && isVideo) {
                                   return (
                                     <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
-                                      <video className="w-full h-full object-cover object-center bg-black" controls src={effectivePlaybackUrl} />
+                                      <video
+                                        className="w-full h-full object-cover object-center bg-black"
+                                        controls
+                                        src={effectivePlaybackUrl}
+                                        onLoadedData={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            const existingScore = scoreLibraryAssetUrl(apiBase, existing, cardAssetOrigin || apiBase);
+                                            const incomingScore = scoreLibraryAssetUrl(
+                                              apiBase,
+                                              effectivePlaybackUrl,
+                                              cardAssetOrigin || apiBase
+                                            );
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            return prev;
+                                          });
+                                        }}
+                                        onError={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return prev;
+                                            return { ...prev, [it.id]: null };
+                                          });
+                                          setPreviewCandidateIndexById((prev) => {
+                                            const current = Math.max(0, Number(prev[it.id] || 0));
+                                            const next = Math.min(
+                                              current + 1,
+                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                            );
+                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            return { ...prev, [it.id]: next };
+                                          });
+                                        }}
+                                      />
+                                    </div>
+                                  );
+                                }
+                                if (effectivePlaybackUrl && !isAudio && !isImage && hasPlaybackCandidate) {
+                                  // For remote shadow rows, mime/type hints can be absent; try video playback first.
+                                  return (
+                                    <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
+                                      <video
+                                        className="w-full h-full object-cover object-center bg-black"
+                                        controls
+                                        src={effectivePlaybackUrl}
+                                      />
                                     </div>
                                   );
                                 }
                                 if (effectivePlaybackUrl && isAudio) {
                                   return (
                                     <div className="w-full rounded-md border border-neutral-800 bg-black/60 p-2">
-                                      <audio className="w-full" controls src={effectivePlaybackUrl} />
+                                      <audio
+                                        className="w-full"
+                                        controls
+                                        src={effectivePlaybackUrl}
+                                        onCanPlay={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            const existingScore = scoreLibraryAssetUrl(apiBase, existing, cardAssetOrigin || apiBase);
+                                            const incomingScore = scoreLibraryAssetUrl(
+                                              apiBase,
+                                              effectivePlaybackUrl,
+                                              cardAssetOrigin || apiBase
+                                            );
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            return prev;
+                                          });
+                                        }}
+                                        onError={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return prev;
+                                            return { ...prev, [it.id]: null };
+                                          });
+                                          setPreviewCandidateIndexById((prev) => {
+                                            const current = Math.max(0, Number(prev[it.id] || 0));
+                                            const next = Math.min(
+                                              current + 1,
+                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                            );
+                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            return { ...prev, [it.id]: next };
+                                          });
+                                        }}
+                                      />
                                     </div>
                                   );
                                 }
@@ -1575,6 +2225,36 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                         className="w-full h-full object-cover object-center bg-black"
                                         src={effectivePlaybackUrl}
                                         alt={it.title || "Preview"}
+                                        onLoad={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            const existingScore = scoreLibraryAssetUrl(apiBase, existing, cardAssetOrigin || apiBase);
+                                            const incomingScore = scoreLibraryAssetUrl(
+                                              apiBase,
+                                              effectivePlaybackUrl,
+                                              cardAssetOrigin || apiBase
+                                            );
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            return prev;
+                                          });
+                                        }}
+                                        onError={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return prev;
+                                            return { ...prev, [it.id]: null };
+                                          });
+                                          setPreviewCandidateIndexById((prev) => {
+                                            const current = Math.max(0, Number(prev[it.id] || 0));
+                                            const next = Math.min(
+                                              current + 1,
+                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                            );
+                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            return { ...prev, [it.id]: next };
+                                          });
+                                        }}
                                       />
                                     </div>
                                   );

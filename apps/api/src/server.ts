@@ -1,4 +1,4 @@
-import "dotenv/config";
+﻿import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
@@ -2285,7 +2285,7 @@ function summarizeParticipantDestination(type: ParticipantDestinationType, value
   if (!v) return "";
   if (type === "lightning_address") return v.toLowerCase();
   if (v.length <= 24) return v;
-  return `${v.slice(0, 14)}…${v.slice(-8)}`;
+  return `${v.slice(0, 14)}â€¦${v.slice(-8)}`;
 }
 
 async function verifyParticipantDestination(
@@ -3449,7 +3449,7 @@ function summarizePayoutDestination(type: CreatorPayoutDestinationType, lightnin
   if (type === "lightning_address" && lightningAddress) return lightningAddress;
   if (type === "onchain_address" && onchainAddress) {
     if (onchainAddress.length <= 16) return onchainAddress;
-    return `${onchainAddress.slice(0, 10)}…${onchainAddress.slice(-6)}`;
+    return `${onchainAddress.slice(0, 10)}â€¦${onchainAddress.slice(-6)}`;
   }
   if (type === "local_lnd") return "Local Lightning node";
   return null;
@@ -10209,6 +10209,29 @@ function getManifestAssetPath(
   return null;
 }
 
+function getFirstImageAssetFromManifest(
+  manifest: any
+): { path: string; sha256: string | null; mime: string | null } | null {
+  const json = (manifest || {}) as any;
+  const files = Array.isArray(json?.files) ? json.files : [];
+  for (const file of files) {
+    const mime = asString(file?.mime || "").trim().toLowerCase();
+    if (!mime.startsWith("image/")) continue;
+    const objectKey =
+      asString(file?.path || "").trim() ||
+      asString(file?.objectKey || "").trim() ||
+      asString(file?.filename || "").trim();
+    if (!objectKey) continue;
+    if (/^https?:\/\//i.test(objectKey)) continue;
+    return {
+      path: objectKey,
+      sha256: asString(file?.sha256 || "").trim() || null,
+      mime: asString(file?.mime || "").trim() || null
+    };
+  }
+  return null;
+}
+
 function proofRelPath(versionNumber: number) {
   return path.posix.join("proofs", `v${versionNumber}`, "proof.json");
 }
@@ -11920,7 +11943,7 @@ app.get("/content/:id/history", { preHandler: requireAuth }, async (req: any, re
       ts: e.createdAt.toISOString(),
       category: "split",
       type: e.action,
-      title: `Split v${splitVersionMap.get(e.entityId) || "?"} • ${e.action.replace(/\./g, " ")}`,
+      title: `Split v${splitVersionMap.get(e.entityId) || "?"} â€¢ ${e.action.replace(/\./g, " ")}`,
       summary: content.title || "Content",
       actor: actorFromUser(e.user),
       details: e.payloadJson || null,
@@ -11961,7 +11984,7 @@ app.get("/content/:id/split-history", { preHandler: requireAuth }, async (req: a
     ts: e.createdAt.toISOString(),
     category: "split",
     type: e.action,
-    title: `Split v${splitVersionMap.get(e.entityId) || "?"} • ${e.action.replace(/\./g, " ")}`,
+    title: `Split v${splitVersionMap.get(e.entityId) || "?"} â€¢ ${e.action.replace(/\./g, " ")}`,
     summary: content.title || "Content",
     actor: actorFromUser(e.user),
     details: e.payloadJson || null,
@@ -12017,7 +12040,7 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
       ts: s.createdAt.toISOString(),
       category: "royalty",
       type: "settlement.created",
-      title: `Settlement • ${s.content?.title || "Content"}`,
+      title: `Settlement â€¢ ${s.content?.title || "Content"}`,
       summary: `${sumLines.toString()} sats`,
       actor: actorFromUser(s.content?.owner ? { id: s.content.owner.id, email: s.content.owner.email, displayName: s.content.owner.displayName } : null),
       details: {
@@ -12044,8 +12067,8 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
     ts: p.createdAt.toISOString(),
     category: "royalty",
     type: "payment.intent",
-    title: `Purchase • ${p.content?.title || "Content"}`,
-    summary: `${BigInt(p.amountSats as any).toString()} sats • ${p.status}`,
+    title: `Purchase â€¢ ${p.content?.title || "Content"}`,
+    summary: `${BigInt(p.amountSats as any).toString()} sats â€¢ ${p.status}`,
     actor: actorFromUser(me),
     details: {
       amountSats: BigInt(p.amountSats as any).toString(),
@@ -12091,7 +12114,7 @@ app.get("/content-links/:id/clearance-history", { preHandler: requireAuth }, asy
       ts: r.createdAt.toISOString(),
       category: "clearance",
       type: "clearance.requested",
-      title: `Clearance requested • ${link.childContent?.title || "Derivative"}`,
+      title: `Clearance requested â€¢ ${link.childContent?.title || "Derivative"}`,
       summary: r.status,
       actor: actorFromUser(r.requestedByUserId ? { id: r.requestedByUserId } as any : null),
       details: { status: r.status }
@@ -12184,7 +12207,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.createdAt.toISOString(),
         category: "invite",
         type: "invite.sent",
-        title: `Invite sent • ${contentTitle}`,
+        title: `Invite sent â€¢ ${contentTitle}`,
         summary: inv.splitParticipant?.participantEmail || null,
         actor: actorFromUser(me),
         details: { expiresAt: inv.expiresAt.toISOString() }
@@ -12195,7 +12218,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
       ts: inv.createdAt.toISOString(),
       category: "invite",
       type: "invite.received",
-      title: `Invite received • ${contentTitle}`,
+      title: `Invite received â€¢ ${contentTitle}`,
       summary: inv.splitParticipant?.participantEmail || null,
       actor: actorFromUser(me),
       details: { expiresAt: inv.expiresAt.toISOString() }
@@ -12206,7 +12229,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.acceptedAt.toISOString(),
         category: "invite",
         type: "invite.accepted",
-        title: `Invite accepted • ${contentTitle}`,
+        title: `Invite accepted â€¢ ${contentTitle}`,
         summary: inv.splitParticipant?.participantEmail || null,
         actor: actorFromUser(me)
       });
@@ -12224,7 +12247,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
       ts: inv.createdAt.toISOString(),
       category: "invite",
       type: "invite.remote.received",
-      title: `Remote invite received • ${contentTitle}`,
+      title: `Remote invite received â€¢ ${contentTitle}`,
       summary: inv.participantEmail || null,
       actor: actorFromUser(me),
       details: { remoteOrigin: inv.remoteOrigin, inviteUrl: inv.inviteUrl }
@@ -12235,7 +12258,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.acceptedAt.toISOString(),
         category: "invite",
         type: "invite.remote.accepted",
-        title: `Remote invite accepted • ${contentTitle}`,
+        title: `Remote invite accepted â€¢ ${contentTitle}`,
         summary: inv.participantEmail || null,
         actor: actorFromUser(me),
         details: { remoteOrigin: inv.remoteOrigin, inviteUrl: inv.inviteUrl }
@@ -19894,7 +19917,7 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       return reply.code(409).send({
         ...getPublicStatus(),
         lastError: "named_token_missing",
-        message: "Named tunnel requires a connector token. Add it in Config → Tunnel & routing."
+        message: "Named tunnel requires a connector token. Add it in Config â†’ Tunnel & routing."
       });
     }
     const defer = shouldDeferNamedTunnelToServiceControl();
@@ -20437,7 +20460,7 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
 
       if (beatifyHandle || altHandle) {
         const chosenHandle = beatifyHandle || altHandle;
-        // Prefer the Beatify username when parsing Beatify hosts — override other name candidates
+        // Prefer the Beatify username when parsing Beatify hosts â€” override other name candidates
         try {
           const host = new URL(targetUrl).hostname.toLowerCase();
           if (host.includes("beatify")) {
@@ -21059,6 +21082,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     createdAt: true,
     repoPath: true,
     deletedAt: true,
+    deletedReason: true,
     ownerUserId: true,
     owner: { select: { displayName: true, email: true } },
     manifest: { select: { sha256: true } },
@@ -21085,16 +21109,198 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     if (normalized === "local") return 1;
     return 0;
   };
+  const staleDeletedReasons = new Set([
+    "tombstone",
+    "stale",
+    "remote_deleted",
+    "local_deleted",
+    "deleted",
+    "hard_deleted",
+    "reformulation_cleanup",
+    "superseded"
+  ]);
+  const inactiveStatuses = new Set(["deleted", "archived", "inactive", "tombstoned"]);
+  const hasDerivativeReason = (reasons: Set<string>) =>
+    reasons.has("derivative_child") || reasons.has("derivative_parent");
+  const normalizeLibraryScopes = (value: unknown): string[] => {
+    const allowed = new Set(["all", "authored", "shared_splits", "derivatives"]);
+    const input = Array.isArray(value) ? value : [];
+    return Array.from(
+      new Set(
+        input
+          .map((scope: unknown) => asString(scope || "").trim().toLowerCase())
+          .filter((scope) => allowed.has(scope))
+      )
+    );
+  };
+  const deriveLibraryScopesFromInclusion = (
+    item: any,
+    libraryAccess: "owned" | "purchased" | "preview" | "local" | "participant" | "shared",
+    reason: string,
+    sourcePath: string
+  ): string[] => {
+    const scopes = new Set<string>(normalizeLibraryScopes(item?.libraryScopes));
+    scopes.add("all");
+    const normalizedReason = asString(reason || "").trim().toLowerCase();
+    const normalizedPath = asString(sourcePath || "").trim().toLowerCase();
+    const remoteOrigin = pickShareableOrigin(
+      asString(item?.remoteOrigin || "").trim() || null,
+      getRemoteOriginFromDescription(asString(item?.description || "").trim() || null)
+    );
+    if (
+      libraryAccess === "owned" &&
+      asString(item?.ownerUserId || "").trim() === userId &&
+      !remoteOrigin &&
+      (normalizedReason === "owned" || normalizedPath === "owned")
+    ) {
+      scopes.add("authored");
+    }
+    if (normalizedReason === "split_participant" || normalizedReason === "shared_with_me") {
+      scopes.add("shared_splits");
+    }
+    if (normalizedPath === "participant_content" || normalizedPath === "mirrored_shared_rows") {
+      scopes.add("shared_splits");
+    }
+    if (normalizedReason === "derivative_parent" || normalizedPath === "derivative_children_local" || normalizedPath === "mirrored_derivative_links") {
+      scopes.add("derivatives");
+    }
+    return Array.from(scopes);
+  };
+  type LibraryContentLifecycle = "active" | "shadow" | "tombstone";
+  const classifyLibraryLifecycle = (
+    item: any,
+    reason: string,
+    options?: { allowActionableShadow?: boolean }
+  ): { lifecycle: LibraryContentLifecycle; actionableShadow: boolean } => {
+    const status = asString(item?.status || "").trim().toLowerCase();
+    const deletedReason = asString(item?.deletedReason || "").trim().toLowerCase();
+    const isDeleted = Boolean(item?.deletedAt);
+    const isTombstoned = Boolean(item?.tombstoned) || Boolean(item?.tombstonedAt);
+    const reasons = new Set(
+      [
+        ...(Array.isArray(item?.appearsBecause) ? item.appearsBecause : []),
+        reason
+      ].map((value: unknown) => asString(value || "").trim().toLowerCase())
+    );
+    const remoteOrigin = pickShareableOrigin(
+      asString(item?.remoteOrigin || "").trim() || null,
+      getRemoteOriginFromDescription(asString(item?.description || "").trim() || null)
+    );
+    const actionableShadow =
+      Boolean(options?.allowActionableShadow) &&
+      hasDerivativeReason(reasons) &&
+      isDeleted &&
+      deletedReason === "hard" &&
+      Boolean(remoteOrigin) &&
+      Boolean(item?._libraryHasActiveClearanceContext) &&
+      isActionableDerivativeChildForClearanceInbox(item);
+
+    if (isTombstoned) return { lifecycle: "tombstone", actionableShadow: false };
+    if (staleDeletedReasons.has(deletedReason)) {
+      return { lifecycle: actionableShadow ? "shadow" : "tombstone", actionableShadow };
+    }
+    if ((deletedReason === "hard" || deletedReason === "hard_deleted") && !actionableShadow) {
+      return { lifecycle: "tombstone", actionableShadow: false };
+    }
+    if (inactiveStatuses.has(status) && !actionableShadow) return { lifecycle: "tombstone", actionableShadow: false };
+    if (isDeleted && !actionableShadow) return { lifecycle: "tombstone", actionableShadow: false };
+    if (actionableShadow) return { lifecycle: "shadow", actionableShadow: true };
+    return { lifecycle: "active", actionableShadow: false };
+  };
+  const isLibraryRowEligible = (
+    item: any,
+    reason: string,
+    options?: { allowActionableShadow?: boolean }
+  ): { eligible: boolean; actionableShadow: boolean; exclusionReason?: string } => {
+    const contentId = asString(item?.id || "").trim();
+    if (!contentId) return { eligible: false, actionableShadow: false, exclusionReason: "missing_id" };
+    const lifecycle = classifyLibraryLifecycle(item, reason, options);
+    if (lifecycle.lifecycle === "active" || lifecycle.lifecycle === "shadow") {
+      return { eligible: true, actionableShadow: lifecycle.actionableShadow };
+    }
+    return { eligible: false, actionableShadow: false, exclusionReason: "lifecycle:tombstone" };
+  };
+  const shouldTraceLibraryRow = (item: any): boolean => {
+    if (process.env.NODE_ENV === "production") return false;
+    if (asString(process.env.LIBRARY_TRACE || "").trim() === "1") return true;
+    const needle = asString(process.env.LIBRARY_TRACE_TITLE || "").trim().toLowerCase();
+    if (!needle) return false;
+    const title = asString(item?.title || "").toLowerCase();
+    return title.includes(needle);
+  };
+  const traceLibraryRow = (phase: string, sourcePath: string, item: any, extra?: Record<string, unknown>) => {
+    if (!shouldTraceLibraryRow(item) || !req?.log) return;
+    req.log.info(
+      {
+        route: "/content",
+        scope,
+        phase,
+        sourcePath,
+        id: asString(item?.id || "").trim() || null,
+        title: asString(item?.title || "").trim() || null,
+        status: asString(item?.status || "").trim() || null,
+        deletedAt: item?.deletedAt || null,
+        deletedReason: asString(item?.deletedReason || "").trim() || null,
+        tombstoned: Boolean(item?.tombstoned) || Boolean(item?.tombstonedAt),
+        remoteOrigin:
+          pickShareableOrigin(
+            asString(item?.remoteOrigin || "").trim() || null,
+            getRemoteOriginFromDescription(asString(item?.description || "").trim() || null)
+          ) || null,
+        appearsBecause: Array.isArray(item?.appearsBecause) ? item.appearsBecause : [],
+        isActionableShadow: Boolean(item?.isActionableShadow),
+        isDerivativeWork: Boolean(item?.isDerivativeWork),
+        isUpstreamRoyaltyWork: Boolean(item?.isUpstreamRoyaltyWork),
+        ...extra
+      },
+      "library.trace.row"
+    );
+  };
   const appendLibraryItem = (
     item: any,
     libraryAccess: "owned" | "purchased" | "preview" | "local" | "participant" | "shared",
-    reason: string
+    reason: string,
+    sourcePath: string
   ) => {
+    traceLibraryRow("candidate", sourcePath, item, { libraryAccess, reason });
+    const eligibility = isLibraryRowEligible(item, reason, { allowActionableShadow: true });
+    if (!eligibility.eligible) {
+      traceLibraryRow("excluded", sourcePath, item, {
+        libraryAccess,
+        reason,
+        exclusionReason: eligibility.exclusionReason || null
+      });
+      if (process.env.NODE_ENV !== "production" && req?.log) {
+        req.log.debug(
+          {
+            route: "/content",
+            scope,
+            contentId: asString(item?.id || "").trim() || null,
+            reason,
+            exclusionReason: eligibility.exclusionReason || null,
+            deletedAt: item?.deletedAt || null,
+            deletedReason: item?.deletedReason || null,
+            tombstoned: Boolean(item?.tombstoned) || Boolean(item?.tombstonedAt),
+            status: asString(item?.status || "").trim() || null
+          },
+          "library.row.excluded"
+        );
+      }
+      return;
+    }
     items.push({
       ...item,
       ...toVersionSummary(item),
       libraryAccess,
-      appearsBecause: [reason]
+      appearsBecause: [reason],
+      libraryScopes: deriveLibraryScopesFromInclusion(item, libraryAccess, reason, sourcePath),
+      _libraryPath: sourcePath,
+      isActionableShadow: eligibility.actionableShadow || Boolean(item?.isActionableShadow)
+    });
+    traceLibraryRow("included", sourcePath, item, {
+      libraryAccess,
+      reason,
+      actionableShadow: eligibility.actionableShadow
     });
   };
 
@@ -21109,7 +21315,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         ...i,
         ...toVersionSummary(i),
         libraryAccess: i.ownerUserId === userId ? "owned" : "local",
-        appearsBecause: [i.ownerUserId === userId ? "owned" : "local"]
+        appearsBecause: [i.ownerUserId === userId ? "owned" : "local"],
+        libraryScopes: i.ownerUserId === userId ? ["all", "authored"] : ["all"]
       }))
     );
   } else if (scope === "mine") {
@@ -21118,7 +21325,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
-    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned", appearsBecause: ["owned"] })));
+    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned", appearsBecause: ["owned"], libraryScopes: ["all", "authored"] })));
   } else {
     // library: owned + purchased (entitlements) + public preview
     await recoverRemoteInviteMirrorsFromAudit(userId).catch(() => {});
@@ -21250,8 +21457,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         })
       : [];
 
-    for (const i of owned) appendLibraryItem(i, "owned", "owned");
-    for (const p of purchased.filter((p) => p.content)) appendLibraryItem(p.content, "purchased", "purchased");
+    for (const i of owned) appendLibraryItem(i, "owned", "owned", "owned");
+    for (const p of purchased.filter((p) => p.content)) appendLibraryItem(p.content, "purchased", "purchased", "purchased");
 
     const combinedParticipantLinks = [...participantLinks, ...identityTargetedLinks];
     const participantIds = Array.from(
@@ -21270,13 +21477,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         orderBy: { createdAt: "desc" },
         select: selectBase
       });
-      for (const i of participantContent) appendLibraryItem(i, "participant", "split_participant");
+      for (const i of participantContent) appendLibraryItem(i, "participant", "split_participant", "participant_content");
     }
 
     // Derivative membership should surface for both:
     // - split participants on parent works
     // - owners of parent works
-    // and must include approved shadow children (deleted hard mirrors).
+    // and should include active remote-shadow children (hard-deleted local mirrors
+    // that carry a remote-origin marker), while still excluding stale deleted rows.
     const derivativeParentIds = Array.from(new Set([...participantIds, ...ownedIds]));
     if (derivativeParentIds.length > 0) {
       const derivativeChildren = await prisma.contentLink.findMany({
@@ -21288,29 +21496,95 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           childContent: { select: selectBase }
         }
       });
+      const derivativeAuthRows = derivativeChildren.length
+        ? await prisma.derivativeAuthorization.findMany({
+            where: {
+              derivativeLinkId: { in: derivativeChildren.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) }
+            },
+            select: { derivativeLinkId: true, status: true, updatedAt: true }
+          })
+        : [];
+      const derivativeAuthByLinkId = new Map<string, { updatedAt: Date | null; status: string }>();
+      for (const row of derivativeAuthRows) {
+        const linkId = asString((row as any)?.derivativeLinkId || "").trim();
+        if (!linkId) continue;
+        derivativeAuthByLinkId.set(linkId, {
+          updatedAt: (row as any)?.updatedAt || null,
+          status: asString((row as any)?.status || "").trim().toUpperCase()
+        });
+      }
+      const derivativeWorkflowKey = (link: any, child: any) =>
+        [
+          asString(link?.parentContentId || "").trim(),
+          asString(link?.relation || "").trim().toLowerCase(),
+          asString(link?.upstreamBps ?? "").trim(),
+          asString(child?.ownerUserId || "").trim() || "unknown_owner"
+        ].join("::");
+      const localPublishedWorkflows = new Set<string>();
+      const latestLocalShadowByWorkflow = new Map<string, { linkId: string; updatedAtMs: number; rank: number }>();
+      for (const link of derivativeChildren) {
+        const child = (link as any)?.childContent;
+        if (!child) continue;
+        const workflowKey = derivativeWorkflowKey(link, child);
+        const childStatus = asString(child?.status || "").trim().toLowerCase();
+        const childPublished = childStatus === "published" && !child?.deletedAt;
+        if (childPublished) {
+          localPublishedWorkflows.add(workflowKey);
+          continue;
+        }
+        if (!Boolean(child?.deletedAt) || asString(child?.deletedReason || "").trim().toLowerCase() !== "hard") continue;
+        const linkId = asString(link?.id || "").trim();
+        const auth = derivativeAuthByLinkId.get(linkId);
+        if (!linkId || !auth) continue;
+        const updatedAtMs = auth.updatedAt instanceof Date ? auth.updatedAt.getTime() : 0;
+        const rank = auth.status === "APPROVED" || Boolean(link?.approvedAt) ? 2 : auth.status === "PENDING" || auth.status === "REJECTED" ? 1 : 0;
+        const current = latestLocalShadowByWorkflow.get(workflowKey);
+        if (!current || rank > current.rank || (rank === current.rank && updatedAtMs > current.updatedAtMs)) {
+          latestLocalShadowByWorkflow.set(workflowKey, { linkId, updatedAtMs, rank });
+        }
+      }
       for (const link of derivativeChildren) {
         const child = link.childContent as any;
         if (!child) continue;
+        const workflowKey = derivativeWorkflowKey(link, child);
         const childType = asString(child?.type || link?.relation || "file").trim().toLowerCase();
         if (!matchesRequestedType(childType)) continue;
         const childStatus = asString(child?.status || "").trim().toLowerCase();
-        const childDeleted = Boolean(child?.deletedAt);
-        // Active library should not surface stale/tombstoned/deleted derivative rows.
-        // Require the child row itself to be actively published.
-        const includeByState = childStatus === "published" && !childDeleted;
+        const childPublished = childStatus === "published" && !child?.deletedAt;
+        const latestShadowForWorkflow = latestLocalShadowByWorkflow.get(workflowKey);
+        const shadowIsApprovedWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank >= 2);
+        const shadowIsCurrentPendingWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank === 1);
+        const childActionableShadow =
+          Boolean(child?.deletedAt) &&
+          Boolean(latestShadowForWorkflow) &&
+          latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
+          (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !localPublishedWorkflows.has(workflowKey))) &&
+          isActionableDerivativeChildForClearanceInbox(child);
+        const includeByState = childPublished || childActionableShadow;
         if (!includeByState) continue;
         const surfaced = {
           ...child,
-          status: "published",
-          deletedAt: null
+          status: child?.status || "published",
+          deletedAt: child?.deletedAt || null,
+          deletedReason: child?.deletedReason || null,
+          remoteOrigin: pickShareableOrigin(
+            asString(child?.remoteOrigin || "").trim() || null,
+            getRemoteOriginFromDescription(asString(child?.description || "").trim() || null)
+          ),
+          _libraryHasActiveClearanceContext: childActionableShadow
         };
-        appendLibraryItem(surfaced, "shared", "derivative_child");
-        appendLibraryItem(surfaced, "shared", "derivative_parent");
+        appendLibraryItem(surfaced, "shared", "derivative_child", "derivative_children_local");
+        appendLibraryItem(surfaced, "shared", "derivative_parent", "derivative_children_local");
       }
     }
 
     const mirroredSharedRows = mirroredRemoteInvites
       .filter((inv: any) => normalizeRemoteInviteStatusForList(inv) === "accepted")
+      .filter((inv: any) => {
+        const contentStatus = asString(inv?.contentStatus || "").trim().toLowerCase();
+        if (!contentStatus) return true;
+        return !["deleted", "archived", "tombstoned"].includes(contentStatus);
+      })
       .filter((inv: any) => matchesRequestedType(inv?.contentType))
       .map((inv: any) => {
         const contentId = asString(inv?.contentId || "").trim();
@@ -21338,66 +21612,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         };
       })
       .filter((row: any) => Boolean(asString(row?.id || "").trim()));
-    const mirroredSharedDerivativeRows = (
-      await Promise.all(
-        mirroredRemoteInvites
-          .filter((inv: any) => normalizeRemoteInviteStatusForList(inv) === "accepted")
-          .map(async (inv: any) => {
-            const origin = pickShareableOrigin(inv?.remoteOrigin || null, inv?.inviteUrl || null);
-            const inviteToken = extractInviteTokenFromUrl(inv?.inviteUrl || null);
-            const parentContentId = asString(inv?.contentId || "").trim();
-            if (!origin || !inviteToken || !parentContentId) return [] as any[];
-            const accounting = await fetchRemoteInviteAccounting(origin, inviteToken).catch(() => null);
-            const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
-            return inbox
-              .map((entry: any) => {
-                const status = asString(entry?.status || "").trim().toLowerCase();
-                const childContentId = asString(entry?.childContentId || "").trim();
-                const entryParentContentId = asString(entry?.parentContentId || "").trim();
-                const childStatus = asString(entry?.childStatus || "").trim().toLowerCase();
-                const childDeletedAt = asString(entry?.childDeletedAt || "").trim();
-                if (!childContentId || !entryParentContentId) return null;
-                if (entryParentContentId !== parentContentId) return null;
-                if (!["pending", "rejected", "approved", "cleared"].includes(status)) return null;
-                if (childDeletedAt) return null;
-                if (childStatus && childStatus !== "published") return null;
-                const relation = asString(entry?.relation || "").trim().toLowerCase();
-                const derivedTypeRaw = asString(entry?.childType || inv?.contentType || "").trim().toLowerCase();
-                const derivedType =
-                  derivedTypeRaw === "song" || derivedTypeRaw === "video" || derivedTypeRaw === "book" || derivedTypeRaw === "file"
-                    ? derivedTypeRaw
-                    : relation === "song" || relation === "video" || relation === "book" || relation === "file"
-                      ? relation
-                      : "file";
-                if (!matchesRequestedType(derivedType)) return null;
-                const childOrigin = pickShareableOrigin(entry?.childOrigin || null, origin);
-                const reviewPreviewUrl = asString(entry?.reviewPreviewUrl || "").trim() || null;
-                return {
-                  id: childContentId,
-                  title: asString(entry?.childTitle || "").trim() || "Untitled derivative",
-                  description: buildRemoteDescription(childOrigin || origin, reviewPreviewUrl),
-                  type: derivedType,
-                  status: "published",
-                  previousVersionContentId: null,
-                  previousVersion: null,
-                  featureOnProfile: false,
-                  storefrontStatus: "UNLISTED",
-                  deliveryMode: null,
-                  priceSats: null,
-                  createdAt: inv?.acceptedAt || inv?.createdAt || new Date().toISOString(),
-                  repoPath: null,
-                  deletedAt: null,
-                  ownerUserId: null,
-                  owner: null,
-                  manifest: null,
-                  _count: { files: 0, entitlements: 0 },
-                  remoteOrigin: childOrigin || origin
-                };
-              })
-              .filter(Boolean) as any[];
-          })
-      )
-    ).flat();
+    // Do not rely on live remote fetch for core library cards.
+    // Derivative shared membership should come from durable local rows
+    // (remote invites + mirrored/local content links).
+    const mirroredSharedDerivativeRows: any[] = [];
     const mirroredRemoteOriginByParentId = new Map<string, string>();
     for (const row of mirroredSharedRows) {
       const parentContentId = asString(row?.id || "").trim();
@@ -21405,14 +21623,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       if (parentContentId && parentRemoteOrigin && !mirroredRemoteOriginByParentId.has(parentContentId)) {
         mirroredRemoteOriginByParentId.set(parentContentId, parentRemoteOrigin);
       }
-      appendLibraryItem(row, "shared", "split_participant");
-      appendLibraryItem(row, "shared", "shared_with_me");
-      appendLibraryItem(row, "shared", "remote_mirror");
+      appendLibraryItem(row, "shared", "split_participant", "mirrored_shared_rows");
+      appendLibraryItem(row, "shared", "shared_with_me", "mirrored_shared_rows");
+      appendLibraryItem(row, "shared", "remote_mirror", "mirrored_shared_rows");
     }
     for (const row of mirroredSharedDerivativeRows) {
-      appendLibraryItem(row, "shared", "derivative_child");
-      appendLibraryItem(row, "shared", "derivative_parent");
-      appendLibraryItem(row, "shared", "remote_mirror");
+      appendLibraryItem(row, "shared", "derivative_child", "mirrored_shared_derivative_rows");
+      appendLibraryItem(row, "shared", "derivative_parent", "mirrored_shared_derivative_rows");
+      appendLibraryItem(row, "shared", "remote_mirror", "mirrored_shared_derivative_rows");
     }
 
     if (mirroredRemoteOriginByParentId.size > 0) {
@@ -21426,10 +21644,58 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           childContent: { select: selectBase }
         }
       });
+      const mirroredDerivativeAuthRows = mirroredDerivativeLinks.length
+        ? await prisma.derivativeAuthorization.findMany({
+            where: {
+              derivativeLinkId: { in: mirroredDerivativeLinks.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) }
+            },
+            select: { derivativeLinkId: true, status: true, updatedAt: true }
+          })
+        : [];
+      const mirroredDerivativeAuthByLinkId = new Map<string, { updatedAt: Date | null; status: string }>();
+      for (const row of mirroredDerivativeAuthRows) {
+        const linkId = asString((row as any)?.derivativeLinkId || "").trim();
+        if (!linkId) continue;
+        mirroredDerivativeAuthByLinkId.set(linkId, {
+          updatedAt: (row as any)?.updatedAt || null,
+          status: asString((row as any)?.status || "").trim().toUpperCase()
+        });
+      }
+      const mirroredWorkflowKey = (link: any, child: any) =>
+        [
+          asString(link?.parentContentId || "").trim(),
+          asString(link?.relation || "").trim().toLowerCase(),
+          asString(link?.upstreamBps ?? "").trim(),
+          asString(child?.ownerUserId || "").trim() || "unknown_owner"
+        ].join("::");
+      const mirroredPublishedWorkflows = new Set<string>();
+      const latestMirroredShadowByWorkflow = new Map<string, { linkId: string; updatedAtMs: number; rank: number }>();
+      for (const link of mirroredDerivativeLinks) {
+        const child = (link as any)?.childContent;
+        if (!child) continue;
+        const workflowKey = mirroredWorkflowKey(link, child);
+        const childStatus = asString(child?.status || "").trim().toLowerCase();
+        const childPublished = childStatus === "published" && !child?.deletedAt;
+        if (childPublished) {
+          mirroredPublishedWorkflows.add(workflowKey);
+          continue;
+        }
+        if (!Boolean(child?.deletedAt) || asString(child?.deletedReason || "").trim().toLowerCase() !== "hard") continue;
+        const linkId = asString(link?.id || "").trim();
+        const auth = mirroredDerivativeAuthByLinkId.get(linkId);
+        if (!linkId || !auth) continue;
+        const updatedAtMs = auth.updatedAt instanceof Date ? auth.updatedAt.getTime() : 0;
+        const rank = auth.status === "APPROVED" || Boolean(link?.approvedAt) ? 2 : auth.status === "PENDING" || auth.status === "REJECTED" ? 1 : 0;
+        const current = latestMirroredShadowByWorkflow.get(workflowKey);
+        if (!current || rank > current.rank || (rank === current.rank && updatedAtMs > current.updatedAtMs)) {
+          latestMirroredShadowByWorkflow.set(workflowKey, { linkId, updatedAtMs, rank });
+        }
+      }
       for (const link of mirroredDerivativeLinks) {
         const childContentId = asString(link?.childContentId || link?.childContent?.id || "").trim();
         if (!childContentId) continue;
         const child = link?.childContent as any;
+        const workflowKey = mirroredWorkflowKey(link, child);
         const derivedType = asString(child?.type || link?.relation || "file")
           .trim()
           .toLowerCase();
@@ -21442,13 +21708,22 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           parentRemoteOrigin
         );
         const childIsPublished = asString(child?.status || "").trim().toLowerCase() === "published" && !child?.deletedAt;
-        const surfacedStatus = childIsPublished || Boolean(link?.approvedAt) ? "published" : "draft";
+        const latestShadowForWorkflow = latestMirroredShadowByWorkflow.get(workflowKey);
+        const shadowIsApprovedWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank >= 2);
+        const shadowIsCurrentPendingWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank === 1);
+        const childActionableShadow =
+          Boolean(child?.deletedAt) &&
+          Boolean(latestShadowForWorkflow) &&
+          latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
+          (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !mirroredPublishedWorkflows.has(workflowKey))) &&
+          isActionableDerivativeChildForClearanceInbox(child);
+        if (!childIsPublished && !childActionableShadow) continue;
         const derivativeRow = {
           id: childContentId,
           title: asString(child?.title || "").trim() || "Untitled derivative",
           description: rowRemoteOrigin ? buildRemoteDescription(rowRemoteOrigin) : childDescription,
           type: derivedType || "file",
-          status: surfacedStatus,
+          status: child?.status || "published",
           previousVersionContentId: null,
           previousVersion: null,
           featureOnProfile: false,
@@ -21457,31 +21732,41 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           priceSats: child?.priceSats ?? null,
           createdAt: child?.createdAt || new Date().toISOString(),
           repoPath: null,
-          deletedAt: null,
+          deletedAt: child?.deletedAt || null,
+          deletedReason: child?.deletedReason || null,
           ownerUserId: null,
           owner: null,
           manifest: child?.manifest || null,
           _count: child?._count || { files: 0, entitlements: 0 },
-          remoteOrigin: rowRemoteOrigin
+          remoteOrigin: rowRemoteOrigin,
+          _libraryHasActiveClearanceContext: childActionableShadow
         };
-        appendLibraryItem(derivativeRow, "shared", "derivative_child");
-        appendLibraryItem(derivativeRow, "shared", "derivative_parent");
-        appendLibraryItem(derivativeRow, "shared", "remote_mirror");
+        appendLibraryItem(derivativeRow, "shared", "derivative_child", "mirrored_derivative_links");
+        appendLibraryItem(derivativeRow, "shared", "derivative_parent", "mirrored_derivative_links");
+        appendLibraryItem(derivativeRow, "shared", "remote_mirror", "mirrored_derivative_links");
       }
     }
 
     // Keep preview-only rows last so attributed participant rows win de-dupe.
-    for (const i of publicPreview) appendLibraryItem(i, "preview", "preview_access");
+    for (const i of publicPreview) appendLibraryItem(i, "preview", "preview_access", "public_preview");
   }
 
-  // de-dupe by content id while preserving membership reasons.
+  // de-dupe by (origin + content id) while preserving membership reasons.
+  // This prevents accidental local/remote row collapse while still merging
+  // multiple membership paths for the same canonical card.
   const deduped = new Map<string, any>();
   for (const row of items) {
     const contentId = asString(row?.id || "").trim();
     if (!contentId) continue;
-    const existing = deduped.get(contentId);
+    const rowDescription = asString(row?.description || "").trim() || null;
+    const rowOrigin = pickShareableOrigin(
+      asString(row?.remoteOrigin || "").trim() || null,
+      getRemoteOriginFromDescription(rowDescription)
+    );
+    const dedupeKey = `${rowOrigin || "local"}::${contentId}`;
+    const existing = deduped.get(dedupeKey);
     if (!existing) {
-      deduped.set(contentId, row);
+      deduped.set(dedupeKey, row);
       continue;
     }
     const mergedReasons = Array.from(
@@ -21493,12 +21778,194 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const existingPriority = accessPriority(existing.libraryAccess);
     const incomingPriority = accessPriority(row.libraryAccess);
     const preferred = incomingPriority > existingPriority ? row : existing;
-    deduped.set(contentId, {
+    const fallback = preferred === row ? existing : row;
+    const preferredReasons = new Set(
+      (Array.isArray(preferred?.appearsBecause) ? preferred.appearsBecause : []).map((reason: unknown) =>
+        asString(reason || "").trim().toLowerCase()
+      )
+    );
+    const fallbackReasons = new Set(
+      (Array.isArray(fallback?.appearsBecause) ? fallback.appearsBecause : []).map((reason: unknown) =>
+        asString(reason || "").trim().toLowerCase()
+      )
+    );
+    const preferredType = asString(preferred?.type || "").trim().toLowerCase();
+    const fallbackType = asString(fallback?.type || "").trim().toLowerCase();
+    const preferredIsDerivativeType = ["derivative", "remix", "mashup"].includes(preferredType);
+    const fallbackIsDerivativeType = ["derivative", "remix", "mashup"].includes(fallbackType);
+    deduped.set(dedupeKey, {
       ...preferred,
-      appearsBecause: mergedReasons
+      appearsBecause: mergedReasons,
+      _libraryPath: Array.from(
+        new Set(
+          [asString(preferred?._libraryPath || "").trim(), asString(fallback?._libraryPath || "").trim()].filter(Boolean)
+        )
+      ).join(","),
+      remoteOrigin:
+        asString(preferred?.remoteOrigin || "").trim() ||
+        asString(fallback?.remoteOrigin || "").trim() ||
+        rowOrigin ||
+        null,
+      coverUrl:
+        asString(preferred?.coverUrl || "").trim() ||
+        asString(fallback?.coverUrl || "").trim() ||
+        null,
+      manifestPrimaryFilePath:
+        asString(preferred?.manifestPrimaryFilePath || "").trim() ||
+        asString(fallback?.manifestPrimaryFilePath || "").trim() ||
+        null,
+      manifestPrimaryFileUrl:
+        asString(preferred?.manifestPrimaryFileUrl || "").trim() ||
+        asString(fallback?.manifestPrimaryFileUrl || "").trim() ||
+        null,
+      libraryPreviewCandidates: Array.from(
+        new Set(
+          [
+            ...(Array.isArray(preferred?.libraryPreviewCandidates) ? preferred.libraryPreviewCandidates : []),
+            ...(Array.isArray(fallback?.libraryPreviewCandidates) ? fallback.libraryPreviewCandidates : [])
+          ]
+            .map((value: unknown) => asString(value || "").trim())
+            .filter(Boolean)
+        )
+      ),
+      previewUrl:
+        asString(preferred?.previewUrl || "").trim() ||
+        asString(fallback?.previewUrl || "").trim() ||
+        null,
+      previewFileUrl:
+        asString(preferred?.previewFileUrl || "").trim() ||
+        asString(fallback?.previewFileUrl || "").trim() ||
+        null,
+      previewVideoUrl:
+        asString(preferred?.previewVideoUrl || "").trim() ||
+        asString(fallback?.previewVideoUrl || "").trim() ||
+        null,
+      videoUrl:
+        asString(preferred?.videoUrl || "").trim() ||
+        asString(fallback?.videoUrl || "").trim() ||
+        null,
+      fileUrl:
+        asString(preferred?.fileUrl || "").trim() ||
+        asString(fallback?.fileUrl || "").trim() ||
+        null,
+      mediaUrl:
+        asString(preferred?.mediaUrl || "").trim() ||
+        asString(fallback?.mediaUrl || "").trim() ||
+        null,
+      playbackUrl:
+        asString(preferred?.playbackUrl || "").trim() ||
+        asString(fallback?.playbackUrl || "").trim() ||
+        null,
+      posterUrl:
+        asString(preferred?.posterUrl || "").trim() ||
+        asString(fallback?.posterUrl || "").trim() ||
+        null,
+      buyUrl:
+        asString(preferred?.buyUrl || "").trim() ||
+        asString(fallback?.buyUrl || "").trim() ||
+        null,
+      attributionUrl:
+        asString(preferred?.attributionUrl || "").trim() ||
+        asString(fallback?.attributionUrl || "").trim() ||
+        null,
+      libraryScopes: Array.from(
+        new Set([
+          ...normalizeLibraryScopes(preferred?.libraryScopes),
+          ...normalizeLibraryScopes(fallback?.libraryScopes)
+        ])
+      ),
+      isLocalAuthored:
+        Boolean(preferred?.isLocalAuthored) ||
+        Boolean(fallback?.isLocalAuthored) ||
+        (asString(preferred?.ownerUserId || "").trim() === userId &&
+          asString(preferred?.libraryAccess || "").trim().toLowerCase() === "owned") ||
+        (asString(fallback?.ownerUserId || "").trim() === userId &&
+          asString(fallback?.libraryAccess || "").trim().toLowerCase() === "owned"),
+      isDirectSharedSplit:
+        Boolean(preferred?.isDirectSharedSplit) ||
+        Boolean(fallback?.isDirectSharedSplit) ||
+        preferredReasons.has("split_participant") ||
+        preferredReasons.has("shared_with_me") ||
+        fallbackReasons.has("split_participant") ||
+        fallbackReasons.has("shared_with_me"),
+      isUpstreamRoyaltyWork:
+        Boolean(preferred?.isUpstreamRoyaltyWork) ||
+        Boolean(fallback?.isUpstreamRoyaltyWork) ||
+        (preferredReasons.has("derivative_parent") &&
+          (preferredReasons.has("derivative_child") || preferredIsDerivativeType)) ||
+        (fallbackReasons.has("derivative_parent") &&
+          (fallbackReasons.has("derivative_child") || fallbackIsDerivativeType)),
+      isDerivativeWork:
+        Boolean(preferred?.isDerivativeWork) ||
+        Boolean(fallback?.isDerivativeWork) ||
+        preferredIsDerivativeType ||
+        fallbackIsDerivativeType ||
+        preferredReasons.has("derivative_child") ||
+        preferredReasons.has("derivative_parent") ||
+        fallbackReasons.has("derivative_child") ||
+        fallbackReasons.has("derivative_parent"),
+      isActionableShadow:
+        Boolean(preferred?.isActionableShadow) ||
+        Boolean(fallback?.isActionableShadow),
+      isParentOfDerivative:
+        Boolean(preferred?.isParentOfDerivative) ||
+        Boolean(fallback?.isParentOfDerivative)
     });
   }
-  const unique = Array.from(deduped.values());
+  const unique = Array.from(deduped.values()).filter((row: any) =>
+    isLibraryRowEligible(
+      row,
+      asString((Array.isArray(row?.appearsBecause) ? row.appearsBecause[0] : "") || "").trim() || "unknown",
+      { allowActionableShadow: true }
+    ).eligible
+  );
+  const uniqueRowIds = Array.from(new Set(unique.map((row: any) => asString(row?.id || "").trim()).filter(Boolean)));
+  const parentOfDerivativeIds = new Set<string>();
+  if (uniqueRowIds.length > 0) {
+    const parentLinks = await prisma.contentLink.findMany({
+      where: {
+        parentContentId: { in: uniqueRowIds },
+        relation: { in: ["derivative", "remix", "mashup"] as any }
+      },
+      select: {
+        parentContentId: true,
+        childContent: {
+          select: {
+            id: true,
+            status: true,
+            deletedAt: true,
+            deletedReason: true,
+            description: true,
+            repoPath: true
+          }
+        }
+      }
+    });
+    for (const link of parentLinks) {
+      const parentId = asString(link?.parentContentId || "").trim();
+      const child = (link as any)?.childContent;
+      if (!parentId || !child) continue;
+      const childStatus = asString(child?.status || "").trim().toLowerCase();
+      const childPublished = childStatus === "published" && !child?.deletedAt;
+      const childActionableShadow = isActionableDerivativeChildForClearanceInbox(child);
+      if (childPublished || childActionableShadow) {
+        parentOfDerivativeIds.add(parentId);
+      }
+    }
+  }
+  const uniqueContentIds = Array.from(new Set(unique.map((row: any) => asString(row?.id || "").trim()).filter(Boolean)));
+  const manifestRows = uniqueContentIds.length
+    ? await prisma.manifest.findMany({
+        where: { contentId: { in: uniqueContentIds } },
+        select: { contentId: true, json: true }
+      })
+    : [];
+  const manifestByContentId = new Map<string, any>();
+  for (const row of manifestRows) {
+    const contentId = asString((row as any)?.contentId || "").trim();
+    if (!contentId) continue;
+    manifestByContentId.set(contentId, (row as any)?.json || null);
+  }
 
   return unique.map((i: any) => {
     const description = asString(i?.description || "").trim() || null;
@@ -21510,6 +21977,128 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const preferredPublicOrigin = explicitRemoteOrigin || localOrigin;
     const canonicalPublicOrigin = preferredPublicOrigin ? preferredPublicOrigin.replace(/\/+$/, "") : null;
     const contentId = asString(i?.id || "").trim();
+    const manifestJson = manifestByContentId.get(contentId) || null;
+    const manifestCoverAsset = getCoverAssetFromManifest(manifestJson);
+    const manifestArtworkAsset = getManifestAssetPath(manifestJson, ["artwork", "poster", "thumbnail", "thumb"]);
+    const manifestImageAsset = getFirstImageAssetFromManifest(manifestJson);
+    const toPreviewObjectUrl = (objectKey: string | null): string | null => {
+      const key = asString(objectKey || "").trim();
+      if (!key) return null;
+      const base = canonicalPublicOrigin || "";
+      const prefix = `${base}/public/content/${encodeURIComponent(contentId)}/preview-file`;
+      return `${prefix}?objectKey=${encodeURIComponent(key)}`;
+    };
+    const manifestCoverPath = asString(manifestCoverAsset?.path || "").trim() || null;
+    const manifestArtworkPath = asString(manifestArtworkAsset?.path || "").trim() || null;
+    const manifestImagePath = asString(manifestImageAsset?.path || "").trim() || null;
+    const manifestPrimaryFilePath =
+      asString((manifestJson as any)?.primaryFile || "").trim() ||
+      asString((Array.isArray((manifestJson as any)?.files) ? (manifestJson as any).files?.[0]?.path : "") || "").trim() ||
+      asString((Array.isArray((manifestJson as any)?.files) ? (manifestJson as any).files?.[0]?.objectKey : "") || "").trim() ||
+      null;
+    const manifestAvFilePath = (() => {
+      const files = Array.isArray((manifestJson as any)?.files) ? (manifestJson as any).files : [];
+      for (const file of files) {
+        const mime = asString(file?.mime || "").trim().toLowerCase();
+        if (!mime.startsWith("video/") && !mime.startsWith("audio/")) continue;
+        const key =
+          asString(file?.path || "").trim() ||
+          asString(file?.objectKey || "").trim() ||
+          asString(file?.filename || "").trim();
+        if (key) return key;
+      }
+      return null;
+    })();
+    const manifestCoverUrl = toPreviewObjectUrl(manifestCoverPath);
+    const manifestArtworkUrl = toPreviewObjectUrl(manifestArtworkPath);
+    const manifestImageUrl = toPreviewObjectUrl(manifestImagePath);
+    const manifestPrimaryFileUrl = toPreviewObjectUrl(manifestPrimaryFilePath);
+    const manifestAvFileUrl = toPreviewObjectUrl(manifestAvFilePath);
+    const apiCoverUrl = canonicalPublicOrigin
+      ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/cover`)
+      : `/public/content/${encodeURIComponent(contentId)}/cover`;
+    const genericPreviewUrl = canonicalPublicOrigin
+      ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/preview-file`)
+      : `/public/content/${encodeURIComponent(contentId)}/preview-file`;
+    const explicitCoverUrl = asString(i?.coverUrl || "").trim() || null;
+    const explicitCoverImageUrl = asString(i?.coverImageUrl || "").trim() || null;
+    const explicitArtworkUrl = asString(i?.artworkUrl || "").trim() || null;
+    const explicitThumbUrl = asString(i?.thumbnailUrl || "").trim() || null;
+    const explicitPosterUrl = asString(i?.posterUrl || "").trim() || null;
+    const explicitPreviewUrl =
+      asString(i?.previewUrl || "").trim() ||
+      asString(i?.previewFileUrl || "").trim() ||
+      asString(i?.mediaUrl || "").trim() ||
+      asString(i?.fileUrl || "").trim() ||
+      null;
+    const explicitPrimaryFilePath = asString(i?.primaryFile || "").trim() || null;
+    const libraryCoverCandidates = Array.from(
+      new Set(
+        [
+          manifestCoverUrl,
+          manifestImageUrl,
+          manifestArtworkUrl,
+          explicitCoverUrl,
+          explicitCoverImageUrl,
+          explicitArtworkUrl,
+          explicitThumbUrl,
+          explicitPosterUrl,
+          apiCoverUrl
+        ].filter((value): value is string => Boolean(asString(value || "").trim()))
+      )
+    );
+    const libraryPreviewCandidates = Array.from(
+      new Set(
+        [
+          manifestPrimaryFileUrl,
+          manifestAvFileUrl,
+          explicitPreviewUrl,
+          genericPreviewUrl
+        ].filter((value): value is string => Boolean(asString(value || "").trim()))
+      )
+    );
+    const reasons = new Set(
+      (Array.isArray(i?.appearsBecause) ? i.appearsBecause : []).map((reason: unknown) =>
+        asString(reason || "").trim().toLowerCase()
+      )
+    );
+    const normalizedType = asString(i?.type || "").trim().toLowerCase();
+    const isDerivativeType = ["derivative", "remix", "mashup"].includes(normalizedType);
+    const emittedLocalAuthored =
+      Boolean(i?.isLocalAuthored) ||
+      (asString(i?.ownerUserId || "").trim() === userId &&
+        asString(i?.libraryAccess || "").trim().toLowerCase() === "owned");
+    const emittedDirectSharedSplit =
+      Boolean(i?.isDirectSharedSplit) ||
+      reasons.has("split_participant") ||
+      reasons.has("shared_with_me");
+    const emittedUpstreamRoyaltyWork =
+      Boolean(i?.isUpstreamRoyaltyWork) ||
+      (reasons.has("derivative_parent") && (reasons.has("derivative_child") || isDerivativeType));
+    const emittedDerivativeWork =
+      Boolean(i?.isDerivativeWork) ||
+      isDerivativeType ||
+      reasons.has("derivative_child") ||
+      reasons.has("derivative_parent");
+    const emittedActionableShadow = Boolean(i?.isActionableShadow);
+    const lifecycleMeta = classifyLibraryLifecycle(
+      {
+        ...i,
+        isActionableShadow: emittedActionableShadow,
+        appearsBecause: Array.from(reasons)
+      },
+      asString((Array.isArray(i?.appearsBecause) ? i.appearsBecause[0] : "") || "").trim() || "unknown",
+      { allowActionableShadow: true }
+    );
+    const emittedLibraryScopes = (() => {
+      const existing = normalizeLibraryScopes(i?.libraryScopes);
+      if (existing.length > 0) return existing;
+      const fallback = new Set<string>(["all"]);
+      if (emittedLocalAuthored) fallback.add("authored");
+      if (emittedDirectSharedSplit) fallback.add("shared_splits");
+      if (emittedUpstreamRoyaltyWork) fallback.add("derivatives");
+      return Array.from(fallback);
+    })();
     const { description: _description, ...rest } = i;
     return {
       ...rest,
@@ -21519,16 +22108,38 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           : i.priceSats != null
             ? i.priceSats.toString()
             : null,
-      coverUrl: canonicalPublicOrigin
-        ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/cover`)
-        : null,
+      coverUrl: manifestCoverUrl || manifestImageUrl || manifestArtworkUrl || explicitCoverUrl || apiCoverUrl,
+      coverImageUrl: explicitCoverImageUrl || manifestImageUrl,
+      artworkUrl: explicitArtworkUrl || manifestArtworkUrl,
+      thumbnailUrl: explicitThumbUrl || null,
+      posterUrl: explicitPosterUrl || null,
+      manifestCoverPath,
+      manifestCoverUrl,
+      libraryCoverCandidates,
+      primaryFile: explicitPrimaryFilePath || manifestPrimaryFilePath,
+      fileUrl: asString(i?.fileUrl || "").trim() || null,
+      previewFileUrl: asString(i?.previewFileUrl || "").trim() || null,
+      previewUrl: asString(i?.previewUrl || "").trim() || null,
+      mediaUrl: asString(i?.mediaUrl || "").trim() || null,
+      manifestPrimaryFilePath,
+      manifestPrimaryFileUrl,
+      libraryPreviewCandidates,
       attributionUrl: canonicalPublicOrigin
         ? `${canonicalPublicOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`
         : null,
       buyUrl: canonicalPublicOrigin ? `${canonicalPublicOrigin}/buy/${encodeURIComponent(contentId)}` : null,
       remoteOrigin: explicitRemoteOrigin,
       featureOnProfile: Boolean(i.featureOnProfile),
-      tombstoned: isArchivedPublished(i)
+      tombstoned: isArchivedPublished(i),
+      isShadow: lifecycleMeta.lifecycle === "shadow",
+      lifecycle: lifecycleMeta.lifecycle,
+      isLocalAuthored: emittedLocalAuthored,
+      isDirectSharedSplit: emittedDirectSharedSplit,
+      isUpstreamRoyaltyWork: emittedUpstreamRoyaltyWork,
+      isDerivativeWork: emittedDerivativeWork,
+      isActionableShadow: emittedActionableShadow,
+      libraryScopes: emittedLibraryScopes,
+      isParentOfDerivative: parentOfDerivativeIds.has(contentId)
     };
   });
 });
@@ -25968,7 +26579,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           where: {
             ownerUserId: user.id,
             status: "published",
-            deletedAt: null,
             featureOnProfile: true
           },
           orderBy: { createdAt: "desc" },
@@ -25979,6 +26589,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             type: true,
             priceSats: true,
             deliveryMode: true,
+            deletedAt: true,
+            deletedReason: true,
+            description: true,
             manifest: { select: { json: true } }
           }
         }),
@@ -26047,7 +26660,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 where: {
                   ownerUserId: user.id,
                   status: "published",
-                  deletedAt: null,
                   featureOnProfile: true
                 },
                 orderBy: { createdAt: "desc" },
@@ -26058,6 +26670,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   type: true,
                   priceSats: true,
                   deliveryMode: true,
+                  deletedAt: true,
+                  deletedReason: true,
+                  description: true,
                   manifest: { select: { json: true } }
                 }
               }),
@@ -26095,10 +26710,23 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     )
   ]);
 
+  const filteredFeaturedContent = (
+    await Promise.all(
+      (Array.isArray(featuredContent) ? featuredContent : []).map(async (item: any) => {
+        if (!item?.deletedAt) return { ...item, _profileSection: "works" };
+        const check = await isCurrentApprovedFeatureableDerivativeShadow({
+          contentId: asString(item.id || "").trim(),
+          ownerUserId: user.id
+        });
+        return check.eligible ? { ...item, _profileSection: "collaborations" } : null;
+      })
+    )
+  ).filter(Boolean);
+
   const nodeUrl = wk.nodeUrl || "";
   if (!nodeUrl) return notFound(reply, "Not found");
   const nodeSha = wk.publicKeyPemSha256 || null;
-  const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}…${nodeSha.slice(-8)}` : null;
+  const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}â€¦${nodeSha.slice(-8)}` : null;
 
   const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
   const safeBio = escHtml(asString(user.bio || ""));
@@ -26301,7 +26929,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const domain = asString((p as any).subject || "").trim().toLowerCase();
             const safeDomain = escHtml(domain);
             const href = `https://${encodeURI(domain)}`;
-            return `<div class="line muted">✓ <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">↗</span>${trustTierBadgeHtml("strong")}</div>`;
+            return `<div class="line muted">âœ“ <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">â†—</span>${trustTierBadgeHtml("strong")}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -26362,9 +26990,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeAccount = escHtml(displayAccount || "unknown");
             const safeProvider = escHtml(providerLabel);
             if (href) {
-              return `<div class="line muted">${providerBadgeHtml} ${safeProvider} — <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">↗</span>${tierBadge}</div>`;
+              return `<div class="line muted">${providerBadgeHtml} ${safeProvider} â€” <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">â†—</span>${tierBadge}</div>`;
             }
-            return `<div class="line muted">${providerBadgeHtml} ${safeProvider} — <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
+            return `<div class="line muted">${providerBadgeHtml} ${safeProvider} â€” <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -26392,13 +27020,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               }
             }
             const displayValue = npub || pubkey || "unknown";
-            const shortValue = displayValue.length > 18 ? `${displayValue.slice(0, 10)}…${displayValue.slice(-8)}` : displayValue;
+            const shortValue = displayValue.length > 18 ? `${displayValue.slice(0, 10)}â€¦${displayValue.slice(-8)}` : displayValue;
             const hrefValue = npub || pubkey;
             const href = hrefValue ? `https://njump.me/${encodeURIComponent(hrefValue)}` : "";
             if (href) {
-              return `<div class="line muted">✓ Nostr — <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">↗</span></div>`;
+              return `<div class="line muted">âœ“ Nostr â€” <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">â†—</span></div>`;
             }
-            return `<div class="line muted">✓ Nostr — <span class="mono">${escHtml(shortValue)}</span></div>`;
+            return `<div class="line muted">âœ“ Nostr â€” <span class="mono">${escHtml(shortValue)}</span></div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -26408,12 +27036,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           .map((p: any) => {
             const proofType = asString((p as any).proofType || "").trim().toLowerCase() || "proof";
             const subject = asString((p as any).subject || "").trim() || "unknown";
-            return `<div class="line muted">✓ ${escHtml(proofType)}: <span class="mono">${escHtml(subject)}</span></div>`;
+            return `<div class="line muted">âœ“ ${escHtml(proofType)}: <span class="mono">${escHtml(subject)}</span></div>`;
           })
           .join("")
       : "";
   const creatorSignalCompactHtml = `<div class="signal-compact-title">Trust Score</div>
-      <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">· ${escHtml(creatorSignal.tier)}</span></div>
+      <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">Â· ${escHtml(creatorSignal.tier)}</span></div>
       <div class="signal-meter signal-compact-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
         <div class="signal-meter-fill" style="width:${creatorSignalPercent}%"></div>
       </div>
@@ -26425,13 +27053,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       </div>`;
   const profilePostureBadgeHtml = `<div class="line"><span class="${escHtml(profilePostureBadgeClass)}">${escHtml(profilePostureBadgeLabel)}</span></div>`;
   const featuredContentForRender =
-    featuredContent.length > 0
-      ? featuredContent
+    filteredFeaturedContent.length > 0
+      ? filteredFeaturedContent
       : (cachedRenderSnapshot?.featuredContent || []);
-  const featuredContentHtml =
-    featuredContentForRender.length > 0
-      ? featuredContentForRender
-          .map((item) => {
+  const renderFeaturedContentCard = (item: any, supportText?: string): string => {
             const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
             const type = asString(item.type || "").trim().toLowerCase();
             const typeLabel =
@@ -26453,27 +27078,40 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               (Array.isArray(manifestJson?.files)
                 ? asString(manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey || "").trim()
                 : "");
+            const itemRemoteOrigin = pickShareableOrigin(
+              getRemoteOriginFromDescription(asString((item as any)?.description || "").trim() || null)
+            );
+            const mediaOrigin = itemRemoteOrigin || currentPublicOrigin;
+            const contentPathBase = `/public/content/${encodeURIComponent(item.id)}/preview-file`;
+            const toPreviewUrl = (objectKey: string | null | undefined): string => {
+              const key = asString(objectKey || "").trim();
+              if (!key) return buildPublicUrlFromOrigin(mediaOrigin, contentPathBase);
+              return buildPublicUrlFromOrigin(mediaOrigin, `${contentPathBase}?objectKey=${encodeURIComponent(key)}`);
+            };
             const isUngatedPublic =
               Number(item.priceSats || 0) <= 0 &&
               asString((item as any).deliveryMode || "").trim().toLowerCase() !== "download_only";
             const featuredMediaKey = isUngatedPublic
               ? (primaryObjectKey || previewObjectKey)
               : previewObjectKey;
-            const featuredMediaUrl = featuredMediaKey
-              ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(featuredMediaKey)}`)
-              : "";
+            const manifestPrimaryFileUrl = primaryObjectKey ? toPreviewUrl(primaryObjectKey) : "";
+            const featuredMediaUrl = featuredMediaKey ? toPreviewUrl(featuredMediaKey) : "";
             const hasDistinctPreviewObject = Boolean(previewObjectKey && previewObjectKey !== primaryObjectKey);
             const videoPreviewUrl = hasDistinctPreviewObject
-              ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`)
-              : buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file`);
-            const coverUrl = buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/cover`);
-            const manifestThumbnailRaw =
-              asString(manifestJson?.thumbnailUrl || "").trim() ||
-              asString(manifestJson?.thumbnail || "").trim();
-            const externalThumbUrl = deriveExternalVideoThumbnail(
-              manifestJson?.sourceUrl || manifestJson?.externalUrl || manifestJson?.url || primaryObjectKey || ""
+              ? toPreviewUrl(previewObjectKey)
+              : buildPublicUrlFromOrigin(mediaOrigin, contentPathBase);
+            const coverUrl = buildPublicUrlFromOrigin(mediaOrigin, `/public/content/${encodeURIComponent(item.id)}/cover`);
+            const libraryPreviewCandidates = Array.from(
+              new Set(
+                [featuredMediaUrl, manifestPrimaryFileUrl, videoPreviewUrl, buildPublicUrlFromOrigin(mediaOrigin, contentPathBase)]
+                  .map((value) => asString(value || "").trim())
+                  .filter(Boolean)
+              )
             );
-            const buyUrl = buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
+            const preferredPreviewUrl = libraryPreviewCandidates[0] || "";
+            const buyUrl = itemRemoteOrigin
+              ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
+              : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
@@ -26499,6 +27137,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                     ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
                        <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${safeType}</span></div>`
                     : `<div class="featured-image-fallback"><span class="featured-fallback">${safeType}</span></div>`;
+            const supportLine = supportText || `${safeHandle} • Verified creator`;
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
@@ -26507,14 +27146,27 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="featured-support">${safeHandle} • Verified creator</div>
-                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} ↗</a></div>
+                <div class="featured-support">${supportLine}</div>
+                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} &rarr;</a></div>
               </div>
             </article>`;
-          })
-          .join("")
+  };
+  const featuredAuthoredForRender = featuredContentForRender.filter(
+    (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
+  );
+  const featuredDerivativeForRender = featuredContentForRender.filter(
+    (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() === "collaborations"
+  );
+  const featuredContentHtml =
+    featuredAuthoredForRender.length > 0
+      ? featuredAuthoredForRender.map((item) => renderFeaturedContentCard(item)).join("")
       : "";
-  const highlightedParticipations = lockedParticipations
+  const featuredDerivativeCollaborationHtml =
+    featuredDerivativeForRender.length > 0
+      ? featuredDerivativeForRender
+          .map((item) => renderFeaturedContentCard(item, "Derivative collaboration • Upstream royalty"))
+          .join("")
+      : "";  const highlightedParticipations = lockedParticipations
     .filter((row) => row.highlightedOnProfile && row.contentStatus === "published" && !row.contentDeletedAt)
     .slice(0, 12);
   const highlightedParticipationsForRender =
@@ -26750,8 +27402,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${escHtml(type || "Participation")}</span></div>`;
   };
   const highlightedParticipationsHtml =
-    highlightedParticipationsForRender.length > 0 || highlightedRemoteParticipationsForRender.length > 0
+    featuredDerivativeCollaborationHtml || highlightedParticipationsForRender.length > 0 || highlightedRemoteParticipationsForRender.length > 0
       ? [
+          featuredDerivativeCollaborationHtml,
           ...highlightedParticipationsForRender.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.participantRole || "participant"));
@@ -26759,7 +27412,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const shareLabel =
               Number.isFinite(Number(item.participantBps)) && Number(item.participantBps) > 0
                 ? `${(Number(item.participantBps) / 100).toFixed(2)}%`
-                : "—";
+                : "â€”";
             const safeShare = escHtml(shareLabel);
             const buyUrl = asString(item.buyUrl || "").trim();
             const attributionUrl = asString(item.attributionUrl || "").trim();
@@ -26783,10 +27436,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="featured-support">Role: ${safeRole} • Share: ${safeShare}</div>
+                <div class="featured-support">Role: ${safeRole} â€¢ Share: ${safeShare}</div>
                 ${
                   linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &rarr;</a></div>`
                     : ""
                 }
               </div>
@@ -26800,7 +27453,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeType = escHtml(asString(item.contentType || "Participation"));
             const shareLabel = Number.isFinite(Number(percentToPrimitive(item.percent ?? null)))
               ? `${Number(percentToPrimitive(item.percent ?? null)).toFixed(2)}%`
-              : "—";
+              : "â€”";
             const safeShare = escHtml(shareLabel);
             const base = normalizeOrigin(item.remoteOrigin || "") || "";
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
@@ -26829,7 +27482,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="featured-support">Role: ${safeRole} • Share: ${safeShare}</div>
+                <div class="featured-support">Role: ${safeRole} â€¢ Share: ${safeShare}</div>
                 ${
                   isDerivative
                     ? `<div class="featured-support">Derivative of ${
@@ -26839,7 +27492,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 }
                 ${
                   linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &rarr;</a></div>`
                     : ""
                 }
               </div>
@@ -26848,8 +27501,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         ].join("")
       : "";
   const snapshotFeaturedContent =
-    featuredContent.length > 0
-      ? featuredContent
+    filteredFeaturedContent.length > 0
+      ? filteredFeaturedContent
       : (cachedRenderSnapshot?.featuredContent || []);
   const snapshotVerifiedProofs =
     verifiedProofs.length > 0
@@ -27528,7 +28181,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
       }
       return {
         pubkey,
-        display: pubkey.length > 18 ? `${pubkey.slice(0, 10)}…${pubkey.slice(-8)}` : pubkey,
+        display: pubkey.length > 18 ? `${pubkey.slice(0, 10)}â€¦${pubkey.slice(-8)}` : pubkey,
         location: asString((p as any).location || "").trim() || null,
         verifiedAt: (p as any).verifiedAt?.toISOString?.() || null
       };
@@ -27596,7 +28249,7 @@ async function handleShortPublicLink(req: any, reply: any) {
 <body>
   <div class="card">
     <h2>Not Available</h2>
-    <p><strong>${safeTitle}</strong> isn’t publicly available yet.</p>
+    <p><strong>${safeTitle}</strong> isnâ€™t publicly available yet.</p>
     <p class="muted">If you expected access, ask the owner to share a private link (e.g. <code>/p/&lt;token&gt;</code>) or publish the content.</p>
     <p class="muted"><a href="${APP_BASE_URL}">Return to Certifyd Creator</a></p>
   </div>
@@ -27892,7 +28545,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     } catch {}
   }
 
-  return reply.type("text/plain").send("Thanks — your clearance response has been recorded.");
+  return reply.type("text/plain").send("Thanks â€” your clearance response has been recorded.");
 });
 
 // External clearance page (no login required)
@@ -28103,7 +28756,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     } catch {}
   }
 
-  return reply.send("Thanks — your clearance response has been recorded.");
+  return reply.send("Thanks â€” your clearance response has been recorded.");
 });
 
 function resolveTabIconPath(): string | null {
@@ -28288,7 +28941,7 @@ async function handleBuyPage(req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loading…</div>
+      <div id="app">Loadingâ€¦</div>
       <div class="footer">
         <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
@@ -28340,7 +28993,7 @@ async function handleBuyPage(req: any, reply: any) {
         show: true,
         badge: "",
         title: "Receipt unavailable",
-        subtitle: "We couldn’t resolve this receipt.",
+        subtitle: "We couldnâ€™t resolve this receipt.",
         state: "Invalid receipt",
         actionLabel: "",
         actionKind: "",
@@ -28526,7 +29179,7 @@ async function handleBuyPage(req: any, reply: any) {
   function heartFor(c){
     if (c?.verification?.badge !== "beatify_heart") return "";
     const tier = (c?.verification?.tier === "gold") ? "gold" : "grey";
-    return " <span class=\\"cb-heart cb-heart--" + tier + "\\" title=\\"Verified on Beatify (node operator)\\" aria-label=\\"Verified on Beatify (node operator)\\">♥</span>";
+    return " <span class=\\"cb-heart cb-heart--" + tier + "\\" title=\\"Verified on Beatify (node operator)\\" aria-label=\\"Verified on Beatify (node operator)\\">â™¥</span>";
   }
 
   function resolveAttributionContentId(){
@@ -28593,7 +29246,7 @@ async function handleBuyPage(req: any, reply: any) {
               ? ("(@" + esc(normalizedContributorHandle) + ")")
               : "";
           const roleRaw = String(c?.role || "").trim();
-          const role = roleRaw ? (" • " + esc(roleRaw)) : "";
+          const role = roleRaw ? (" â€¢ " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
           const nameLabel = ch ? (cn + " " + ch) : cn;
           const contributorNameHtml = profilePathRaw
@@ -28601,7 +29254,7 @@ async function handleBuyPage(req: any, reply: any) {
             : nameLabel;
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
-          return "<li>" + contributorNameHtml + role + (pct ? (" • " + pct) : "") + "</li>";
+          return "<li>" + contributorNameHtml + role + (pct ? (" â€¢ " + pct) : "") + "</li>";
         }).join("") +
       "</ul>";
     } else if (split?.state === "draft") {
@@ -28615,7 +29268,7 @@ async function handleBuyPage(req: any, reply: any) {
       if (items.length > 0) {
         upstreamHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Upstream creators:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
           items.map((it) => {
-            const t = it?.title ? (esc(it.title) + " — ") : "";
+            const t = it?.title ? (esc(it.title) + " â€” ") : "";
             const pc = it?.primaryCreator || {};
             const pn = esc(pc.displayName || pc.name || pc.handle || "Creator");
             const phRaw = String(pc.handle || "").trim();
@@ -28644,8 +29297,8 @@ async function handleBuyPage(req: any, reply: any) {
                       : shLabel;
                     return linked + (pct ? " (" + esc(pct) + ")" : "");
                   })
-                  .join(" • ") +
-                (shareholders.length > 6 ? " • …" : "") +
+                  .join(" â€¢ ") +
+                (shareholders.length > 6 ? " â€¢ â€¦" : "") +
                 "</div>"
               : "";
             const attributionLinkHtml = parentContentUrl
@@ -28654,7 +29307,7 @@ async function handleBuyPage(req: any, reply: any) {
             return "<li>" + t + creatorHtml + shareholdersHtml + attributionLinkHtml + "</li>";
           }).join("") +
         "</ul>" +
-        (upstream?.truncated ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">…and more</div>" : "");
+        (upstream?.truncated ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">â€¦and more</div>" : "");
       }
     }
 
@@ -28672,7 +29325,7 @@ async function handleBuyPage(req: any, reply: any) {
 
   function formatProofTime(v){
     const s = String(v || "").trim();
-    if (!s) return "—";
+    if (!s) return "â€”";
     const d = new Date(s);
     if (Number.isNaN(d.getTime())) return s;
     return d.toLocaleString();
@@ -28681,7 +29334,7 @@ async function handleBuyPage(req: any, reply: any) {
   function shortHash(v){
     const s = String(v || "").trim();
     if (s.length <= 20) return s;
-    return s.slice(0, 12) + "…" + s.slice(-8);
+    return s.slice(0, 12) + "â€¦" + s.slice(-8);
   }
 
   function renderPublishProofBlock(offer){
@@ -28770,10 +29423,10 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderPaymentAccessProofBlock(offer, entitlement, owned){
     const proof = resolvePaymentAccessProof(offer, entitlement, owned);
-    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : "—";
-    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : "—";
-    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : "—";
-    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "—";
+    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : "â€”";
+    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : "â€”";
+    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : "â€”";
+    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "â€”";
     const entitlementLabel = proof.entitlementState === "entitled" ? "Entitled" : proof.entitlementState === "preview" ? "Preview" : "Locked";
     return "<div class=\\"access-card\\">" +
       "<div class=\\"access-title\\">Payment confirmation</div>" +
@@ -29187,7 +29840,7 @@ async function handleBuyPage(req: any, reply: any) {
       }
     }
     if (entitlement?.status === "preview" && isPaid) {
-      document.getElementById("status").textContent = "Preview playing…";
+      document.getElementById("status").textContent = "Preview playingâ€¦";
       const player = document.getElementById("player");
       const limitSec = Math.max(1, Number(previewSeconds || 25));
       if (player) {
@@ -29286,7 +29939,7 @@ async function handleBuyPage(req: any, reply: any) {
               <a id="openWalletBtn" class="btn" href="\${hasLightningInvoice ? ("lightning:" + lightningInvoice) : "#"}" \${hasLightningInvoice ? "" : "aria-disabled=\\"true\\" style=\\"pointer-events:none;opacity:0.6;\\""}>\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</a>
               <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
             </div>
-            <div class="muted" style="margin-top:6px;">If your wallet doesn’t open, scan the QR or copy the invoice.</div>
+            <div class="muted" style="margin-top:6px;">If your wallet doesnâ€™t open, scan the QR or copy the invoice.</div>
           \` : \`<div class="muted">Unavailable: \${lightning.reason || "Not available"}</div>\`}
         </div>
         <div class="rail">
@@ -29370,7 +30023,7 @@ async function handleBuyPage(req: any, reply: any) {
     if (!pendingIntent) return;
     receiptToken = pendingIntent;
     const statusEl = document.getElementById("status");
-    if (statusEl) statusEl.textContent = "Checking payment…";
+    if (statusEl) statusEl.textContent = "Checking paymentâ€¦";
     pollStatus().catch(()=>{});
   }
 
@@ -29445,7 +30098,7 @@ async function handleBuyPage(req: any, reply: any) {
         statusEl.textContent = "Payment received. Download is ready.";
       }
     } else {
-      document.getElementById("status").textContent = "Waiting for payment…";
+      document.getElementById("status").textContent = "Waiting for paymentâ€¦";
     }
   }
 
@@ -29490,7 +30143,7 @@ async function handleBuyPage(req: any, reply: any) {
         let json = null;
         try { json = text ? JSON.parse(text) : null; } catch {}
         if (res.ok && json && json.ok) {
-          if (statusEl) statusEl.textContent = "Unlocked. Redirecting…";
+          if (statusEl) statusEl.textContent = "Unlocked. Redirectingâ€¦";
           const redirectUrl = json.redirectUrl || "/library";
           window.location.assign(redirectUrl);
           return true;
@@ -29510,7 +30163,7 @@ async function handleBuyPage(req: any, reply: any) {
       if (statusEl) statusEl.textContent = "This shop uses manual confirmation in Basic mode.";
       return;
     }
-    document.getElementById("status").textContent = "Creating payment…";
+    document.getElementById("status").textContent = "Creating paymentâ€¦";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     let intent = null;
     try {
@@ -29668,7 +30321,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loading…</div>
+      <div id="app">Loadingâ€¦</div>
       <div class="footer">
         <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
@@ -32509,7 +33162,13 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
         const previewUrl = manifestJson?.preview || null;
         const payload = {
           content: { id: content.id, title: content.title, type: content.type, status: content.status },
-          manifest: { sha256: publicMeta.sha256, preview: manifestJson?.preview || null, cover: manifestJson?.cover || null },
+          manifest: {
+            sha256: publicMeta.sha256,
+            preview: manifestJson?.preview || null,
+            cover: manifestJson?.cover || null,
+            primaryFile: manifestJson?.primaryFile || null,
+            files: Array.isArray(manifestJson?.files) ? manifestJson.files : []
+          },
           previewUrl,
           files: []
         };
@@ -32546,7 +33205,15 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
 
   const payload = {
     content: { id: content.id, title: content.title, type: content.type, status: content.status },
-    manifest: manifest ? { sha256: manifest.sha256, preview: manifestJson?.preview || null, cover: manifestJson?.cover || null } : null,
+    manifest: manifest
+      ? {
+          sha256: manifest.sha256,
+          preview: manifestJson?.preview || null,
+          cover: manifestJson?.cover || null,
+          primaryFile: manifestJson?.primaryFile || null,
+          files: Array.isArray(manifestJson?.files) ? manifestJson.files : []
+        }
+      : null,
     previewUrl: previewUrl || null,
     files: files.map((f) => ({
       id: f.id,
@@ -33034,11 +33701,32 @@ app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async 
 
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    select: { ownerUserId: true, status: true, deletedAt: true, featureOnProfile: true }
+    select: { ownerUserId: true, status: true, deletedAt: true, deletedReason: true, description: true, featureOnProfile: true }
   });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  if (next && (content.status !== "published" || content.deletedAt)) {
+  const isActiveLocalPublished = content.status === "published" && !content.deletedAt;
+  let shadowExceptionEligible = false;
+  let shadowExceptionReason: string | null = null;
+  if (next && !isActiveLocalPublished) {
+    const shadowCheck = await isCurrentApprovedFeatureableDerivativeShadow({ contentId, ownerUserId: userId });
+    shadowExceptionEligible = shadowCheck.eligible;
+    shadowExceptionReason = shadowCheck.reason || null;
+  }
+  if (next && !isActiveLocalPublished && !shadowExceptionEligible) {
+    if (process.env.NODE_ENV !== "production") {
+      req.log.info(
+        {
+          contentId,
+          userId,
+          status: content.status,
+          deletedAt: content.deletedAt ? new Date(content.deletedAt).toISOString() : null,
+          deletedReason: content.deletedReason || null,
+          shadowExceptionReason
+        },
+        "feature_on_profile.rejected"
+      );
+    }
     return reply.code(409).send({
       error: "NOT_ELIGIBLE",
       message: "Only active published content can be featured on profile."
@@ -34727,6 +35415,134 @@ function isActionableDerivativeChildForClearanceInbox(
   // Treat hard-deleted rows with a remote-origin marker as actionable remote-shadow records,
   // even if a repoPath exists due local mirror/sync artifacts.
   return deletedReason === "hard" && Boolean(remoteOrigin);
+}
+
+async function isCurrentApprovedFeatureableDerivativeShadow(input: {
+  contentId: string;
+  ownerUserId: string;
+}): Promise<{ eligible: boolean; remoteOrigin: string | null; reason?: string }> {
+  const content = await prisma.contentItem.findUnique({
+    where: { id: input.contentId },
+    select: {
+      id: true,
+      ownerUserId: true,
+      status: true,
+      deletedAt: true,
+      deletedReason: true,
+      description: true
+    }
+  });
+  if (!content) return { eligible: false, remoteOrigin: null, reason: "not_found" };
+  if (content.ownerUserId !== input.ownerUserId) return { eligible: false, remoteOrigin: null, reason: "not_owner" };
+  if (asString(content.status || "").trim().toLowerCase() !== "published") return { eligible: false, remoteOrigin: null, reason: "not_published" };
+  if (!content.deletedAt) return { eligible: false, remoteOrigin: null, reason: "not_shadow" };
+  if (asString(content.deletedReason || "").trim().toLowerCase() !== "hard") {
+    return { eligible: false, remoteOrigin: null, reason: "not_hard_shadow" };
+  }
+  const remoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(content.description || null));
+  if (!remoteOrigin) return { eligible: false, remoteOrigin: null, reason: "missing_remote_origin" };
+  if (!isActionableDerivativeChildForClearanceInbox(content)) {
+    return { eligible: false, remoteOrigin, reason: "not_actionable_shadow" };
+  }
+
+  const directLinks = await prisma.contentLink.findMany({
+    where: {
+      childContentId: input.contentId,
+      relation: { in: ["derivative", "remix", "mashup"] as any }
+    },
+    select: { id: true, parentContentId: true, relation: true, upstreamBps: true, approvedAt: true }
+  });
+  if (!directLinks.length) return { eligible: false, remoteOrigin, reason: "missing_derivative_link" };
+  const directAuth = await prisma.derivativeAuthorization.findMany({
+    where: { derivativeLinkId: { in: directLinks.map((l) => l.id) } },
+    select: { derivativeLinkId: true, status: true, updatedAt: true, createdAt: true }
+  });
+  const authByLinkId = new Map<string, { status: string; updatedAtMs: number; createdAtMs: number }>();
+  for (const row of directAuth) {
+    authByLinkId.set(asString(row.derivativeLinkId || "").trim(), {
+      status: asString(row.status || "").trim().toUpperCase(),
+      updatedAtMs: row.updatedAt instanceof Date ? row.updatedAt.getTime() : 0,
+      createdAtMs: row.createdAt instanceof Date ? row.createdAt.getTime() : 0
+    });
+  }
+  const approvedDirectLinks = directLinks.filter((link) => {
+    const auth = authByLinkId.get(link.id);
+    return Boolean(link.approvedAt) || auth?.status === "APPROVED";
+  });
+  if (!approvedDirectLinks.length) return { eligible: false, remoteOrigin, reason: "not_approved" };
+
+  let candidate = approvedDirectLinks[0];
+  let candidateUpdatedAt = 0;
+  for (const link of approvedDirectLinks) {
+    const auth = authByLinkId.get(link.id);
+    const stamp = Math.max(
+      auth?.updatedAtMs || 0,
+      auth?.createdAtMs || 0,
+      link.approvedAt instanceof Date ? link.approvedAt.getTime() : 0
+    );
+    if (stamp >= candidateUpdatedAt) {
+      candidate = link;
+      candidateUpdatedAt = stamp;
+    }
+  }
+
+  const workflowLinks = await prisma.contentLink.findMany({
+    where: {
+      parentContentId: candidate.parentContentId,
+      relation: candidate.relation as any,
+      upstreamBps: candidate.upstreamBps,
+      childContent: { ownerUserId: input.ownerUserId } as any
+    },
+    select: {
+      id: true,
+      approvedAt: true,
+      childContent: { select: { id: true, status: true, deletedAt: true, deletedReason: true, description: true } }
+    }
+  });
+  const workflowAuth = await prisma.derivativeAuthorization.findMany({
+    where: { derivativeLinkId: { in: workflowLinks.map((l) => l.id) } },
+    select: { derivativeLinkId: true, status: true, updatedAt: true, createdAt: true }
+  });
+  const workflowAuthByLinkId = new Map<string, { status: string; updatedAtMs: number; createdAtMs: number }>();
+  for (const row of workflowAuth) {
+    workflowAuthByLinkId.set(asString(row.derivativeLinkId || "").trim(), {
+      status: asString(row.status || "").trim().toUpperCase(),
+      updatedAtMs: row.updatedAt instanceof Date ? row.updatedAt.getTime() : 0,
+      createdAtMs: row.createdAt instanceof Date ? row.createdAt.getTime() : 0
+    });
+  }
+
+  const hasPublishedLocalWorkflow = workflowLinks.some((link: any) => {
+    const child = link?.childContent;
+    const status = asString(child?.status || "").trim().toLowerCase();
+    return status === "published" && !child?.deletedAt;
+  });
+  if (hasPublishedLocalWorkflow) return { eligible: false, remoteOrigin, reason: "published_workflow_exists" };
+
+  let latestApprovedShadowLinkId = "";
+  let latestApprovedShadowStamp = 0;
+  for (const link of workflowLinks as any[]) {
+    const child = link?.childContent;
+    if (!child?.deletedAt) continue;
+    if (!isActionableDerivativeChildForClearanceInbox(child)) continue;
+    const auth = workflowAuthByLinkId.get(asString(link.id || "").trim());
+    const approved = Boolean(link?.approvedAt) || auth?.status === "APPROVED";
+    if (!approved) continue;
+    const stamp = Math.max(
+      auth?.updatedAtMs || 0,
+      auth?.createdAtMs || 0,
+      link.approvedAt instanceof Date ? link.approvedAt.getTime() : 0
+    );
+    if (stamp >= latestApprovedShadowStamp) {
+      latestApprovedShadowStamp = stamp;
+      latestApprovedShadowLinkId = asString(link.id || "").trim();
+    }
+  }
+  if (!latestApprovedShadowLinkId) return { eligible: false, remoteOrigin, reason: "no_current_shadow" };
+  if (latestApprovedShadowLinkId !== asString(candidate.id || "").trim()) {
+    return { eligible: false, remoteOrigin, reason: "superseded_shadow" };
+  }
+  return { eligible: true, remoteOrigin };
 }
 
 type CanonicalDerivativeWorkflowRow = {
@@ -40031,7 +40847,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loading…</div>
+      <div id="app">Loadingâ€¦</div>
     </div>
   </div>
 <script>
@@ -40194,19 +41010,19 @@ async function handlePublicInvitePage(req: any, reply: any) {
     }
 
     app.innerHTML = \`
-      <div style="font-size:22px;font-weight:700;">You’ve been invited to a split</div>
+      <div style="font-size:22px;font-weight:700;">Youâ€™ve been invited to a split</div>
       <div class="muted" style="margin-top:6px;">Content: \${c.title || "Unknown"} (\${c.type || "content"})</div>
-      <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} • Share: \${sp.percent || "?"}%</div>
-      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "—") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
+      <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} â€¢ Share: \${sp.percent || "?"}%</div>
+      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "â€”") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
       <div class="muted" style="margin-top:4px;">Backend key verification: \${auth?.keyVerified === true ? "verified" : auth?.keyVerified === false ? "unverified" : "unknown"}</div>
-      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "—"}: \${inv?.targetValue || "—"}</div>
+      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "â€”"}: \${inv?.targetValue || "â€”"}</div>
       \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
       <button id="primaryBtn" class="btn" style="margin-top:14px;">\${canAccept ? "Accept invite" : "Open in creator dashboard"}</button>
       <div id="status" class="muted" style="margin-top:8px;"></div>
       <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own Certifyd Creator node first and open this link in the same browser.</div>
     \`;
     async function openDashboardHandoff(statusEl) {
-      statusEl.textContent = "Locating dashboard…";
+      statusEl.textContent = "Locating dashboardâ€¦";
       const resolved = await resolveDashboardBase();
       if (resolved.base && !resolved.acceptCapable) {
         statusEl.textContent = "Acceptance-capable creator surface not reachable. Opening view-only dashboard.";
@@ -40232,7 +41048,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
         await openDashboardHandoff(statusEl);
         return;
       }
-      document.getElementById("status").textContent = "Accepting…";
+      document.getElementById("status").textContent = "Acceptingâ€¦";
       try {
         const acceptPath = isRemoteInvite
           ? remoteProxyPath("/invites/" + encodeURIComponent(token) + "/accept")
@@ -40245,7 +41061,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
         if (resp?.alreadyAccepted) {
           document.getElementById("status").textContent = "Already accepted.";
         } else {
-          document.getElementById("status").textContent = "Accepted. You’re in the split.";
+          document.getElementById("status").textContent = "Accepted. Youâ€™re in the split.";
         }
       } catch (e) {
         const msg = e && e.message ? String(e.message) : "Could not accept invite.";
@@ -41256,3 +42072,7 @@ start().catch((err) => {
 process.on("exit", () => {
   releaseApiRuntimeLock();
 });
+
+
+
+
