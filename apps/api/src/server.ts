@@ -1298,6 +1298,17 @@ const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
   .filter(Boolean);
+function isLoopbackOrigin(origin: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    const host = String(parsed.hostname || "").trim().toLowerCase();
+    if (host !== "localhost" && host !== "127.0.0.1") return false;
+    if (!parsed.port) return false;
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
@@ -2285,7 +2296,7 @@ function summarizeParticipantDestination(type: ParticipantDestinationType, value
   if (!v) return "";
   if (type === "lightning_address") return v.toLowerCase();
   if (v.length <= 24) return v;
-  return `${v.slice(0, 14)}â€¦${v.slice(-8)}`;
+  return `${v.slice(0, 14)}...${v.slice(-8)}`;
 }
 
 async function verifyParticipantDestination(
@@ -3449,7 +3460,7 @@ function summarizePayoutDestination(type: CreatorPayoutDestinationType, lightnin
   if (type === "lightning_address" && lightningAddress) return lightningAddress;
   if (type === "onchain_address" && onchainAddress) {
     if (onchainAddress.length <= 16) return onchainAddress;
-    return `${onchainAddress.slice(0, 10)}â€¦${onchainAddress.slice(-6)}`;
+    return `${onchainAddress.slice(0, 10)}...${onchainAddress.slice(-6)}`;
   }
   if (type === "local_lnd") return "Local Lightning node";
   return null;
@@ -9906,8 +9917,11 @@ app.register(cors, {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (isLoopbackOrigin(origin)) return cb(null, true);
     if (process.env.NODE_ENV !== "production") {
       const devAllowed = [
+        "http://localhost:4000",
+        "http://127.0.0.1:4000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://192.168.100.109:5173"
@@ -9917,7 +9931,8 @@ app.register(cors, {
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key", "Range"],
+  exposedHeaders: ["Content-Length", "Content-Range", "Accept-Ranges", "Content-Type"],
   credentials: true,
   preflightContinue: false,
   optionsSuccessStatus: 204
@@ -11952,7 +11967,7 @@ app.get("/content/:id/history", { preHandler: requireAuth }, async (req: any, re
       ts: e.createdAt.toISOString(),
       category: "split",
       type: e.action,
-      title: `Split v${splitVersionMap.get(e.entityId) || "?"} â€¢ ${e.action.replace(/\./g, " ")}`,
+      title: `Split v${splitVersionMap.get(e.entityId) || "?"}  -  ${e.action.replace(/\./g, " ")}`,
       summary: content.title || "Content",
       actor: actorFromUser(e.user),
       details: e.payloadJson || null,
@@ -11993,7 +12008,7 @@ app.get("/content/:id/split-history", { preHandler: requireAuth }, async (req: a
     ts: e.createdAt.toISOString(),
     category: "split",
     type: e.action,
-    title: `Split v${splitVersionMap.get(e.entityId) || "?"} â€¢ ${e.action.replace(/\./g, " ")}`,
+    title: `Split v${splitVersionMap.get(e.entityId) || "?"}  -  ${e.action.replace(/\./g, " ")}`,
     summary: content.title || "Content",
     actor: actorFromUser(e.user),
     details: e.payloadJson || null,
@@ -12049,7 +12064,7 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
       ts: s.createdAt.toISOString(),
       category: "royalty",
       type: "settlement.created",
-      title: `Settlement â€¢ ${s.content?.title || "Content"}`,
+      title: `Settlement  -  ${s.content?.title || "Content"}`,
       summary: `${sumLines.toString()} sats`,
       actor: actorFromUser(s.content?.owner ? { id: s.content.owner.id, email: s.content.owner.email, displayName: s.content.owner.displayName } : null),
       details: {
@@ -12076,8 +12091,8 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
     ts: p.createdAt.toISOString(),
     category: "royalty",
     type: "payment.intent",
-    title: `Purchase â€¢ ${p.content?.title || "Content"}`,
-    summary: `${BigInt(p.amountSats as any).toString()} sats â€¢ ${p.status}`,
+    title: `Purchase  -  ${p.content?.title || "Content"}`,
+    summary: `${BigInt(p.amountSats as any).toString()} sats  -  ${p.status}`,
     actor: actorFromUser(me),
     details: {
       amountSats: BigInt(p.amountSats as any).toString(),
@@ -12123,7 +12138,7 @@ app.get("/content-links/:id/clearance-history", { preHandler: requireAuth }, asy
       ts: r.createdAt.toISOString(),
       category: "clearance",
       type: "clearance.requested",
-      title: `Clearance requested â€¢ ${link.childContent?.title || "Derivative"}`,
+      title: `Clearance requested  -  ${link.childContent?.title || "Derivative"}`,
       summary: r.status,
       actor: actorFromUser(r.requestedByUserId ? { id: r.requestedByUserId } as any : null),
       details: { status: r.status }
@@ -12216,7 +12231,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.createdAt.toISOString(),
         category: "invite",
         type: "invite.sent",
-        title: `Invite sent â€¢ ${contentTitle}`,
+        title: `Invite sent  -  ${contentTitle}`,
         summary: inv.splitParticipant?.participantEmail || null,
         actor: actorFromUser(me),
         details: { expiresAt: inv.expiresAt.toISOString() }
@@ -12227,7 +12242,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
       ts: inv.createdAt.toISOString(),
       category: "invite",
       type: "invite.received",
-      title: `Invite received â€¢ ${contentTitle}`,
+      title: `Invite received  -  ${contentTitle}`,
       summary: inv.splitParticipant?.participantEmail || null,
       actor: actorFromUser(me),
       details: { expiresAt: inv.expiresAt.toISOString() }
@@ -12238,7 +12253,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.acceptedAt.toISOString(),
         category: "invite",
         type: "invite.accepted",
-        title: `Invite accepted â€¢ ${contentTitle}`,
+        title: `Invite accepted  -  ${contentTitle}`,
         summary: inv.splitParticipant?.participantEmail || null,
         actor: actorFromUser(me)
       });
@@ -12256,7 +12271,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
       ts: inv.createdAt.toISOString(),
       category: "invite",
       type: "invite.remote.received",
-      title: `Remote invite received â€¢ ${contentTitle}`,
+      title: `Remote invite received  -  ${contentTitle}`,
       summary: inv.participantEmail || null,
       actor: actorFromUser(me),
       details: { remoteOrigin: inv.remoteOrigin, inviteUrl: inv.inviteUrl }
@@ -12267,7 +12282,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
         ts: inv.acceptedAt.toISOString(),
         category: "invite",
         type: "invite.remote.accepted",
-        title: `Remote invite accepted â€¢ ${contentTitle}`,
+        title: `Remote invite accepted  -  ${contentTitle}`,
         summary: inv.participantEmail || null,
         actor: actorFromUser(me),
         details: { remoteOrigin: inv.remoteOrigin, inviteUrl: inv.inviteUrl }
@@ -19926,7 +19941,7 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       return reply.code(409).send({
         ...getPublicStatus(),
         lastError: "named_token_missing",
-        message: "Named tunnel requires a connector token. Add it in Config â†’ Tunnel & routing."
+        message: "Named tunnel requires a connector token. Add it in Config &#8594; Tunnel & routing."
       });
     }
     const defer = shouldDeferNamedTunnelToServiceControl();
@@ -20469,7 +20484,7 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
 
       if (beatifyHandle || altHandle) {
         const chosenHandle = beatifyHandle || altHandle;
-        // Prefer the Beatify username when parsing Beatify hosts â€” override other name candidates
+        // Prefer the Beatify username when parsing Beatify hosts  -  override other name candidates
         try {
           const host = new URL(targetUrl).hostname.toLowerCase();
           if (host.includes("beatify")) {
@@ -26760,7 +26775,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const nodeUrl = wk.nodeUrl || "";
   if (!nodeUrl) return notFound(reply, "Not found");
   const nodeSha = wk.publicKeyPemSha256 || null;
-  const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}â€¦${nodeSha.slice(-8)}` : null;
+  const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}...${nodeSha.slice(-8)}` : null;
 
   const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
   const safeBio = escHtml(asString(user.bio || ""));
@@ -26963,7 +26978,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const domain = asString((p as any).subject || "").trim().toLowerCase();
             const safeDomain = escHtml(domain);
             const href = `https://${encodeURI(domain)}`;
-            return `<div class="line muted">âœ“ <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">â†—</span>${trustTierBadgeHtml("strong")}</div>`;
+            return `<div class="line muted">&#10003; <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">&#8599;</span>${trustTierBadgeHtml("strong")}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -27024,9 +27039,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeAccount = escHtml(displayAccount || "unknown");
             const safeProvider = escHtml(providerLabel);
             if (href) {
-              return `<div class="line muted">${providerBadgeHtml} ${safeProvider} â€” <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">â†—</span>${tierBadge}</div>`;
+              return `<div class="line muted">${providerBadgeHtml} ${safeProvider}  -  <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">&#8599;</span>${tierBadge}</div>`;
             }
-            return `<div class="line muted">${providerBadgeHtml} ${safeProvider} â€” <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
+            return `<div class="line muted">${providerBadgeHtml} ${safeProvider}  -  <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -27054,13 +27069,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               }
             }
             const displayValue = npub || pubkey || "unknown";
-            const shortValue = displayValue.length > 18 ? `${displayValue.slice(0, 10)}â€¦${displayValue.slice(-8)}` : displayValue;
+            const shortValue = displayValue.length > 18 ? `${displayValue.slice(0, 10)}...${displayValue.slice(-8)}` : displayValue;
             const hrefValue = npub || pubkey;
             const href = hrefValue ? `https://njump.me/${encodeURIComponent(hrefValue)}` : "";
             if (href) {
-              return `<div class="line muted">âœ“ Nostr â€” <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">â†—</span></div>`;
+              return `<div class="line muted">&#10003; Nostr  -  <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">&#8599;</span></div>`;
             }
-            return `<div class="line muted">âœ“ Nostr â€” <span class="mono">${escHtml(shortValue)}</span></div>`;
+            return `<div class="line muted">&#10003; Nostr  -  <span class="mono">${escHtml(shortValue)}</span></div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -27070,7 +27085,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           .map((p: any) => {
             const proofType = asString((p as any).proofType || "").trim().toLowerCase() || "proof";
             const subject = asString((p as any).subject || "").trim() || "unknown";
-            return `<div class="line muted">âœ“ ${escHtml(proofType)}: <span class="mono">${escHtml(subject)}</span></div>`;
+            return `<div class="line muted">&#10003; ${escHtml(proofType)}: <span class="mono">${escHtml(subject)}</span></div>`;
           })
           .join("")
       : "";
@@ -27446,7 +27461,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const shareLabel =
               Number.isFinite(Number(item.participantBps)) && Number(item.participantBps) > 0
                 ? `${(Number(item.participantBps) / 100).toFixed(2)}%`
-                : "â€”";
+                : " - ";
             const safeShare = escHtml(shareLabel);
             const buyUrl = asString(item.buyUrl || "").trim();
             const attributionUrl = asString(item.attributionUrl || "").trim();
@@ -27470,7 +27485,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="featured-support">Role: ${safeRole} â€¢ Share: ${safeShare}</div>
+                <div class="featured-support">Role: ${safeRole}  -  Share: ${safeShare}</div>
                 ${
                   linkHref && cta
                     ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &rarr;</a></div>`
@@ -27487,7 +27502,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeType = escHtml(asString(item.contentType || "Participation"));
             const shareLabel = Number.isFinite(Number(percentToPrimitive(item.percent ?? null)))
               ? `${Number(percentToPrimitive(item.percent ?? null)).toFixed(2)}%`
-              : "â€”";
+              : " - ";
             const safeShare = escHtml(shareLabel);
             const base = normalizeOrigin(item.remoteOrigin || "") || "";
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
@@ -27516,7 +27531,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="featured-support">Role: ${safeRole} â€¢ Share: ${safeShare}</div>
+                <div class="featured-support">Role: ${safeRole}  -  Share: ${safeShare}</div>
                 ${
                   isDerivative
                     ? `<div class="featured-support">Derivative of ${
@@ -28215,7 +28230,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
       }
       return {
         pubkey,
-        display: pubkey.length > 18 ? `${pubkey.slice(0, 10)}â€¦${pubkey.slice(-8)}` : pubkey,
+        display: pubkey.length > 18 ? `${pubkey.slice(0, 10)}...${pubkey.slice(-8)}` : pubkey,
         location: asString((p as any).location || "").trim() || null,
         verifiedAt: (p as any).verifiedAt?.toISOString?.() || null
       };
@@ -28283,7 +28298,7 @@ async function handleShortPublicLink(req: any, reply: any) {
 <body>
   <div class="card">
     <h2>Not Available</h2>
-    <p><strong>${safeTitle}</strong> isnâ€™t publicly available yet.</p>
+    <p><strong>${safeTitle}</strong> isn't publicly available yet.</p>
     <p class="muted">If you expected access, ask the owner to share a private link (e.g. <code>/p/&lt;token&gt;</code>) or publish the content.</p>
     <p class="muted"><a href="${APP_BASE_URL}">Return to Certifyd Creator</a></p>
   </div>
@@ -28579,7 +28594,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     } catch {}
   }
 
-  return reply.type("text/plain").send("Thanks â€” your clearance response has been recorded.");
+  return reply.type("text/plain").send("Thanks  -  your clearance response has been recorded.");
 });
 
 // External clearance page (no login required)
@@ -28790,7 +28805,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     } catch {}
   }
 
-  return reply.send("Thanks â€” your clearance response has been recorded.");
+  return reply.send("Thanks  -  your clearance response has been recorded.");
 });
 
 function resolveTabIconPath(): string | null {
@@ -28975,7 +28990,7 @@ async function handleBuyPage(req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loadingâ€¦</div>
+      <div id="app">Loading...</div>
       <div class="footer">
         <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
@@ -29027,7 +29042,7 @@ async function handleBuyPage(req: any, reply: any) {
         show: true,
         badge: "",
         title: "Receipt unavailable",
-        subtitle: "We couldnâ€™t resolve this receipt.",
+        subtitle: "We couldn't resolve this receipt.",
         state: "Invalid receipt",
         actionLabel: "",
         actionKind: "",
@@ -29213,7 +29228,7 @@ async function handleBuyPage(req: any, reply: any) {
   function heartFor(c){
     if (c?.verification?.badge !== "beatify_heart") return "";
     const tier = (c?.verification?.tier === "gold") ? "gold" : "grey";
-    return " <span class=\\"cb-heart cb-heart--" + tier + "\\" title=\\"Verified on Beatify (node operator)\\" aria-label=\\"Verified on Beatify (node operator)\\">â™¥</span>";
+    return " <span class=\\"cb-heart cb-heart--" + tier + "\\" title=\\"Verified on Beatify (node operator)\\" aria-label=\\"Verified on Beatify (node operator)\\">&#9829;</span>";
   }
 
   function resolveAttributionContentId(){
@@ -29280,7 +29295,7 @@ async function handleBuyPage(req: any, reply: any) {
               ? ("(@" + esc(normalizedContributorHandle) + ")")
               : "";
           const roleRaw = String(c?.role || "").trim();
-          const role = roleRaw ? (" â€¢ " + esc(roleRaw)) : "";
+          const role = roleRaw ? ("  -  " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
           const nameLabel = ch ? (cn + " " + ch) : cn;
           const contributorNameHtml = profilePathRaw
@@ -29288,7 +29303,7 @@ async function handleBuyPage(req: any, reply: any) {
             : nameLabel;
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
-          return "<li>" + contributorNameHtml + role + (pct ? (" â€¢ " + pct) : "") + "</li>";
+          return "<li>" + contributorNameHtml + role + (pct ? ("  -  " + pct) : "") + "</li>";
         }).join("") +
       "</ul>";
     } else if (split?.state === "draft") {
@@ -29302,7 +29317,7 @@ async function handleBuyPage(req: any, reply: any) {
       if (items.length > 0) {
         upstreamHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Upstream creators:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
           items.map((it) => {
-            const t = it?.title ? (esc(it.title) + " â€” ") : "";
+            const t = it?.title ? (esc(it.title) + "  -  ") : "";
             const pc = it?.primaryCreator || {};
             const pn = esc(pc.displayName || pc.name || pc.handle || "Creator");
             const phRaw = String(pc.handle || "").trim();
@@ -29331,8 +29346,8 @@ async function handleBuyPage(req: any, reply: any) {
                       : shLabel;
                     return linked + (pct ? " (" + esc(pct) + ")" : "");
                   })
-                  .join(" â€¢ ") +
-                (shareholders.length > 6 ? " â€¢ â€¦" : "") +
+                  .join("  -  ") +
+                (shareholders.length > 6 ? "  -  ..." : "") +
                 "</div>"
               : "";
             const attributionLinkHtml = parentContentUrl
@@ -29341,7 +29356,7 @@ async function handleBuyPage(req: any, reply: any) {
             return "<li>" + t + creatorHtml + shareholdersHtml + attributionLinkHtml + "</li>";
           }).join("") +
         "</ul>" +
-        (upstream?.truncated ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">â€¦and more</div>" : "");
+        (upstream?.truncated ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">...and more</div>" : "");
       }
     }
 
@@ -29359,7 +29374,7 @@ async function handleBuyPage(req: any, reply: any) {
 
   function formatProofTime(v){
     const s = String(v || "").trim();
-    if (!s) return "â€”";
+    if (!s) return " - ";
     const d = new Date(s);
     if (Number.isNaN(d.getTime())) return s;
     return d.toLocaleString();
@@ -29368,7 +29383,7 @@ async function handleBuyPage(req: any, reply: any) {
   function shortHash(v){
     const s = String(v || "").trim();
     if (s.length <= 20) return s;
-    return s.slice(0, 12) + "â€¦" + s.slice(-8);
+    return s.slice(0, 12) + "..." + s.slice(-8);
   }
 
   function renderPublishProofBlock(offer){
@@ -29457,10 +29472,10 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderPaymentAccessProofBlock(offer, entitlement, owned){
     const proof = resolvePaymentAccessProof(offer, entitlement, owned);
-    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : "â€”";
-    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : "â€”";
-    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : "â€”";
-    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "â€”";
+    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : " - ";
+    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : " - ";
+    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : " - ";
+    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : " - ";
     const entitlementLabel = proof.entitlementState === "entitled" ? "Entitled" : proof.entitlementState === "preview" ? "Preview" : "Locked";
     return "<div class=\\"access-card\\">" +
       "<div class=\\"access-title\\">Payment confirmation</div>" +
@@ -29874,7 +29889,7 @@ async function handleBuyPage(req: any, reply: any) {
       }
     }
     if (entitlement?.status === "preview" && isPaid) {
-      document.getElementById("status").textContent = "Preview playingâ€¦";
+      document.getElementById("status").textContent = "Preview playing...";
       const player = document.getElementById("player");
       const limitSec = Math.max(1, Number(previewSeconds || 25));
       if (player) {
@@ -29973,7 +29988,7 @@ async function handleBuyPage(req: any, reply: any) {
               <a id="openWalletBtn" class="btn" href="\${hasLightningInvoice ? ("lightning:" + lightningInvoice) : "#"}" \${hasLightningInvoice ? "" : "aria-disabled=\\"true\\" style=\\"pointer-events:none;opacity:0.6;\\""}>\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</a>
               <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
             </div>
-            <div class="muted" style="margin-top:6px;">If your wallet doesnâ€™t open, scan the QR or copy the invoice.</div>
+            <div class="muted" style="margin-top:6px;">If your wallet doesn't open, scan the QR or copy the invoice.</div>
           \` : \`<div class="muted">Unavailable: \${lightning.reason || "Not available"}</div>\`}
         </div>
         <div class="rail">
@@ -30057,7 +30072,7 @@ async function handleBuyPage(req: any, reply: any) {
     if (!pendingIntent) return;
     receiptToken = pendingIntent;
     const statusEl = document.getElementById("status");
-    if (statusEl) statusEl.textContent = "Checking paymentâ€¦";
+    if (statusEl) statusEl.textContent = "Checking payment...";
     pollStatus().catch(()=>{});
   }
 
@@ -30132,7 +30147,7 @@ async function handleBuyPage(req: any, reply: any) {
         statusEl.textContent = "Payment received. Download is ready.";
       }
     } else {
-      document.getElementById("status").textContent = "Waiting for paymentâ€¦";
+      document.getElementById("status").textContent = "Waiting for payment...";
     }
   }
 
@@ -30177,7 +30192,7 @@ async function handleBuyPage(req: any, reply: any) {
         let json = null;
         try { json = text ? JSON.parse(text) : null; } catch {}
         if (res.ok && json && json.ok) {
-          if (statusEl) statusEl.textContent = "Unlocked. Redirectingâ€¦";
+          if (statusEl) statusEl.textContent = "Unlocked. Redirecting...";
           const redirectUrl = json.redirectUrl || "/library";
           window.location.assign(redirectUrl);
           return true;
@@ -30197,7 +30212,7 @@ async function handleBuyPage(req: any, reply: any) {
       if (statusEl) statusEl.textContent = "This shop uses manual confirmation in Basic mode.";
       return;
     }
-    document.getElementById("status").textContent = "Creating paymentâ€¦";
+    document.getElementById("status").textContent = "Creating payment...";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     let intent = null;
     try {
@@ -30355,7 +30370,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loadingâ€¦</div>
+      <div id="app">Loading...</div>
       <div class="footer">
         <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
@@ -40881,7 +40896,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loadingâ€¦</div>
+      <div id="app">Loading...</div>
     </div>
   </div>
 <script>
@@ -41044,19 +41059,19 @@ async function handlePublicInvitePage(req: any, reply: any) {
     }
 
     app.innerHTML = \`
-      <div style="font-size:22px;font-weight:700;">Youâ€™ve been invited to a split</div>
+      <div style="font-size:22px;font-weight:700;">You've been invited to a split</div>
       <div class="muted" style="margin-top:6px;">Content: \${c.title || "Unknown"} (\${c.type || "content"})</div>
-      <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} â€¢ Share: \${sp.percent || "?"}%</div>
-      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "â€”") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
+      <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"}  -  Share: \${sp.percent || "?"}%</div>
+      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || " - ") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
       <div class="muted" style="margin-top:4px;">Backend key verification: \${auth?.keyVerified === true ? "verified" : auth?.keyVerified === false ? "unverified" : "unknown"}</div>
-      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "â€”"}: \${inv?.targetValue || "â€”"}</div>
+      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || " - "}: \${inv?.targetValue || " - "}</div>
       \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
       <button id="primaryBtn" class="btn" style="margin-top:14px;">\${canAccept ? "Accept invite" : "Open in creator dashboard"}</button>
       <div id="status" class="muted" style="margin-top:8px;"></div>
       <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own Certifyd Creator node first and open this link in the same browser.</div>
     \`;
     async function openDashboardHandoff(statusEl) {
-      statusEl.textContent = "Locating dashboardâ€¦";
+      statusEl.textContent = "Locating dashboard...";
       const resolved = await resolveDashboardBase();
       if (resolved.base && !resolved.acceptCapable) {
         statusEl.textContent = "Acceptance-capable creator surface not reachable. Opening view-only dashboard.";
@@ -41082,7 +41097,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
         await openDashboardHandoff(statusEl);
         return;
       }
-      document.getElementById("status").textContent = "Acceptingâ€¦";
+      document.getElementById("status").textContent = "Accepting...";
       try {
         const acceptPath = isRemoteInvite
           ? remoteProxyPath("/invites/" + encodeURIComponent(token) + "/accept")
@@ -41095,7 +41110,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
         if (resp?.alreadyAccepted) {
           document.getElementById("status").textContent = "Already accepted.";
         } else {
-          document.getElementById("status").textContent = "Accepted. Youâ€™re in the split.";
+          document.getElementById("status").textContent = "Accepted. You're in the split.";
         }
       } catch (e) {
         const msg = e && e.message ? String(e.message) : "Could not accept invite.";
