@@ -1957,6 +1957,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                           : rightsSummary.ownershipKind === "derivative"
                             ? "border-amber-600/40 bg-amber-500/10 text-amber-200"
                             : "border-neutral-700 bg-neutral-700/20 text-neutral-300";
+                    const showRightsBadge = derivativeParentOnly || rightsSummary.ownershipKind === "derivative";
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
                         {hasMediaCard ? (
@@ -2023,9 +2024,11 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${access.cls}`}>
                               {access.label}
                             </span>
-                            <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${rightsBadgeClass}`}>
-                              {rightsBadgeLabel}
-                            </span>
+                            {showRightsBadge ? (
+                              <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${rightsBadgeClass}`}>
+                                {rightsBadgeLabel}
+                              </span>
+                            ) : null}
                             <span className="text-[11px] text-neutral-500">Created {formatDateLabel(it.createdAt)}</span>
                           </div>
                           {it.owner?.displayName || it.owner?.email ? (
