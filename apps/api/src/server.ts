@@ -27113,14 +27113,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
               : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
             const mediaHtml =
-              type === "video" && preferredPreviewUrl
+              type === "video"
                 ? `<div class="featured-video-thumb-wrap">
-                    <div class="featured-preview-host">
-                      <video class="featured-video-preview" controls preload="metadata" playsinline poster="${escHtml(coverUrl)}" src="${escHtml(preferredPreviewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
-                      <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
-                    </div>
+                    <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(videoPreviewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
+                    <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
+                    <span class="featured-video-play" aria-hidden="true">▶</span>
                   </div>`
-                : type === "song"
+                : type === "song" && featuredMediaUrl
                   ? `<div class="featured-song-media">
                       <div class="featured-song-cover-wrap">
                         ${
@@ -27130,6 +27129,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                         }
                         <span class="featured-fallback">${safeType}</span>
                       </div>
+                      <audio class="featured-audio" controls preload="none">
+                        <source src="${escHtml(featuredMediaUrl)}" />
+                      </audio>
                     </div>`
                   : coverUrl
                     ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
@@ -27389,12 +27391,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       base,
       `/public/content/${encodeURIComponent(params.contentId)}/cover`
     );
-    if (type === "video" && previewUrl) {
+    if (type === "video") {
       return `<div class="featured-video-thumb-wrap">
-        <div class="featured-preview-host">
-          <video class="featured-video-preview" controls preload="metadata" playsinline poster="${escHtml(coverUrl)}" src="${escHtml(previewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
-          <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
-        </div>
+        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(previewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
+        <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
+        <span class="featured-video-play" aria-hidden="true">▶</span>
       </div>`;
     }
     return `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
@@ -27719,6 +27720,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-video-thumb { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-video-preview { width:100%; height:100%; object-fit:cover; display:block; background:#000; }
     .featured-video-fallback { position:absolute; inset:0; min-height:0; z-index:2; }
+    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:rgba(9,12,18,0.72); border:1px solid rgba(154,206,255,0.35); color:#d7ecff; font-size:12px; line-height:1; z-index:3; }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
     .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid #252525; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
@@ -27946,7 +27948,47 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         document.body.classList.add("iframe-embedded");
       }
     })();
-    (function () {})();
+    (function () {
+      function armVideo(el) {
+        if (!el) return;
+        if (el.dataset.previewArmed === "1") return;
+        const src = (el.getAttribute("data-preview-src") || "").trim();
+        if (!src) return;
+        el.dataset.previewArmed = "1";
+        el.setAttribute("src", src);
+        try { el.load(); } catch (_) {}
+        const playNow = function () {
+          const p = el.play && el.play();
+          if (p && typeof p.catch === "function") p.catch(function () {});
+        };
+        if ("requestIdleCallback" in window) {
+          window.requestIdleCallback(playNow, { timeout: 250 });
+        } else {
+          setTimeout(playNow, 0);
+        }
+      }
+      function setupLazyVideos() {
+        var nodes = Array.prototype.slice.call(document.querySelectorAll("video.js-lazy-video[data-preview-src]"));
+        if (!nodes.length) return;
+        if (!("IntersectionObserver" in window)) {
+          nodes.forEach(armVideo);
+          return;
+        }
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (!entry.isIntersecting) return;
+            armVideo(entry.target);
+            io.unobserve(entry.target);
+          });
+        }, { rootMargin: "180px 0px", threshold: 0.15 });
+        nodes.forEach(function (node) { io.observe(node); });
+      }
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", setupLazyVideos, { once: true });
+      } else {
+        setupLazyVideos();
+      }
+    })();
   </script>
   <div class="card">
     <h2 class="page-title">Certifyd Creator Profile</h2>
