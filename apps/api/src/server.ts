@@ -26713,12 +26713,35 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const filteredFeaturedContent = (
     await Promise.all(
       (Array.isArray(featuredContent) ? featuredContent : []).map(async (item: any) => {
-        if (!item?.deletedAt) return item;
-        const check = await isCurrentApprovedFeatureableDerivativeShadow({
-          contentId: asString(item.id || "").trim(),
-          ownerUserId: user.id
-        });
-        return check.eligible ? item : null;
+        const contentId = asString(item?.id || "").trim();
+        if (!contentId) return null;
+        const normalizedScopes = new Set(
+          (Array.isArray((item as any)?.libraryScopes) ? (item as any).libraryScopes : [])
+            .map((scope: unknown) => asString(scope || "").trim().toLowerCase())
+            .filter(Boolean)
+        );
+        const derivativeScoped = normalizedScopes.has("derivatives");
+        const derivativeReason = new Set(
+          (Array.isArray((item as any)?.appearsBecause) ? (item as any).appearsBecause : [])
+            .map((reason: unknown) => asString(reason || "").trim().toLowerCase())
+            .filter(Boolean)
+        ).has("derivative_child");
+        const lifecycleRaw = asString((item as any)?.lifecycle || "").trim().toLowerCase();
+        const shadowLifecycle = lifecycleRaw === "shadow" || Boolean((item as any)?.isShadow);
+        const needsShadowCheck = Boolean(item?.deletedAt) || shadowLifecycle || derivativeScoped || derivativeReason;
+        const shadowCheck = needsShadowCheck
+          ? await isCurrentApprovedFeatureableDerivativeShadow({
+              contentId,
+              ownerUserId: user.id
+            })
+          : { eligible: false, remoteOrigin: null as string | null };
+        if (item?.deletedAt && !shadowCheck.eligible) return null;
+        return {
+          ...item,
+          _profileDerivativeCollaboration:
+            shadowCheck.eligible && (derivativeScoped || derivativeReason || shadowLifecycle || Boolean(item?.deletedAt)),
+          _profileDerivativeRemoteOrigin: shadowCheck.remoteOrigin || null
+        };
       })
     )
   ).filter(Boolean);
@@ -27056,9 +27079,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     filteredFeaturedContent.length > 0
       ? filteredFeaturedContent
       : (cachedRenderSnapshot?.featuredContent || []);
+  const featuredContentAuthoredForRender = featuredContentForRender.filter(
+    (item: any) => !Boolean((item as any)?._profileDerivativeCollaboration)
+  );
+  const featuredDerivativeCollaborationsForRender = featuredContentForRender.filter((item: any) =>
+    Boolean((item as any)?._profileDerivativeCollaboration)
+  );
   const featuredContentHtml =
-    featuredContentForRender.length > 0
-      ? featuredContentForRender
+    featuredContentAuthoredForRender.length > 0
+      ? featuredContentAuthoredForRender
           .map((item) => {
             const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
             const type = asString(item.type || "").trim().toLowerCase();
@@ -27159,6 +27188,110 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">${safeHandle} • Verified creator</div>
+                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} ↗</a></div>
+              </div>
+            </article>`;
+          })
+          .join("")
+      : "";
+  const featuredDerivativeCollaborationHtml =
+    featuredDerivativeCollaborationsForRender.length > 0
+      ? featuredDerivativeCollaborationsForRender
+          .map((item) => {
+            const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
+            const type = asString(item.type || "").trim().toLowerCase();
+            const typeLabel =
+              type === "video" ? "Video" :
+              type === "song" ? "Song" :
+              type === "audio" ? "Audio" :
+              type === "article" || type === "writing" || type === "book" ? "Article" :
+              "Other";
+            const safeType = escHtml(typeLabel);
+            const ctaLabel =
+              typeLabel === "Video" ? "Watch" :
+              typeLabel === "Song" || typeLabel === "Audio" ? "Listen" :
+              typeLabel === "Article" ? "Read" :
+              "View";
+            const manifestJson = ((item as any).manifest?.json || {}) as any;
+            const previewObjectKey = asString(manifestJson?.preview || "").trim();
+            const primaryObjectKey =
+              asString(manifestJson?.primaryFile || "").trim() ||
+              (Array.isArray(manifestJson?.files)
+                ? asString(manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey || "").trim()
+                : "");
+            const itemRemoteOrigin = pickShareableOrigin(
+              asString((item as any)?._profileDerivativeRemoteOrigin || "").trim() ||
+                getRemoteOriginFromDescription(asString((item as any)?.description || "").trim() || null)
+            );
+            const mediaOrigin = itemRemoteOrigin || currentPublicOrigin;
+            const contentPathBase = `/public/content/${encodeURIComponent(item.id)}/preview-file`;
+            const toPreviewUrl = (objectKey: string | null | undefined): string => {
+              const key = asString(objectKey || "").trim();
+              if (!key) return buildPublicUrlFromOrigin(mediaOrigin, contentPathBase);
+              return buildPublicUrlFromOrigin(mediaOrigin, `${contentPathBase}?objectKey=${encodeURIComponent(key)}`);
+            };
+            const isUngatedPublic =
+              Number(item.priceSats || 0) <= 0 &&
+              asString((item as any).deliveryMode || "").trim().toLowerCase() !== "download_only";
+            const featuredMediaKey = isUngatedPublic
+              ? (primaryObjectKey || previewObjectKey)
+              : previewObjectKey;
+            const manifestPrimaryFileUrl = primaryObjectKey ? toPreviewUrl(primaryObjectKey) : "";
+            const featuredMediaUrl = featuredMediaKey ? toPreviewUrl(featuredMediaKey) : "";
+            const hasDistinctPreviewObject = Boolean(previewObjectKey && previewObjectKey !== primaryObjectKey);
+            const videoPreviewUrl = hasDistinctPreviewObject
+              ? toPreviewUrl(previewObjectKey)
+              : buildPublicUrlFromOrigin(mediaOrigin, contentPathBase);
+            const coverUrl = buildPublicUrlFromOrigin(mediaOrigin, `/public/content/${encodeURIComponent(item.id)}/cover`);
+            const libraryPreviewCandidates = Array.from(
+              new Set(
+                [featuredMediaUrl, manifestPrimaryFileUrl, videoPreviewUrl, buildPublicUrlFromOrigin(mediaOrigin, contentPathBase)]
+                  .map((value) => asString(value || "").trim())
+                  .filter(Boolean)
+              )
+            );
+            const preferredPreviewUrl = libraryPreviewCandidates[0] || "";
+            const buyUrl = itemRemoteOrigin
+              ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
+              : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
+            const mediaHtml =
+              type === "video"
+                ? `<div class="featured-video-thumb-wrap featured-preview-shell" data-preview-kind="video" data-preview-src="${escHtml(preferredPreviewUrl)}" data-preview-poster="${escHtml(coverUrl)}">
+                    <div class="featured-preview-host">
+                      ${
+                        coverUrl
+                          ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                             <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>`
+                          : `<div class="featured-image-fallback"><span class="featured-fallback">Video preview</span></div>`
+                      }
+                    </div>
+                    <button type="button" class="featured-video-play featured-preview-trigger" data-preview-trigger aria-label="Play preview">▶</button>
+                  </div>`
+                : type === "song" && featuredMediaUrl
+                  ? `<div class="featured-song-media featured-preview-shell" data-preview-kind="audio" data-preview-src="${escHtml(featuredMediaUrl)}" data-preview-poster="${escHtml(coverUrl)}">
+                      <div class="featured-song-cover-wrap featured-preview-host">
+                        ${
+                          coverUrl
+                            ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-song-cover" onerror="this.style.display='none'; this.parentElement.classList.add('featured-song-cover-missing');" />`
+                            : ""
+                        }
+                        <span class="featured-fallback">${safeType}</span>
+                      </div>
+                      <button type="button" class="featured-preview-audio-btn featured-preview-trigger" data-preview-trigger aria-label="Load audio preview">Listen preview</button>
+                    </div>`
+                  : coverUrl
+                    ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                       <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${safeType}</span></div>`
+                    : `<div class="featured-image-fallback"><span class="featured-fallback">${safeType}</span></div>`;
+            return `<article class="featured-item">
+              <div class="featured-media">${mediaHtml}</div>
+              <div class="featured-meta">
+                <div class="featured-topline">
+                  <span class="featured-type-badge">${safeType}</span>
+                  <span class="featured-verified">Certifyd</span>
+                </div>
+                <div class="featured-title">${safeTitle}</div>
+                <div class="featured-support">Derivative collaboration • Upstream royalty</div>
                 <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} ↗</a></div>
               </div>
             </article>`;
@@ -27403,8 +27536,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${escHtml(type || "Participation")}</span></div>`;
   };
   const highlightedParticipationsHtml =
-    highlightedParticipationsForRender.length > 0 || highlightedRemoteParticipationsForRender.length > 0
+    featuredDerivativeCollaborationHtml ||
+    highlightedParticipationsForRender.length > 0 ||
+    highlightedRemoteParticipationsForRender.length > 0
       ? [
+          featuredDerivativeCollaborationHtml,
           ...highlightedParticipationsForRender.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.participantRole || "participant"));
