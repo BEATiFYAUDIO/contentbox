@@ -27147,7 +27147,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">${supportLine}</div>
-                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} ?</a></div>
+                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} &rarr;</a></div>
               </div>
             </article>`;
   };
@@ -27439,7 +27439,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 <div class="featured-support">Role: ${safeRole} â€¢ Share: ${safeShare}</div>
                 ${
                   linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} â†—</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &rarr;</a></div>`
                     : ""
                 }
               </div>
@@ -27492,7 +27492,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 }
                 ${
                   linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} â†—</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &rarr;</a></div>`
                     : ""
                 }
               </div>
