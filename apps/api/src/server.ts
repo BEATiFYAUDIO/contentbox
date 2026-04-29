@@ -2285,7 +2285,7 @@ function summarizeParticipantDestination(type: ParticipantDestinationType, value
   if (!v) return "";
   if (type === "lightning_address") return v.toLowerCase();
   if (v.length <= 24) return v;
-  return `${v.slice(0, 14)}...${v.slice(-8)}`;
+  return `${v.slice(0, 14)}â€¦${v.slice(-8)}`;
 }
 
 async function verifyParticipantDestination(
@@ -3449,7 +3449,7 @@ function summarizePayoutDestination(type: CreatorPayoutDestinationType, lightnin
   if (type === "lightning_address" && lightningAddress) return lightningAddress;
   if (type === "onchain_address" && onchainAddress) {
     if (onchainAddress.length <= 16) return onchainAddress;
-    return `${onchainAddress.slice(0, 10)}...${onchainAddress.slice(-6)}`;
+    return `${onchainAddress.slice(0, 10)}â€¦${onchainAddress.slice(-6)}`;
   }
   if (type === "local_lnd") return "Local Lightning node";
   return null;
@@ -10405,15 +10405,23 @@ async function ensurePreviewFile(content: any, files: any[]) {
 
     return fileEntry.path || previewObjectKey;
   } catch (e: any) {
-    app.log.warn({ err: e }, "preview.generate.failed");
+    const code = asString((e as any)?.code || "").trim().toUpperCase();
+    if (code === "ENOENT") {
+      ffmpegPreviewDisabled = true;
+      app.log.warn({ err: e }, "preview.generate.skipped.ffmpeg_unavailable");
+    } else {
+      app.log.warn({ err: e }, "preview.generate.failed");
+    }
     return null;
   }
 }
 
 const previewGenerationInflight = new Map<string, Promise<string | null>>();
+let ffmpegPreviewDisabled = false;
 async function ensurePreviewFileOnce(content: any, files: any[]): Promise<string | null> {
   const contentId = asString(content?.id || "").trim();
   if (!contentId) return null;
+  if (ffmpegPreviewDisabled) return null;
   const inflight = previewGenerationInflight.get(contentId);
   if (inflight) return inflight;
   const task = ensurePreviewFile(content, files).finally(() => {
@@ -19917,7 +19925,7 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       return reply.code(409).send({
         ...getPublicStatus(),
         lastError: "named_token_missing",
-        message: "Named tunnel requires a connector token. Add it in Config -> Tunnel & routing."
+        message: "Named tunnel requires a connector token. Add it in Config â†’ Tunnel & routing."
       });
     }
     const defer = shouldDeferNamedTunnelToServiceControl();
@@ -20460,7 +20468,7 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
 
       if (beatifyHandle || altHandle) {
         const chosenHandle = beatifyHandle || altHandle;
-        // Prefer the Beatify username when parsing Beatify hosts &mdash; override other name candidates
+        // Prefer the Beatify username when parsing Beatify hosts â€” override other name candidates
         try {
           const host = new URL(targetUrl).hostname.toLowerCase();
           if (host.includes("beatify")) {
@@ -26285,10 +26293,11 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   }
 
   let objectKey = objectKeyRaw;
+  let primaryFileId: string | null = null;
   if (!objectKey) {
     const manifest = await prisma.manifest.findUnique({ where: { contentId } });
     const manifestJson = (manifest?.json || {}) as any;
-    const primaryFileId =
+    primaryFileId =
       (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
       (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
       null;
@@ -26300,7 +26309,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     const shouldAttemptPreviewGeneration =
       (isVideoLike || isAudioLike) &&
       (!objectKey || (typeof primaryFileId === "string" && objectKey === primaryFileId));
-    if (shouldAttemptPreviewGeneration) {
+    if (shouldAttemptPreviewGeneration && !ffmpegPreviewDisabled) {
       const files = await prisma.contentFile.findMany({
         where: { contentId },
         orderBy: { createdAt: "asc" }
@@ -26347,9 +26356,22 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
   if (!content.repoPath) return notFound(reply, "Content not found");
   const repoRoot = path.resolve(content.repoPath);
-  const absPath = path.resolve(repoRoot, objectKey);
+  let absPath = path.resolve(repoRoot, objectKey);
   if (!absPath.startsWith(repoRoot)) return forbidden(reply);
-  if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
+  if (!fsSync.existsSync(absPath)) {
+    const fallbackKey = asString(primaryFileId || "").trim();
+    if (fallbackKey && fallbackKey !== objectKey) {
+      const fallbackAbs = path.resolve(repoRoot, fallbackKey);
+      if (fallbackAbs.startsWith(repoRoot) && fsSync.existsSync(fallbackAbs)) {
+        objectKey = fallbackKey;
+        absPath = fallbackAbs;
+      } else {
+        return notFound(reply, "File not found");
+      }
+    } else {
+      return notFound(reply, "File not found");
+    }
+  }
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
   const mime = file?.mime || "application/octet-stream";
@@ -26726,7 +26748,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const nodeUrl = wk.nodeUrl || "";
   if (!nodeUrl) return notFound(reply, "Not found");
   const nodeSha = wk.publicKeyPemSha256 || null;
-  const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}...${nodeSha.slice(-8)}` : null;
+  const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}â€¦${nodeSha.slice(-8)}` : null;
 
   const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
   const safeBio = escHtml(asString(user.bio || ""));
@@ -26929,7 +26951,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const domain = asString((p as any).subject || "").trim().toLowerCase();
             const safeDomain = escHtml(domain);
             const href = `https://${encodeURI(domain)}`;
-            return `<div class="line muted">&#10003; <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">&#8599;</span>${trustTierBadgeHtml("strong")}</div>`;
+            return `<div class="line muted">âœ“ <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">â†—</span>${trustTierBadgeHtml("strong")}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -26990,9 +27012,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeAccount = escHtml(displayAccount || "unknown");
             const safeProvider = escHtml(providerLabel);
             if (href) {
-              return `<div class="line muted">${providerBadgeHtml} ${safeProvider} &mdash; <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">&#8599;</span>${tierBadge}</div>`;
+              return `<div class="line muted">${providerBadgeHtml} ${safeProvider} â€” <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">â†—</span>${tierBadge}</div>`;
             }
-            return `<div class="line muted">${providerBadgeHtml} ${safeProvider} &mdash; <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
+            return `<div class="line muted">${providerBadgeHtml} ${safeProvider} â€” <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -27020,13 +27042,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               }
             }
             const displayValue = npub || pubkey || "unknown";
-            const shortValue = displayValue.length > 18 ? `${displayValue.slice(0, 10)}...${displayValue.slice(-8)}` : displayValue;
+            const shortValue = displayValue.length > 18 ? `${displayValue.slice(0, 10)}â€¦${displayValue.slice(-8)}` : displayValue;
             const hrefValue = npub || pubkey;
             const href = hrefValue ? `https://njump.me/${encodeURIComponent(hrefValue)}` : "";
             if (href) {
-              return `<div class="line muted">&#10003; Nostr &mdash; <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">&#8599;</span></div>`;
+              return `<div class="line muted">âœ“ Nostr â€” <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">â†—</span></div>`;
             }
-            return `<div class="line muted">&#10003; Nostr &mdash; <span class="mono">${escHtml(shortValue)}</span></div>`;
+            return `<div class="line muted">âœ“ Nostr â€” <span class="mono">${escHtml(shortValue)}</span></div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -27036,12 +27058,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           .map((p: any) => {
             const proofType = asString((p as any).proofType || "").trim().toLowerCase() || "proof";
             const subject = asString((p as any).subject || "").trim() || "unknown";
-            return `<div class="line muted">&#10003; ${escHtml(proofType)}: <span class="mono">${escHtml(subject)}</span></div>`;
+            return `<div class="line muted">âœ“ ${escHtml(proofType)}: <span class="mono">${escHtml(subject)}</span></div>`;
           })
           .join("")
       : "";
   const creatorSignalCompactHtml = `<div class="signal-compact-title">Trust Score</div>
-      <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">&middot; ${escHtml(creatorSignal.tier)}</span></div>
+      <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">Â· ${escHtml(creatorSignal.tier)}</span></div>
       <div class="signal-meter signal-compact-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
         <div class="signal-meter-fill" style="width:${creatorSignalPercent}%"></div>
       </div>
@@ -27412,7 +27434,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const shareLabel =
               Number.isFinite(Number(item.participantBps)) && Number(item.participantBps) > 0
                 ? `${(Number(item.participantBps) / 100).toFixed(2)}%`
-                : "&mdash;";
+                : "â€”";
             const safeShare = escHtml(shareLabel);
             const buyUrl = asString(item.buyUrl || "").trim();
             const attributionUrl = asString(item.attributionUrl || "").trim();
@@ -27453,7 +27475,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeType = escHtml(asString(item.contentType || "Participation"));
             const shareLabel = Number.isFinite(Number(percentToPrimitive(item.percent ?? null)))
               ? `${Number(percentToPrimitive(item.percent ?? null)).toFixed(2)}%`
-              : "&mdash;";
+              : "â€”";
             const safeShare = escHtml(shareLabel);
             const base = normalizeOrigin(item.remoteOrigin || "") || "";
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
@@ -28181,7 +28203,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
       }
       return {
         pubkey,
-        display: pubkey.length > 18 ? `${pubkey.slice(0, 10)}...${pubkey.slice(-8)}` : pubkey,
+        display: pubkey.length > 18 ? `${pubkey.slice(0, 10)}â€¦${pubkey.slice(-8)}` : pubkey,
         location: asString((p as any).location || "").trim() || null,
         verifiedAt: (p as any).verifiedAt?.toISOString?.() || null
       };
@@ -28249,7 +28271,7 @@ async function handleShortPublicLink(req: any, reply: any) {
 <body>
   <div class="card">
     <h2>Not Available</h2>
-    <p><strong>${safeTitle}</strong> isn't publicly available yet.</p>
+    <p><strong>${safeTitle}</strong> isnâ€™t publicly available yet.</p>
     <p class="muted">If you expected access, ask the owner to share a private link (e.g. <code>/p/&lt;token&gt;</code>) or publish the content.</p>
     <p class="muted"><a href="${APP_BASE_URL}">Return to Certifyd Creator</a></p>
   </div>
@@ -28545,7 +28567,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     } catch {}
   }
 
-  return reply.type("text/plain").send("Thanks &mdash; your clearance response has been recorded.");
+  return reply.type("text/plain").send("Thanks â€” your clearance response has been recorded.");
 });
 
 // External clearance page (no login required)
@@ -28756,7 +28778,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     } catch {}
   }
 
-  return reply.send("Thanks &mdash; your clearance response has been recorded.");
+  return reply.send("Thanks â€” your clearance response has been recorded.");
 });
 
 function resolveTabIconPath(): string | null {
@@ -28941,7 +28963,7 @@ async function handleBuyPage(req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loading...</div>
+      <div id="app">Loadingâ€¦</div>
       <div class="footer">
         <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
@@ -28993,7 +29015,7 @@ async function handleBuyPage(req: any, reply: any) {
         show: true,
         badge: "",
         title: "Receipt unavailable",
-        subtitle: "We couldn't resolve this receipt.",
+        subtitle: "We couldnâ€™t resolve this receipt.",
         state: "Invalid receipt",
         actionLabel: "",
         actionKind: "",
@@ -29246,7 +29268,7 @@ async function handleBuyPage(req: any, reply: any) {
               ? ("(@" + esc(normalizedContributorHandle) + ")")
               : "";
           const roleRaw = String(c?.role || "").trim();
-          const role = roleRaw ? (" â€¢ " + esc(roleRaw)) : "";
+          const role = roleRaw ? (" &bull; " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
           const nameLabel = ch ? (cn + " " + ch) : cn;
           const contributorNameHtml = profilePathRaw
@@ -29254,7 +29276,7 @@ async function handleBuyPage(req: any, reply: any) {
             : nameLabel;
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
-          return "<li>" + contributorNameHtml + role + (pct ? (" â€¢ " + pct) : "") + "</li>";
+          return "<li>" + contributorNameHtml + role + (pct ? (" &bull; " + pct) : "") + "</li>";
         }).join("") +
       "</ul>";
     } else if (split?.state === "draft") {
@@ -29297,8 +29319,8 @@ async function handleBuyPage(req: any, reply: any) {
                       : shLabel;
                     return linked + (pct ? " (" + esc(pct) + ")" : "");
                   })
-                  .join(" â€¢ ") +
-                (shareholders.length > 6 ? " â€¢ ..." : "") +
+                  .join(" &bull; ") +
+                (shareholders.length > 6 ? " &bull; ..." : "") +
                 "</div>"
               : "";
             const attributionLinkHtml = parentContentUrl
@@ -29325,7 +29347,7 @@ async function handleBuyPage(req: any, reply: any) {
 
   function formatProofTime(v){
     const s = String(v || "").trim();
-    if (!s) return "&mdash;";
+    if (!s) return "â€”";
     const d = new Date(s);
     if (Number.isNaN(d.getTime())) return s;
     return d.toLocaleString();
@@ -29334,7 +29356,7 @@ async function handleBuyPage(req: any, reply: any) {
   function shortHash(v){
     const s = String(v || "").trim();
     if (s.length <= 20) return s;
-    return s.slice(0, 12) + "..." + s.slice(-8);
+    return s.slice(0, 12) + "â€¦" + s.slice(-8);
   }
 
   function renderPublishProofBlock(offer){
@@ -29423,10 +29445,10 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderPaymentAccessProofBlock(offer, entitlement, owned){
     const proof = resolvePaymentAccessProof(offer, entitlement, owned);
-    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : "&mdash;";
-    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : "&mdash;";
-    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : "&mdash;";
-    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "&mdash;";
+    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : "â€”";
+    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : "â€”";
+    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : "â€”";
+    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "â€”";
     const entitlementLabel = proof.entitlementState === "entitled" ? "Entitled" : proof.entitlementState === "preview" ? "Preview" : "Locked";
     return "<div class=\\"access-card\\">" +
       "<div class=\\"access-title\\">Payment confirmation</div>" +
@@ -29627,13 +29649,13 @@ async function handleBuyPage(req: any, reply: any) {
   function previewFallbackUrl(offer){
     if (!offer?.previewObjectKey) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
   }
 
   function basicPrimaryUrl(offer){
     if (!offer?.primaryFileId) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
   }
 
   function offerCoverUrl(offer){
@@ -29642,7 +29664,7 @@ async function handleBuyPage(req: any, reply: any) {
     const coverObjectKey = String(offer?.coverObjectKey || "").trim();
     if (!coverObjectKey) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(coverObjectKey) + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(coverObjectKey) + shareQ;
   }
 
   function resolveBasicDeliveryMode(offer){
@@ -29840,7 +29862,7 @@ async function handleBuyPage(req: any, reply: any) {
       }
     }
     if (entitlement?.status === "preview" && isPaid) {
-      document.getElementById("status").textContent = "Preview playing...";
+      document.getElementById("status").textContent = "Preview playingâ€¦";
       const player = document.getElementById("player");
       const limitSec = Math.max(1, Number(previewSeconds || 25));
       if (player) {
@@ -29939,7 +29961,7 @@ async function handleBuyPage(req: any, reply: any) {
               <a id="openWalletBtn" class="btn" href="\${hasLightningInvoice ? ("lightning:" + lightningInvoice) : "#"}" \${hasLightningInvoice ? "" : "aria-disabled=\\"true\\" style=\\"pointer-events:none;opacity:0.6;\\""}>\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</a>
               <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
             </div>
-            <div class="muted" style="margin-top:6px;">If your wallet doesn't open, scan the QR or copy the invoice.</div>
+            <div class="muted" style="margin-top:6px;">If your wallet doesnâ€™t open, scan the QR or copy the invoice.</div>
           \` : \`<div class="muted">Unavailable: \${lightning.reason || "Not available"}</div>\`}
         </div>
         <div class="rail">
@@ -30023,7 +30045,7 @@ async function handleBuyPage(req: any, reply: any) {
     if (!pendingIntent) return;
     receiptToken = pendingIntent;
     const statusEl = document.getElementById("status");
-    if (statusEl) statusEl.textContent = "Checking payment...";
+    if (statusEl) statusEl.textContent = "Checking paymentâ€¦";
     pollStatus().catch(()=>{});
   }
 
@@ -30098,7 +30120,7 @@ async function handleBuyPage(req: any, reply: any) {
         statusEl.textContent = "Payment received. Download is ready.";
       }
     } else {
-      document.getElementById("status").textContent = "Waiting for payment...";
+      document.getElementById("status").textContent = "Waiting for paymentâ€¦";
     }
   }
 
@@ -30143,7 +30165,7 @@ async function handleBuyPage(req: any, reply: any) {
         let json = null;
         try { json = text ? JSON.parse(text) : null; } catch {}
         if (res.ok && json && json.ok) {
-          if (statusEl) statusEl.textContent = "Unlocked. Redirecting...";
+          if (statusEl) statusEl.textContent = "Unlocked. Redirectingâ€¦";
           const redirectUrl = json.redirectUrl || "/library";
           window.location.assign(redirectUrl);
           return true;
@@ -30163,7 +30185,7 @@ async function handleBuyPage(req: any, reply: any) {
       if (statusEl) statusEl.textContent = "This shop uses manual confirmation in Basic mode.";
       return;
     }
-    document.getElementById("status").textContent = "Creating payment...";
+    document.getElementById("status").textContent = "Creating paymentâ€¦";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     let intent = null;
     try {
@@ -30321,7 +30343,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loading...</div>
+      <div id="app">Loadingâ€¦</div>
       <div class="footer">
         <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
@@ -40847,7 +40869,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
 <body>
   <div class="wrap">
     <div class="card">
-      <div id="app">Loading...</div>
+      <div id="app">Loadingâ€¦</div>
     </div>
   </div>
 <script>
@@ -41010,19 +41032,19 @@ async function handlePublicInvitePage(req: any, reply: any) {
     }
 
     app.innerHTML = \`
-      <div style="font-size:22px;font-weight:700;">You've been invited to a split</div>
+      <div style="font-size:22px;font-weight:700;">Youâ€™ve been invited to a split</div>
       <div class="muted" style="margin-top:6px;">Content: \${c.title || "Unknown"} (\${c.type || "content"})</div>
       <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} â€¢ Share: \${sp.percent || "?"}%</div>
-      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "&mdash;") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
+      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "â€”") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
       <div class="muted" style="margin-top:4px;">Backend key verification: \${auth?.keyVerified === true ? "verified" : auth?.keyVerified === false ? "unverified" : "unknown"}</div>
-      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "&mdash;"}: \${inv?.targetValue || "&mdash;"}</div>
+      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "â€”"}: \${inv?.targetValue || "â€”"}</div>
       \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
       <button id="primaryBtn" class="btn" style="margin-top:14px;">\${canAccept ? "Accept invite" : "Open in creator dashboard"}</button>
       <div id="status" class="muted" style="margin-top:8px;"></div>
       <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own Certifyd Creator node first and open this link in the same browser.</div>
     \`;
     async function openDashboardHandoff(statusEl) {
-      statusEl.textContent = "Locating dashboard...";
+      statusEl.textContent = "Locating dashboardâ€¦";
       const resolved = await resolveDashboardBase();
       if (resolved.base && !resolved.acceptCapable) {
         statusEl.textContent = "Acceptance-capable creator surface not reachable. Opening view-only dashboard.";
@@ -41048,7 +41070,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
         await openDashboardHandoff(statusEl);
         return;
       }
-      document.getElementById("status").textContent = "Accepting...";
+      document.getElementById("status").textContent = "Acceptingâ€¦";
       try {
         const acceptPath = isRemoteInvite
           ? remoteProxyPath("/invites/" + encodeURIComponent(token) + "/accept")
@@ -41061,7 +41083,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
         if (resp?.alreadyAccepted) {
           document.getElementById("status").textContent = "Already accepted.";
         } else {
-          document.getElementById("status").textContent = "Accepted. You're in the split.";
+          document.getElementById("status").textContent = "Accepted. Youâ€™re in the split.";
         }
       } catch (e) {
         const msg = e && e.message ? String(e.message) : "Could not accept invite.";
@@ -42072,7 +42094,6 @@ start().catch((err) => {
 process.on("exit", () => {
   releaseApiRuntimeLock();
 });
-
 
 
 

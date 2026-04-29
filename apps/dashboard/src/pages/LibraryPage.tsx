@@ -1174,6 +1174,17 @@ export default function LibraryPage() {
   }, [items, previewById, previewLoading]);
 
   React.useEffect(() => {
+    const isSameOriginAttributionUrl = (rawUrl: string | null | undefined): boolean => {
+      const value = String(rawUrl || "").trim();
+      if (!value) return false;
+      try {
+        const parsed = new URL(value, window.location.origin);
+        return parsed.origin === window.location.origin;
+      } catch {
+        return false;
+      }
+    };
+
     const targetEntries = items;
     const missingEntries = targetEntries.filter((entry) => {
       const contentId = String(entry.item.id || "").trim();
@@ -1195,6 +1206,9 @@ export default function LibraryPage() {
           const contentId = String(entry.item.id || "").trim();
           const explicitAttributionUrl = asNonEmptyString(entry.item.attributionUrl);
           if (explicitAttributionUrl) {
+            if (!isSameOriginAttributionUrl(explicitAttributionUrl)) {
+              return [contentId, null] as const;
+            }
             try {
               const res = await fetch(explicitAttributionUrl, { method: "GET", credentials: "omit" });
               if (!res.ok) return [contentId, null] as const;
@@ -1210,6 +1224,9 @@ export default function LibraryPage() {
               ? String(participation.remoteOrigin).replace(/\/+$/, "")
               : asNonEmptyString(entry.item.remoteOrigin) || apiBase.replace(/\/+$/, "");
           const url = `${baseOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`;
+          if (!isSameOriginAttributionUrl(url)) {
+            return [contentId, null] as const;
+          }
           try {
             const res = await fetch(url, { method: "GET", credentials: "omit" });
             if (!res.ok) return [contentId, null] as const;
@@ -1949,9 +1966,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                       chosenCoverBaseUrl,
                                       cardAssetOrigin || apiBase
                                     );
-                                    if (incomingScore >= existingScore && existing !== chosenCoverBaseUrl) {
-                                      return { ...prev, [it.id]: chosenCoverBaseUrl };
-                                    }
+                                    if (incomingScore >= existingScore) return { ...prev, [it.id]: chosenCoverBaseUrl };
                                     return prev;
                                   });
                                 }}
@@ -2140,8 +2155,6 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                       <video
                                         className="w-full h-full object-cover object-center bg-black"
                                         controls
-                                        preload="none"
-                                        poster={coverUrl || undefined}
                                         src={effectivePlaybackUrl}
                                         onLoadedData={() => {
                                           setLockedPlaybackUrlById((prev) => {
@@ -2153,9 +2166,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                               effectivePlaybackUrl,
                                               cardAssetOrigin || apiBase
                                             );
-                                            if (incomingScore >= existingScore && existing !== effectivePlaybackUrl) {
-                                              return { ...prev, [it.id]: effectivePlaybackUrl };
-                                            }
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
                                             return prev;
                                           });
                                         }}
@@ -2186,8 +2197,6 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                       <video
                                         className="w-full h-full object-cover object-center bg-black"
                                         controls
-                                        preload="none"
-                                        poster={coverUrl || undefined}
                                         src={effectivePlaybackUrl}
                                       />
                                     </div>
@@ -2210,9 +2219,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                               effectivePlaybackUrl,
                                               cardAssetOrigin || apiBase
                                             );
-                                            if (incomingScore >= existingScore && existing !== effectivePlaybackUrl) {
-                                              return { ...prev, [it.id]: effectivePlaybackUrl };
-                                            }
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
                                             return prev;
                                           });
                                         }}
@@ -2253,9 +2260,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                               effectivePlaybackUrl,
                                               cardAssetOrigin || apiBase
                                             );
-                                            if (incomingScore >= existingScore && existing !== effectivePlaybackUrl) {
-                                              return { ...prev, [it.id]: effectivePlaybackUrl };
-                                            }
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
                                             return prev;
                                           });
                                         }}
