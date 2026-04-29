@@ -2211,7 +2211,7 @@ function derivePaymentHashHexFromProvider(providerId: string, paymentHashMaybe?:
 }
 
 export async function getInvoiceByPaymentHashHex(prisma: PrismaLike, paymentHashHex: string) {
-  const lnd = await getLndConfig(prisma);
+  const lnd = (await getLndConfig(prisma)) || getLegacyEnvLndConfig();
   if (!lnd) throw new Error("Lightning node not configured");
   const paymentHash = String(paymentHashHex || "").trim().toLowerCase();
   if (!isHex64(paymentHash)) throw new Error("Invalid payment hash hex");
