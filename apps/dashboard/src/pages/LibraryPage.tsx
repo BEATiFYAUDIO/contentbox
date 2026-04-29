@@ -1800,9 +1800,16 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       participantPreviewFallback,
                       genericPreviewFallback
                     ]);
+                    const playbackCandidatesForType =
+                      isVideo
+                        ? (() => {
+                            const avOnly = rankedPlaybackCandidates.filter((url) => !looksLikeImageAssetUrl(url));
+                            return avOnly.length ? avOnly : rankedPlaybackCandidates;
+                          })()
+                        : rankedPlaybackCandidates;
                     const selectedPlaybackIndex = Math.max(0, Number(previewCandidateIndexById[it.id] || 0));
                     const fallbackPlaybackUrl =
-                      rankedPlaybackCandidates[selectedPlaybackIndex] || rankedPlaybackCandidates[0] || null;
+                      playbackCandidatesForType[selectedPlaybackIndex] || playbackCandidatesForType[0] || null;
                     const lockedPlaybackUrl = lockedPlaybackUrlById[it.id];
                     const effectivePlaybackUrl = isUsableLibraryAssetUrl(lockedPlaybackUrl)
                       ? lockedPlaybackUrl
@@ -1941,7 +1948,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                       chosenCoverBaseUrl,
                                       cardAssetOrigin || apiBase
                                     );
-                                    if (incomingScore >= existingScore) return { ...prev, [it.id]: chosenCoverBaseUrl };
+                                    if (incomingScore >= existingScore && existing !== chosenCoverBaseUrl) {
+                                      return { ...prev, [it.id]: chosenCoverBaseUrl };
+                                    }
                                     return prev;
                                   });
                                 }}
@@ -2130,6 +2139,8 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                       <video
                                         className="w-full h-full object-cover object-center bg-black"
                                         controls
+                                        preload="none"
+                                        poster={coverUrl || undefined}
                                         src={effectivePlaybackUrl}
                                         onLoadedData={() => {
                                           setLockedPlaybackUrlById((prev) => {
@@ -2141,7 +2152,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                               effectivePlaybackUrl,
                                               cardAssetOrigin || apiBase
                                             );
-                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            if (incomingScore >= existingScore && existing !== effectivePlaybackUrl) {
+                                              return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            }
                                             return prev;
                                           });
                                         }}
@@ -2155,9 +2168,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                             const current = Math.max(0, Number(prev[it.id] || 0));
                                             const next = Math.min(
                                               current + 1,
-                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                              Math.max(0, playbackCandidatesForType.length - 1)
                                             );
-                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            if (next === current && playbackCandidatesForType.length <= 1) return prev;
                                             return { ...prev, [it.id]: next };
                                           });
                                         }}
@@ -2172,6 +2185,8 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                       <video
                                         className="w-full h-full object-cover object-center bg-black"
                                         controls
+                                        preload="none"
+                                        poster={coverUrl || undefined}
                                         src={effectivePlaybackUrl}
                                       />
                                     </div>
@@ -2194,7 +2209,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                               effectivePlaybackUrl,
                                               cardAssetOrigin || apiBase
                                             );
-                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            if (incomingScore >= existingScore && existing !== effectivePlaybackUrl) {
+                                              return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            }
                                             return prev;
                                           });
                                         }}
@@ -2208,9 +2225,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                             const current = Math.max(0, Number(prev[it.id] || 0));
                                             const next = Math.min(
                                               current + 1,
-                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                              Math.max(0, playbackCandidatesForType.length - 1)
                                             );
-                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            if (next === current && playbackCandidatesForType.length <= 1) return prev;
                                             return { ...prev, [it.id]: next };
                                           });
                                         }}
@@ -2235,7 +2252,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                               effectivePlaybackUrl,
                                               cardAssetOrigin || apiBase
                                             );
-                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            if (incomingScore >= existingScore && existing !== effectivePlaybackUrl) {
+                                              return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            }
                                             return prev;
                                           });
                                         }}
@@ -2249,9 +2268,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                             const current = Math.max(0, Number(prev[it.id] || 0));
                                             const next = Math.min(
                                               current + 1,
-                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                              Math.max(0, playbackCandidatesForType.length - 1)
                                             );
-                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            if (next === current && playbackCandidatesForType.length <= 1) return prev;
                                             return { ...prev, [it.id]: next };
                                           });
                                         }}
