@@ -1785,16 +1785,8 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                           previewAvObjectKey
                         )}`
                       : null;
-                    const localAuthedPreviewBase = `${apiBase.replace(/\/+$/, "")}/content/${encodeURIComponent(it.id)}/preview-file`;
-                    const localAuthedPreviewObjectUrl = previewAvObjectKey
-                      ? `${localAuthedPreviewBase}?objectKey=${encodeURIComponent(previewAvObjectKey)}`
-                      : previewPrimaryObjectKey
-                        ? `${localAuthedPreviewBase}?objectKey=${encodeURIComponent(previewPrimaryObjectKey)}`
-                        : null;
                     const genericPreviewFallback = buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase);
                     const rankedPlaybackCandidates = rankLibraryMediaCandidates(apiBase, cardAssetOrigin || apiBase, [
-                      localAuthedPreviewObjectUrl,
-                      localAuthedPreviewBase,
                       ...apiPreviewCandidates,
                       it.manifestPrimaryFileUrl,
                       it.previewFileUrl,
