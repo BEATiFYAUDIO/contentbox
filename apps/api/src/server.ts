@@ -27122,17 +27122,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
               : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
             const mediaHtml =
-              type === "video"
+              type === "video" && preferredPreviewUrl
                 ? `<div class="featured-video-thumb-wrap featured-preview-shell" data-preview-kind="video" data-preview-src="${escHtml(preferredPreviewUrl)}" data-preview-poster="${escHtml(coverUrl)}">
                     <div class="featured-preview-host">
-                      ${
-                        coverUrl
-                          ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
-                             <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>`
-                          : `<div class="featured-image-fallback"><span class="featured-fallback">Video preview</span></div>`
-                      }
+                      <video class="featured-video-preview" preload="none" playsinline poster="${escHtml(coverUrl)}" data-preview-element data-preview-src="${escHtml(preferredPreviewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
+                      <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
                     </div>
-                    <button type="button" class="featured-video-play featured-preview-trigger" data-preview-trigger aria-label="Play preview">▶</button>
                   </div>`
                 : type === "song" && featuredMediaUrl
                   ? `<div class="featured-song-media featured-preview-shell" data-preview-kind="audio" data-preview-src="${escHtml(featuredMediaUrl)}" data-preview-poster="${escHtml(coverUrl)}">
@@ -27144,7 +27139,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                         }
                         <span class="featured-fallback">${safeType}</span>
                       </div>
-                      <button type="button" class="featured-preview-audio-btn featured-preview-trigger" data-preview-trigger aria-label="Load audio preview">Listen preview</button>
                     </div>`
                   : coverUrl
                     ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
@@ -27390,13 +27384,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       base,
       `/public/content/${encodeURIComponent(params.contentId)}/cover`
     );
-    if (type === "video") {
+    if (type === "video" && previewUrl) {
       return `<div class="featured-video-thumb-wrap featured-preview-shell" data-preview-kind="video" data-preview-src="${escHtml(previewUrl)}" data-preview-poster="${escHtml(coverUrl)}">
         <div class="featured-preview-host">
-          <img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+          <video class="featured-video-preview" preload="none" playsinline poster="${escHtml(coverUrl)}" data-preview-element data-preview-src="${escHtml(previewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
           <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
         </div>
-        <button type="button" class="featured-video-play featured-preview-trigger" data-preview-trigger aria-label="Play ${safeTitle} preview">Play</button>
       </div>`;
     }
     return `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
@@ -27720,7 +27713,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-video-thumb { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-video-preview { width:100%; height:100%; object-fit:cover; display:block; background:#000; }
     .featured-video-fallback { position:absolute; inset:0; min-height:0; z-index:2; }
-    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:rgba(9,12,18,0.72); border:1px solid rgba(154,206,255,0.35); color:#d7ecff; font-size:12px; line-height:1; z-index:3; }
+    .featured-preview-shell { cursor:pointer; }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
     .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid #252525; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
@@ -27965,28 +27958,33 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           mediaEl.preload = "metadata";
           mediaEl.src = src;
         } else {
-          mediaEl = document.createElement("video");
-          mediaEl.className = "featured-video-preview";
+          mediaEl = shell.querySelector("video[data-preview-element]");
+          if (!mediaEl) {
+            mediaEl = document.createElement("video");
+            mediaEl.className = "featured-video-preview";
+            mediaEl.setAttribute("data-preview-element", "1");
+          }
           mediaEl.controls = true;
           mediaEl.preload = "metadata";
           mediaEl.playsInline = true;
+          mediaEl.muted = false;
           if (poster) mediaEl.setAttribute("poster", poster);
-          mediaEl.src = src;
+          if (!mediaEl.getAttribute("src")) mediaEl.setAttribute("src", src);
         }
         var host = shell.querySelector(".featured-preview-host");
         if (!host) host = shell;
-        host.innerHTML = "";
-        host.appendChild(mediaEl);
+        if (kind === "audio") {
+          host.innerHTML = "";
+          host.appendChild(mediaEl);
+        }
         var p = mediaEl.play && mediaEl.play();
         if (p && typeof p.catch === "function") p.catch(function () {});
       }
       function setupPreviewOnDemand() {
-        var triggers = Array.prototype.slice.call(document.querySelectorAll("[data-preview-trigger]"));
-        triggers.forEach(function (btn) {
-          btn.addEventListener("click", function (ev) {
+        var shells = Array.prototype.slice.call(document.querySelectorAll("[data-preview-src]"));
+        shells.forEach(function (shell) {
+          shell.addEventListener("click", function (ev) {
             ev.preventDefault();
-            var shell = btn.closest("[data-preview-src]");
-            if (!shell) return;
             activatePreviewShell(shell);
           });
         });
@@ -42080,3 +42078,5 @@ start().catch((err) => {
 process.on("exit", () => {
   releaseApiRuntimeLock();
 });
+
+
