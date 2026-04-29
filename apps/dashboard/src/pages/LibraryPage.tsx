@@ -1714,6 +1714,11 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                     const isImageByPath = /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(mediaPathHint);
                     const derivativeLinked = entry.isDerivativeChild || entry.isDerivativeParent;
                     const derivativeParentOnly = entry.isDerivativeParent && !entry.isDerivativeChild;
+                    const allowUnknownVideoFallback =
+                      entry.isDerivativeChild &&
+                      (String(it.lifecycle || "").toLowerCase() === "shadow" ||
+                        Boolean(it.isShadow) ||
+                        Boolean(it.isActionableShadow));
                     const isVideo = mime.startsWith("video/") || type === "video" || type === "remix" || isVideoByPath;
                     const isAudio = mime.startsWith("audio/") || type === "song" || isAudioByPath;
                     const isImage = mime.startsWith("image/") || isImageByPath;
@@ -1808,6 +1813,20 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       ? lockedPlaybackUrl
                       : fallbackPlaybackUrl;
                     const hasPlaybackCandidate = Boolean(effectivePlaybackUrl && isUsableLibraryAssetUrl(effectivePlaybackUrl));
+                    const playbackPathHint = String(effectivePlaybackUrl || mediaPathHint || "")
+                      .trim()
+                      .toLowerCase();
+                    const isDocLikeByPath = /\.(pdf|md|markdown|txt|doc|docx|xls|xlsx|csv|ppt|pptx)(\?|$)/.test(
+                      playbackPathHint
+                    );
+                    const isFileLikeDoc =
+                      type === "file" &&
+                      (mime.includes("pdf") ||
+                        mime.includes("word") ||
+                        mime.includes("excel") ||
+                        mime.includes("spreadsheet") ||
+                        mime.startsWith("text/") ||
+                        isDocLikeByPath);
                     const prioritizedParticipantCover = entry.relation === "participant" ? participantCoverFallback : null;
                     const manifestArtworkObjectKey = String(preview?.manifest?.artwork || "").trim();
                     const manifestArtworkFallback = manifestArtworkObjectKey
@@ -1926,7 +1945,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                           <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
                             {coverRenderable ? (
                               <img
-                                className="w-full h-full object-cover object-center bg-black"
+                                className="w-full h-full object-contain object-center bg-black"
                                 src={coverUrl || undefined}
                                 alt={`${it.title || "Content"} cover`}
                                 loading="lazy"
@@ -1961,7 +1980,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                               />
                             ) : hasInlineImagePreview ? (
                               <img
-                                className="w-full h-full object-cover object-center bg-black"
+                                className="w-full h-full object-contain object-center bg-black"
                                 src={previewUrl as string}
                                 alt={it.title || "Preview"}
                               />
@@ -2128,7 +2147,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                   return (
                                     <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
                                       <video
-                                        className="w-full h-full object-cover object-center bg-black"
+                                        className="w-full h-full object-contain object-center bg-black"
                                         controls
                                         src={effectivePlaybackUrl}
                                         onLoadedData={() => {
@@ -2165,12 +2184,18 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                     </div>
                                   );
                                 }
-                                if (effectivePlaybackUrl && !isAudio && !isImage && hasPlaybackCandidate) {
+                                if (
+                                  effectivePlaybackUrl &&
+                                  !isAudio &&
+                                  !isImage &&
+                                  hasPlaybackCandidate &&
+                                  allowUnknownVideoFallback
+                                ) {
                                   // For remote shadow rows, mime/type hints can be absent; try video playback first.
                                   return (
                                     <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
                                       <video
-                                        className="w-full h-full object-cover object-center bg-black"
+                                        className="w-full h-full object-contain object-center bg-black"
                                         controls
                                         src={effectivePlaybackUrl}
                                       />
@@ -2222,7 +2247,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                   return (
                                     <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden flex items-center justify-center">
                                       <img
-                                        className="w-full h-full object-cover object-center bg-black"
+                                        className="w-full h-full object-contain object-center bg-black"
                                         src={effectivePlaybackUrl}
                                         alt={it.title || "Preview"}
                                         onLoad={() => {
@@ -2255,6 +2280,17 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                             return { ...prev, [it.id]: next };
                                           });
                                         }}
+                                      />
+                                    </div>
+                                  );
+                                }
+                                if (effectivePlaybackUrl && hasPlaybackCandidate && isFileLikeDoc) {
+                                  return (
+                                    <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-neutral-950 overflow-hidden">
+                                      <iframe
+                                        className="w-full h-full bg-white"
+                                        src={effectivePlaybackUrl}
+                                        title={`${it.title || "File"} preview`}
                                       />
                                     </div>
                                   );
