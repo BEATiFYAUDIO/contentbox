@@ -1599,6 +1599,20 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
   }
 }
 
+function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
+  const source = String(raw || "").trim();
+  if (!source) return false;
+  try {
+    const u = new URL(source, window.location.origin);
+    const objectKey = String(u.searchParams.get("objectKey") || "").trim().toLowerCase();
+    const path = String(u.pathname || "").toLowerCase();
+    const candidate = objectKey || path;
+    return /\.(mp4|mov|m4v|webm|mkv|avi|wmv|ogv)(\?|$)/.test(candidate);
+  } catch {
+    return /\.(mp4|mov|m4v|webm|mkv|avi|wmv|ogv)(\?|$)/i.test(source);
+  }
+}
+
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 sm:p-5">
@@ -1714,11 +1728,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                     const isImageByPath = /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(mediaPathHint);
                     const derivativeLinked = entry.isDerivativeChild || entry.isDerivativeParent;
                     const derivativeParentOnly = entry.isDerivativeParent && !entry.isDerivativeChild;
-                    const allowUnknownVideoFallback =
-                      entry.isDerivativeChild &&
-                      (String(it.lifecycle || "").toLowerCase() === "shadow" ||
-                        Boolean(it.isShadow) ||
-                        Boolean(it.isActionableShadow));
+                    const allowUnknownVideoFallback = entry.isDerivativeChild;
                     const isVideo = mime.startsWith("video/") || type === "video" || type === "remix" || isVideoByPath;
                     const isAudio = mime.startsWith("audio/") || type === "song" || isAudioByPath;
                     const isImage = mime.startsWith("image/") || isImageByPath;
@@ -1790,6 +1800,9 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                           previewAvObjectKey
                         )}`
                       : null;
+                    const hasVideoMimeCandidate = candidateFiles.some((f: any) =>
+                      String(f?.mime || "").toLowerCase().startsWith("video/")
+                    );
                     const genericPreviewFallback = buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase);
                     const rankedPlaybackCandidates = rankLibraryMediaCandidates(apiBase, cardAssetOrigin || apiBase, [
                       ...apiPreviewCandidates,
@@ -1813,6 +1826,11 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       ? lockedPlaybackUrl
                       : fallbackPlaybackUrl;
                     const hasPlaybackCandidate = Boolean(effectivePlaybackUrl && isUsableLibraryAssetUrl(effectivePlaybackUrl));
+                    const hasVideoLikePlaybackCandidate =
+                      hasVideoMimeCandidate ||
+                      isVideoByPath ||
+                      looksLikeVideoAssetUrl(effectivePlaybackUrl) ||
+                      rankedPlaybackCandidates.some((url) => looksLikeVideoAssetUrl(url));
                     const playbackPathHint = String(effectivePlaybackUrl || mediaPathHint || "")
                       .trim()
                       .toLowerCase();
@@ -2188,8 +2206,11 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                   effectivePlaybackUrl &&
                                   !isAudio &&
                                   !isImage &&
+                                  !looksLikeImageAssetUrl(effectivePlaybackUrl) &&
+                                  !isFileLikeDoc &&
                                   hasPlaybackCandidate &&
-                                  allowUnknownVideoFallback
+                                  allowUnknownVideoFallback &&
+                                  hasVideoLikePlaybackCandidate
                                 ) {
                                   // For remote shadow rows, mime/type hints can be absent; try video playback first.
                                   return (
@@ -2280,6 +2301,18 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                             return { ...prev, [it.id]: next };
                                           });
                                         }}
+                                      />
+                                    </div>
+                                  );
+                                }
+                                if (type === "file" && coverRenderable && coverUrl) {
+                                  return (
+                                    <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden flex items-center justify-center">
+                                      <img
+                                        className="w-full h-full object-contain object-center bg-black"
+                                        src={coverUrl}
+                                        alt={it.title || "File preview"}
+                                        loading="lazy"
                                       />
                                     </div>
                                   );
