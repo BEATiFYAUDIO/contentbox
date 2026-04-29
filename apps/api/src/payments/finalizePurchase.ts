@@ -97,18 +97,32 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
     const childSplit = skipSettlement ? null : await getLockedSplitForContent(prisma, contentId);
     if (!skipSettlement && !childSplit) throw new Error("Locked child split not found");
 
-    const parents = skipSettlement
+    const parentLinks = skipSettlement
       ? []
       : await prisma.contentLink.findMany({
           where: { childContentId: contentId },
           orderBy: { id: "asc" }
         });
-    if (!skipSettlement && parents.length > 1) {
+    const distinctParentIds = Array.from(
+      new Set(parentLinks.map((row) => String(row.parentContentId || "").trim()).filter(Boolean))
+    );
+    if (!skipSettlement && distinctParentIds.length > 1) {
       throw new Error("MULTIPLE_PARENTS_NOT_SUPPORTED");
     }
     const net = BigInt(intent.amountSats);
 
-    const primaryParent = parents[0] || null;
+    const primaryParent =
+      parentLinks
+        .slice()
+        .sort((a, b) => {
+          const aHasSnapshot = String(a.parentSplitVersionId || "").trim() ? 1 : 0;
+          const bHasSnapshot = String(b.parentSplitVersionId || "").trim() ? 1 : 0;
+          if (aHasSnapshot !== bHasSnapshot) return bHasSnapshot - aHasSnapshot;
+          const aUpstream = Math.max(0, Number(a.upstreamBps || 0));
+          const bUpstream = Math.max(0, Number(b.upstreamBps || 0));
+          if (aUpstream !== bUpstream) return bUpstream - aUpstream;
+          return String(b.id || "").localeCompare(String(a.id || ""));
+        })[0] || null;
     const upstreamRaw =
       primaryParent && primaryParent.upstreamBps > 0
         ? [
@@ -155,7 +169,7 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
               upstreamBps: primaryParent?.upstreamBps ?? null,
               upstreamAmountSats: upstreamAlloc[0]?.amountSats?.toString?.() ?? String(upstreamAlloc[0]?.amountSats ?? 0),
               childRemainderSats: childRemainder.toString(),
-              parentCount: parents.length
+              parentCount: parentLinks.length
             } as any
           }
         });

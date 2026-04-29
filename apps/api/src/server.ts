@@ -35803,16 +35803,30 @@ async function computeContentParticipantAllocations(input: {
     isTopologyNeutralLockedSnapshotEligible(snapshot)
   );
 
-  const parents = await prisma.contentLink.findMany({
+  const parentLinks = await prisma.contentLink.findMany({
     where: { childContentId: contentId },
     orderBy: { id: "asc" }
   });
-  if (parents.length > 1) {
+  const distinctParentIds = Array.from(
+    new Set(parentLinks.map((row) => asString(row.parentContentId || "").trim()).filter(Boolean))
+  );
+  if (distinctParentIds.length > 1) {
     throw new Error("MULTIPLE_PARENTS_NOT_SUPPORTED");
   }
 
   const net = input.poolSats;
-  const primaryParent = parents[0] || null;
+  const primaryParent =
+    parentLinks
+      .slice()
+      .sort((a, b) => {
+        const aHasSnapshot = asString(a.parentSplitVersionId || "").trim() ? 1 : 0;
+        const bHasSnapshot = asString(b.parentSplitVersionId || "").trim() ? 1 : 0;
+        if (aHasSnapshot !== bHasSnapshot) return bHasSnapshot - aHasSnapshot;
+        const aUpstream = Math.max(0, Number(a.upstreamBps || 0));
+        const bUpstream = Math.max(0, Number(b.upstreamBps || 0));
+        if (aUpstream !== bUpstream) return bUpstream - aUpstream;
+        return String(b.id || "").localeCompare(String(a.id || ""));
+      })[0] || null;
   const upstreamRaw =
     primaryParent && primaryParent.upstreamBps > 0
       ? [
