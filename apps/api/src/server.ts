@@ -2492,7 +2492,8 @@ async function resolvePublicParticipantPayoutDestination(userId: string): Promis
 }
 
 function parseRemoteIdentityRef(identityRef: string | null | undefined): { origin: string | null; userId: string | null } {
-  const raw = String(identityRef || "").trim();
+  const rawInput = String(identityRef || "").trim();
+  const raw = rawInput.startsWith("identity_ref:") ? rawInput.slice("identity_ref:".length) : rawInput;
   if (!raw.startsWith("remote:")) return { origin: null, userId: null };
   const rest = raw.slice("remote:".length);
   const marker = "#user:";
@@ -24696,6 +24697,52 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
     where: { contentLinkId: link.id },
     orderBy: { createdAt: "desc" }
   }).catch(() => null);
+  let parentShareholdersResolved: Array<{
+    splitParticipantId: string | null;
+    participantUserId: string | null;
+    participantEmail: string | null;
+    identityRef: string | null;
+    participantOrigin: string | null;
+    displayName: string;
+    handle: string | null;
+    profilePath: string | null;
+    role: string | null;
+    bps: number;
+  }> = [];
+  if (asString(link.parentSplitVersionId || "").trim()) {
+    const parentSnapshots = await getLockedParticipantSnapshotsForSplitVersion(asString(link.parentSplitVersionId || "").trim());
+    parentShareholdersResolved = parentSnapshots
+      .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
+      .map((snapshot) => {
+        const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
+        const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
+        const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
+        const identityOrigin = parseRemoteIdentityRef(asString(snapshot.identityRef || "").trim() || null).origin;
+        const canonicalOrigin = asString(identityOrigin || snapshot.participantOrigin || "").trim() || null;
+        const normalizedProfilePath = normalizePublicProfileHref(snapshot.profilePathSnapshot || "");
+        const safeProfilePath =
+          (normalizedProfilePath && /^https?:\/\//i.test(normalizedProfilePath))
+            ? normalizedProfilePath
+            : (normalizedProfilePath && normalizedProfilePath.startsWith("/") && canonicalOrigin
+                ? `${canonicalOrigin.replace(/\/$/, "")}${normalizedProfilePath}`
+                : (normalizedHandle && !looksLikeInternalUserId(normalizedHandle) && canonicalOrigin
+                    ? `${canonicalOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
+                    : null));
+        return {
+          splitParticipantId: asString(snapshot.splitParticipantId || "").trim() || null,
+          participantUserId: asString(snapshot.participantUserId || "").trim() || null,
+          participantEmail: normalizeEmail(snapshot.participantEmail || "") || null,
+          identityRef: asString(snapshot.identityRef || "").trim() || null,
+          participantOrigin: canonicalOrigin,
+          displayName,
+          handle: safeHandle,
+          profilePath: safeProfilePath,
+          role: snapshot.role || null,
+          bps: Math.max(0, Math.round(Number(snapshot.bps || 0)))
+        };
+      })
+      .filter((row) => row.bps > 0);
+  }
   return reply.send({
     linkId: link.id,
     authorizationId: auth?.id || null,
@@ -24703,6 +24750,7 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
     parentSplitVersionId: link.parentSplitVersionId || null,
     childContentId,
     upstreamBps: link.upstreamBps,
+    parentShareholders: parentShareholdersResolved,
     approvedAt: link.approvedAt || null,
     reviewGrantedAt: clearanceReq?.reviewGrantedAt || null,
     clearance: auth
@@ -34611,7 +34659,7 @@ async function ensureRemoteShadowLockedSplitForParent(input: {
             role,
             bps,
             targetType: "identity_ref",
-            targetValue: `profile:${handleRaw}`,
+            targetValue: `${inferredOrigin.replace(/\/+$/, "")}/u/${encodeURIComponent(handleRaw)}`,
             participantEmail: null
           });
         }
@@ -34736,8 +34784,184 @@ async function getParentLockedSplitSnapshotForDerivative(link: {
   id?: string | null;
   parentContentId: string;
   parentSplitVersionId?: string | null;
+  childContentId?: string | null;
 }) {
-  const parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
+  let parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
+  const parentContentId = asString(link.parentContentId || "").trim();
+  const parentContent = await prisma.contentItem.findUnique({
+    where: { id: parentContentId },
+    select: { ownerUserId: true, description: true, deletedReason: true, repoPath: true }
+  });
+  const parentOrigin = parentContent ? getRemoteOriginFromDescription(parentContent.description || null) : null;
+  const isRemoteShadowParent =
+    Boolean(parentOrigin) &&
+    asString(parentContent?.deletedReason || "").trim().toLowerCase() === "hard" &&
+    !parentContent?.repoPath;
+
+  const linkId = asString(link.id || "").trim() || null;
+  const childContentIdFromLink =
+    asString(link.childContentId || "").trim() ||
+    (linkId
+      ? asString(
+          (
+            await prisma.contentLink.findUnique({
+              where: { id: linkId },
+              select: { childContentId: true }
+            })
+          )?.childContentId || ""
+        ).trim()
+      : "");
+
+  if (isRemoteShadowParent && parentOrigin && parentContentId && childContentIdFromLink) {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      const statusUrl = `${parentOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+        parentContentId
+      )}&childContentId=${encodeURIComponent(childContentIdFromLink)}`;
+      const statusRes = await fetch(statusUrl, { signal: ctrl.signal as any });
+      const statusJson: any = await statusRes.json().catch(() => null);
+      clearTimeout(timeout);
+      const remoteSplitVersionId = asString(statusJson?.parentSplitVersionId || "").trim() || null;
+      let remoteShareholders = Array.isArray(statusJson?.parentShareholders) ? statusJson.parentShareholders : [];
+      if (!remoteShareholders.length) {
+        const attrCtrl = new AbortController();
+        const attrTimeout = setTimeout(() => attrCtrl.abort(), 5000);
+        const attributionUrl = `${parentOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(parentContentId)}/attribution`;
+        const attributionRes = await fetch(attributionUrl, { signal: attrCtrl.signal as any });
+        const attributionJson: any = await attributionRes.json().catch(() => null);
+        clearTimeout(attrTimeout);
+        const contributorRows = Array.isArray(attributionJson?.contributors) ? attributionJson.contributors : [];
+        remoteShareholders = contributorRows.map((row: any) => ({
+          splitParticipantId: null,
+          participantUserId: null,
+          participantEmail: normalizeEmail(row?.participantEmail || "") || null,
+          identityRef: null,
+          participantOrigin: parentOrigin,
+          displayName: asString(row?.displayName || "").trim() || "Contributor",
+          handle: asString(row?.handle || "").trim() || null,
+          profilePath: asString(row?.profilePath || "").trim() || null,
+          role: asString(row?.role || "").trim() || "writer",
+          bps: Math.max(0, Math.round(Number(row?.bps || 0)))
+        }));
+      }
+
+      if (remoteSplitVersionId && remoteSplitVersionId !== parentSplitVersionId) {
+        parentSplitVersionId = remoteSplitVersionId;
+        if (linkId) {
+          await prisma.contentLink.update({
+            where: { id: linkId },
+            data: { parentSplitVersionId: remoteSplitVersionId }
+          }).catch(() => {});
+        }
+      }
+
+      if (remoteSplitVersionId && remoteShareholders.length > 0) {
+        let split = await prisma.splitVersion.findUnique({
+          where: { id: remoteSplitVersionId },
+          include: { participants: true }
+        });
+        if (!split) {
+          const latest = await prisma.splitVersion.findFirst({
+            where: { contentId: parentContentId },
+            orderBy: { versionNumber: "desc" },
+            select: { versionNumber: true }
+          });
+          const nextVersion = Math.max(1, Number(latest?.versionNumber || 0) + 1);
+          split = await prisma.splitVersion.create({
+            data: {
+              id: remoteSplitVersionId,
+              contentId: parentContentId,
+              versionNumber: nextVersion,
+              status: "locked",
+              createdByUserId: asString(parentContent?.ownerUserId || "").trim() || asString(link.parentContentId || "").trim(),
+              lockedAt: new Date()
+            },
+            include: { participants: true }
+          });
+        }
+
+        await prisma.splitParticipant.deleteMany({
+          where: { splitVersionId: remoteSplitVersionId }
+        });
+
+        const normalizedRows = remoteShareholders
+          .map((row: any) => {
+            const bps = Math.max(0, Math.round(Number(row?.bps || 0)));
+            const role = asString(row?.role || "").trim() || "writer";
+            const participantUserId = asString(row?.participantUserId || "").trim() || null;
+            const participantEmail = normalizeEmail(row?.participantEmail || "") || null;
+            const identityRef = asString(row?.identityRef || "").trim() || null;
+            const profilePath = asString(row?.profilePath || "").trim() || null;
+            const handle = asString(row?.handle || "").trim().replace(/^@+/, "") || null;
+            let targetType: "identity_ref" | "email" = "identity_ref";
+            let targetValue: string | null = null;
+            if (participantUserId) {
+              targetValue = `remote:${parentOrigin.replace(/\/+$/, "")}#user:${participantUserId}`;
+            } else if (identityRef && parseRemoteIdentityRef(identityRef).origin) {
+              targetValue = identityRef.startsWith("identity_ref:") ? identityRef.slice("identity_ref:".length) : identityRef;
+            } else if (profilePath) {
+              targetValue = /^https?:\/\//i.test(profilePath)
+                ? profilePath
+                : `${parentOrigin.replace(/\/+$/, "")}${profilePath.startsWith("/") ? "" : "/"}${profilePath}`;
+            } else if (handle) {
+              targetValue = `${parentOrigin.replace(/\/+$/, "")}/u/${encodeURIComponent(handle)}`;
+            } else if (participantEmail) {
+              targetType = "email";
+              targetValue = participantEmail;
+            }
+            return { bps, role, participantEmail, targetType, targetValue };
+          })
+          .filter((row: any) => row.bps > 0 && asString(row.targetValue || "").trim());
+
+        const totalBps = normalizedRows.reduce((sum: number, row: any) => sum + Math.max(0, row.bps), 0);
+        const rowsWithNormalizedBps =
+          totalBps > 0
+            ? normalizedRows.map((row: any, idx: number) => {
+                if (idx === normalizedRows.length - 1) {
+                  const prior = normalizedRows
+                    .slice(0, -1)
+                    .reduce((sum: number, p: any) => sum + Math.max(0, Math.round((p.bps * 10000) / totalBps)), 0);
+                  return { ...row, bps: Math.max(0, 10000 - prior) };
+                }
+                return { ...row, bps: Math.max(0, Math.round((row.bps * 10000) / totalBps)) };
+              })
+            : [];
+
+        const now = new Date();
+        for (const row of rowsWithNormalizedBps) {
+          await prisma.splitParticipant.create({
+            data: {
+              splitVersionId: remoteSplitVersionId,
+              participantEmail: row.participantEmail,
+              participantUserId: null,
+              targetType: normalizeInviteTargetType(row.targetType),
+              targetValue: asString(row.targetValue || "").trim() || null,
+              acceptedAt: now,
+              verifiedAt: now,
+              role: row.role,
+              roleCode: "writer" as any,
+              percent: row.bps / 100,
+              bps: row.bps
+            }
+          });
+        }
+
+        const refreshedSplit = await prisma.splitVersion.findUnique({
+          where: { id: remoteSplitVersionId },
+          include: { participants: true }
+        });
+        if (refreshedSplit && refreshedSplit.status === "locked") {
+          await buildLockedParticipantSnapshotsForSplitVersion({
+            splitVersion: refreshedSplit,
+            lockTime: refreshedSplit.lockedAt || null,
+            persist: true
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+  }
+
   let parentSplit = await getLockedSplitVersionById(parentSplitVersionId);
   if (!parentSplit) {
     const err: any = new Error("PARENT_SPLIT_NOT_LOCKED");
@@ -34745,18 +34969,12 @@ async function getParentLockedSplitSnapshotForDerivative(link: {
     err.statusCode = 409;
     throw err;
   }
-  // Remote-shadow parents can carry a locked split id without local participant rows.
-  // Re-hydrate that exact authoritative snapshot (no latest-split fallback) before allocation.
   if (!Array.isArray((parentSplit as any).participants) || (parentSplit as any).participants.length === 0) {
-    const parentContent = await prisma.contentItem.findUnique({
-      where: { id: asString(link.parentContentId || "").trim() },
-      select: { ownerUserId: true, description: true }
-    });
     if (parentContent) {
       await ensureRemoteShadowLockedSplitForParent({
-        parentContentId: asString(link.parentContentId || "").trim(),
-        parentOrigin: getRemoteOriginFromDescription(parentContent.description || null),
-        fallbackUserId: asString(parentContent.ownerUserId || "").trim() || asString(link.parentContentId || "").trim()
+        parentContentId,
+        parentOrigin,
+        fallbackUserId: asString(parentContent.ownerUserId || "").trim() || parentContentId
       }).catch(() => null);
       const refreshed = await getLockedSplitVersionById(parentSplitVersionId);
       if (refreshed) parentSplit = refreshed;
@@ -35080,15 +35298,23 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
     let changed = false;
     const refreshed = await Promise.all(existing.map(async (row) => {
       const live = liveBySplitParticipantId.get(asString(row.splitParticipantId || "").trim()) || null;
+      const inferredIdentityRefFromLive = inferLockedParticipantIdentityRef({
+        participantUserId: live?.participantUserId || row.participantUserId || null,
+        participantEmail: live?.participantEmail || row.participantEmail || null,
+        targetType: live?.targetType || row.participantTopologyMode || null,
+        targetValue: live?.targetValue || null,
+        invitation: live?.invitation || null
+      });
       const mergedIdentityRef =
         asString(live?.invitation?.acceptedIdentityRef || "").trim() ||
+        asString(inferredIdentityRefFromLive || "").trim() ||
         asString(row.identityRef || "").trim() ||
         inferLockedParticipantIdentityRef({
-          participantUserId: live?.participantUserId || row.participantUserId || null,
-          participantEmail: live?.participantEmail || row.participantEmail || null,
-          targetType: live?.targetType || row.participantTopologyMode || null,
-          targetValue: live?.targetValue || null,
-          invitation: live?.invitation || null
+          participantUserId: row.participantUserId || null,
+          participantEmail: row.participantEmail || null,
+          targetType: row.participantTopologyMode || null,
+          targetValue: null,
+          invitation: null
         });
       const effectiveParticipantUserId = asString(live?.participantUserId || row.participantUserId || "").trim() || null;
       const user = effectiveParticipantUserId ? userById.get(effectiveParticipantUserId) || null : null;
