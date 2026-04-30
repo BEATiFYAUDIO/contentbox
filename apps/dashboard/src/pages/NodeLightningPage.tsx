@@ -16,6 +16,11 @@ type LightningAdminConfig = {
   lastTestedAt: string | null;
   lastStatus: string | null;
   lastError: string | null;
+  defaults?: {
+    restUrl?: string | null;
+    tlsCertPath?: string | null;
+    macaroonPath?: string | null;
+  };
 };
 
 type LightningTestResult =
@@ -44,6 +49,8 @@ export default function NodeLightningPage({
   const [macaroonFileName, setMacaroonFileName] = useState<string | null>(null);
   const [tlsCertFile, setTlsCertFile] = useState<File | null>(null);
   const [tlsCertFileName, setTlsCertFileName] = useState<string | null>(null);
+  const [macaroonPath, setMacaroonPath] = useState("");
+  const [tlsCertPath, setTlsCertPath] = useState("");
   const [wizardBusy, setWizardBusy] = useState<null | "discover" | "test" | "save" | "reset">(null);
   const [wizardError, setWizardError] = useState<string | null>(null);
   const [wizardTest, setWizardTest] = useState<LightningTestResult | null>(null);
@@ -56,9 +63,12 @@ export default function NodeLightningPage({
         const admin = await api<LightningAdminConfig>("/api/admin/lightning", "GET");
         if (!active || !admin) return;
         if (admin.restUrl) setLndRestUrl(admin.restUrl);
+        else if (admin.defaults?.restUrl) setLndRestUrl(String(admin.defaults.restUrl));
         if (admin.network === "mainnet" || admin.network === "testnet" || admin.network === "regtest") {
           setLndNetwork(admin.network);
         }
+        if (admin.defaults?.macaroonPath) setMacaroonPath(String(admin.defaults.macaroonPath));
+        if (admin.defaults?.tlsCertPath) setTlsCertPath(String(admin.defaults.tlsCertPath));
       } catch {
         // keep defaults
       }
@@ -92,14 +102,16 @@ export default function NodeLightningPage({
     setWizardError(null);
     setWizardTest(null);
     if (!lndRestUrl.trim()) return setWizardError("LND REST URL is required.");
-    if (!macaroonFile) return setWizardError("Macaroon file is required.");
+    if (!macaroonFile && !macaroonPath.trim()) return setWizardError("Macaroon file or path is required.");
     setWizardBusy("test");
     try {
       const form = new FormData();
       form.append("restUrl", lndRestUrl.trim());
       form.append("network", lndNetwork);
-      form.append("macaroonFile", macaroonFile, macaroonFile.name || "invoice.macaroon");
+      if (macaroonFile) form.append("macaroonFile", macaroonFile, macaroonFile.name || "invoice.macaroon");
+      if (macaroonPath.trim()) form.append("macaroonPath", macaroonPath.trim());
       if (tlsCertFile) form.append("tlsCertFile", tlsCertFile, tlsCertFile.name || "tls-cert.pem");
+      if (tlsCertPath.trim()) form.append("tlsCertPath", tlsCertPath.trim());
       const res = await api<LightningTestResult>("/api/admin/lightning/test", { method: "POST", body: form });
       setWizardTest(res);
       if (!res.ok) setWizardError(res.error || "Connection test failed");
@@ -113,14 +125,16 @@ export default function NodeLightningPage({
   async function onSaveLightning() {
     setWizardError(null);
     if (!lndRestUrl.trim()) return setWizardError("LND REST URL is required.");
-    if (!macaroonFile) return setWizardError("Macaroon file is required.");
+    if (!macaroonFile && !macaroonPath.trim()) return setWizardError("Macaroon file or path is required.");
     setWizardBusy("save");
     try {
       const form = new FormData();
       form.append("restUrl", lndRestUrl.trim());
       form.append("network", lndNetwork);
-      form.append("macaroonFile", macaroonFile, macaroonFile.name || "invoice.macaroon");
+      if (macaroonFile) form.append("macaroonFile", macaroonFile, macaroonFile.name || "invoice.macaroon");
+      if (macaroonPath.trim()) form.append("macaroonPath", macaroonPath.trim());
       if (tlsCertFile) form.append("tlsCertFile", tlsCertFile, tlsCertFile.name || "tls-cert.pem");
+      if (tlsCertPath.trim()) form.append("tlsCertPath", tlsCertPath.trim());
       const res = await api<{ ok: boolean; error?: string }>("/api/admin/lightning", { method: "POST", body: form });
       if (!res.ok) {
         setWizardError(res.error || "Save failed");
@@ -144,6 +158,8 @@ export default function NodeLightningPage({
       setMacaroonFileName(null);
       setTlsCertFile(null);
       setTlsCertFileName(null);
+      setMacaroonPath("");
+      setTlsCertPath("");
       setWizardTest(null);
       setRailsRefreshTick((t) => t + 1);
     } catch (e: any) {
@@ -199,6 +215,15 @@ export default function NodeLightningPage({
               <div className="mt-1 text-[11px] text-neutral-500">{macaroonFileName || "No file selected"}</div>
             </div>
             <div>
+              <label className="text-xs text-neutral-400">Macaroon path (optional)</label>
+              <input
+                value={macaroonPath}
+                onChange={(e) => setMacaroonPath(e.target.value)}
+                className="mt-1 w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm"
+                placeholder="C:\\Users\\...\\AppData\\Local\\Lnd\\data\\chain\\bitcoin\\mainnet\\admin.macaroon"
+              />
+            </div>
+            <div>
               <label className="text-xs text-neutral-400">TLS cert (.pem/.crt, optional)</label>
               <input type="file" accept=".pem,.crt,application/x-pem-file,application/pkix-cert" onChange={(e) => {
                 const f = e.target.files?.[0] || null;
@@ -206,6 +231,15 @@ export default function NodeLightningPage({
                 setTlsCertFileName(f?.name || null);
               }} className="mt-1 w-full text-xs" />
               <div className="mt-1 text-[11px] text-neutral-500">{tlsCertFileName || "No file selected"}</div>
+            </div>
+            <div>
+              <label className="text-xs text-neutral-400">TLS cert path (optional)</label>
+              <input
+                value={tlsCertPath}
+                onChange={(e) => setTlsCertPath(e.target.value)}
+                className="mt-1 w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1.5 text-sm"
+                placeholder="C:\\Users\\...\\AppData\\Local\\Lnd\\tls.cert"
+              />
             </div>
           </div>
 

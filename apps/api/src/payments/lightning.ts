@@ -34,6 +34,7 @@ export type LightningReadiness = {
   ok: true;
   configured: boolean;
   nodeReachable: boolean;
+  node?: { alias?: string; identityPubkey?: string; network?: string };
   wallet: { syncedToChain: boolean; syncedToGraph: boolean; blockHeight?: number };
   channels: { count: number };
   receiveReady: boolean;
@@ -1050,6 +1051,9 @@ export function mapLightningReadinessFromLnd(input: { getinfo: any; channels: an
   const blockHeightRaw = Number(gi.block_height ?? gi.blockHeight ?? 0);
   const blockHeight = Number.isFinite(blockHeightRaw) && blockHeightRaw > 0 ? blockHeightRaw : undefined;
   const channelCount = channelsList.length;
+  const alias = String(gi.alias || "").trim();
+  const identityPubkey = String(gi.identity_pubkey || gi.identityPubkey || "").trim();
+  const network = String((Array.isArray(gi.chains) ? gi.chains[0]?.network : gi.network) || "").trim().toLowerCase();
 
   const hints: string[] = [];
   if (!syncedToChain) hints.push("Node is not yet synced to chain.");
@@ -1060,6 +1064,11 @@ export function mapLightningReadinessFromLnd(input: { getinfo: any; channels: an
     ok: true,
     configured: true,
     nodeReachable: true,
+    node: {
+      alias: alias || undefined,
+      identityPubkey: identityPubkey || undefined,
+      network: network || undefined
+    },
     wallet: { syncedToChain, syncedToGraph, blockHeight },
     channels: { count: channelCount },
     receiveReady: syncedToChain && syncedToGraph && channelCount > 0,
@@ -1922,6 +1931,9 @@ export async function getLightningNodeConfigMeta(prisma: PrismaLike) {
   const status = await getLightningNodeConfigStatus(prisma);
   return {
     configured: status.configured,
+    hasTlsCert: status.hasTlsCert,
+    hasMacaroon: status.hasMacaroon,
+    decryptOk: status.decryptOk,
     restUrl: status.endpoint,
     network: status.network,
     lastTestedAt: status.lastTestedAt,

@@ -59,6 +59,7 @@ type LightningAdminSnapshot = {
   lastTestedAt: string | null;
   lastStatus: string | null;
   lastError: string | null;
+  defaults?: { restUrl?: string | null; tlsCertPath?: string | null; macaroonPath?: string | null };
   runtime?: Partial<LightningRuntimeSnapshot>;
 };
 
@@ -66,9 +67,11 @@ type LightningReadinessSnapshot = {
   ok: boolean;
   configured: boolean;
   nodeReachable: boolean;
+  node?: { alias?: string; identityPubkey?: string; network?: string };
   wallet?: { syncedToChain?: boolean; syncedToGraph?: boolean; blockHeight?: number };
   channels?: { count?: number };
   receiveReady?: boolean;
+  hints?: string[];
   runtime?: Partial<LightningRuntimeSnapshot>;
 };
 
@@ -154,10 +157,12 @@ function safeHost(value: string): string {
 export default function ConfigPage({
   showAdvanced,
   onOpenPayments,
+  onOpenLightningConfig,
   onIdentityRefresh
 }: {
   showAdvanced?: boolean;
   onOpenPayments?: () => void;
+  onOpenLightningConfig?: () => void;
   onIdentityRefresh?: () => void;
 }) {
   const devMode = Boolean((import.meta as any).env?.DEV);
@@ -602,7 +607,12 @@ export default function ConfigPage({
   }, [modeInfo?.modeReadiness?.localCommerceReady, modeInfo?.nodeMode, modeInfo?.selectedMode]);
   const lightningRuntime = (lightningReadiness?.runtime || lightningAdmin?.runtime || null) as Partial<LightningRuntimeSnapshot> | null;
   const lightningConfigured = Boolean(lightningAdmin?.configured || lightningReadiness?.configured);
-  const localLndDetected = Boolean(lightningRuntime?.connected || lightningConfigured);
+  const localLndDetected = Boolean(
+    lightningRuntime?.connected ||
+    lightningConfigured ||
+    lightningAdmin?.restUrl ||
+    String(lightningRuntime?.sendFailureReason || "").toUpperCase().includes("AUTH")
+  );
   const formatSats = (raw: number | null | undefined) => {
     const n = Number(raw || 0);
     if (!Number.isFinite(n)) return "0 sats";
@@ -1881,6 +1891,9 @@ export default function ConfigPage({
           <div>REST URL: <b>{lightningAdmin?.restUrl || "—"}</b></div>
           <div>Network: <b>{lightningAdmin?.network || "—"}</b></div>
           <div>Last tested: <b>{lightningAdmin?.lastTestedAt ? new Date(lightningAdmin.lastTestedAt).toLocaleString() : "—"}</b></div>
+          <div>Alias: <b>{lightningReadiness?.node?.alias || "—"}</b></div>
+          <div>Pubkey: <b>{lightningReadiness?.node?.identityPubkey || "—"}</b></div>
+          <div>synced_to_chain: <b>{lightningReadiness?.wallet?.syncedToChain ? "yes" : "no"}</b></div>
           <div>canReceive: <b>{lightningRuntime?.canReceive ? "yes" : "no"}</b></div>
           <div>canSend: <b>{lightningRuntime?.canSend ? "yes" : "no"}</b></div>
           <div>capabilityState: <b>{lightningRuntime?.capabilityState || "disconnected"}</b></div>
@@ -1895,8 +1908,17 @@ export default function ConfigPage({
             <b>{Number((lightningBalances?.channels?.pendingOpenCount || 0) + (lightningBalances?.channels?.pendingCloseCount || 0)).toLocaleString()}</b>
           </div>
           <div>open channels: <b>{Number(lightningBalances?.channels?.openCount || 0).toLocaleString()}</b></div>
-          <div>Alias/Pubkey: <b>Not exposed by current read-only integration</b></div>
+          <div>Default REST URL: <b>{lightningAdmin?.defaults?.restUrl || "https://127.0.0.1:8080"}</b></div>
+          <div>Default TLS path: <b>{lightningAdmin?.defaults?.tlsCertPath || "—"}</b></div>
+          <div>Default macaroon path: <b>{lightningAdmin?.defaults?.macaroonPath || "—"}</b></div>
         </div>
+        {Array.isArray(lightningReadiness?.hints) && lightningReadiness.hints.length ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#d4d4d8" }}>
+            {lightningReadiness.hints.map((hint, idx) => (
+              <div key={`${idx}-${hint}`}>{hint}</div>
+            ))}
+          </div>
+        ) : null}
         {lightningRuntime?.sendFailureReason ? (
           <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>
             send readiness reason: {lightningRuntime.sendFailureReason}
@@ -1905,6 +1927,14 @@ export default function ConfigPage({
         {lightningWalletError ? (
           <div style={{ marginTop: 8, fontSize: 12, color: "#fca5a5" }}>{lightningWalletError}</div>
         ) : null}
+        <div style={{ marginTop: 10 }}>
+          <button
+            onClick={() => onOpenLightningConfig?.()}
+            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+          >
+            Open Lightning config
+          </button>
+        </div>
       </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
@@ -1922,3 +1952,4 @@ export default function ConfigPage({
     </div>
   );
 }
+

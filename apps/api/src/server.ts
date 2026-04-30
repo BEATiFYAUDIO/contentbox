@@ -37738,6 +37738,8 @@ async function parseLightningAdminRequest(req: any) {
   let networkRaw: unknown = "";
   let macaroonBase64 = "";
   let tlsCertPem: string | null = null;
+  let macaroonPath = "";
+  let tlsCertPath = "";
 
   for await (const part of req.parts()) {
     if (part.type === "file") {
@@ -37759,9 +37761,45 @@ async function parseLightningAdminRequest(req: any) {
     const value = typeof part.value === "string" ? part.value : String(part.value ?? "");
     if (field === "restUrl") restUrl = value.trim();
     if (field === "network") networkRaw = value;
+    if (field === "macaroonPath") macaroonPath = value.trim();
+    if (field === "tlsCertPath") tlsCertPath = value.trim();
   }
 
-  return { restUrl, networkRaw, macaroonBase64, tlsCertPem };
+  if (!macaroonBase64 && macaroonPath) {
+    try {
+      const buf = await fs.readFile(macaroonPath);
+      macaroonBase64 = Buffer.from(buf).toString("base64");
+    } catch (e: any) {
+      throw new Error(`failed to read macaroonPath: ${String(e?.message || e)}`);
+    }
+  }
+
+  if (!tlsCertPem && tlsCertPath) {
+    try {
+      const buf = await fs.readFile(tlsCertPath, "utf8");
+      tlsCertPem = String(buf || "");
+    } catch (e: any) {
+      throw new Error(`failed to read tlsCertPath: ${String(e?.message || e)}`);
+    }
+  }
+
+  return { restUrl, networkRaw, macaroonBase64, tlsCertPem, macaroonPath, tlsCertPath };
+}
+
+function getWindowsLndDefaults() {
+  const localAppData = String(process.env.LOCALAPPDATA || "").trim();
+  if (!localAppData) {
+    return {
+      restUrl: "https://127.0.0.1:8080",
+      tlsCertPath: "",
+      macaroonPath: ""
+    };
+  }
+  return {
+    restUrl: "https://127.0.0.1:8080",
+    tlsCertPath: path.join(localAppData, "Lnd", "tls.cert"),
+    macaroonPath: path.join(localAppData, "Lnd", "data", "chain", "bitcoin", "mainnet", "admin.macaroon")
+  };
 }
 
 async function probeLightningDiscoverCandidate(restUrl: string): Promise<LightningDiscoveryCandidate | null> {
@@ -37806,8 +37844,10 @@ app.get("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier(
     const userId = (_req.user as JwtUser).sub;
     const meta = await getLightningNodeConfigMeta(prisma as any);
     const runtime = await resolveLightningCapabilityRuntimeCached(userId);
+    const defaults = getWindowsLndDefaults();
     return reply.send({
       ...meta,
+      defaults,
       runtime: {
         connected: runtime.connected,
         canReceive: runtime.canReceive,
@@ -38227,7 +38267,7 @@ app.post("/api/admin/lightning/close-channel", { preHandler: [requireAuth, requi
 });
 
 app.post("/api/admin/lightning/test", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
-  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
+  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null; macaroonPath: string; tlsCertPath: string };
   try {
     parsed = await parseLightningAdminRequest(req);
   } catch (e: any) {
@@ -38267,7 +38307,7 @@ app.post("/api/admin/lightning/test", { preHandler: [requireAuth, requireAdvance
 });
 
 app.post("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
-  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
+  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null; macaroonPath: string; tlsCertPath: string };
   try {
     parsed = await parseLightningAdminRequest(req);
   } catch (e: any) {

@@ -66,6 +66,7 @@ type NodeModeSnapshot = {
 
 type LightningAdminSnapshot = {
   configured: boolean;
+  restUrl?: string | null;
   runtime?: {
     connected?: boolean;
     canReceive?: boolean;
@@ -590,12 +591,6 @@ export default function App() {
   const commerceStatusResolved = nodeModeSnapshot != null;
   const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
   const requireLocalLightning = nodeMode === "lan";
-  const localLightningDetected = Boolean(
-    nodeModeSnapshot?.modeReadiness?.localLndReady ||
-      lightningAdminSnapshot?.runtime?.canReceive ||
-      lightningAdminSnapshot?.runtime?.canSend ||
-      lightningAdminSnapshot?.configured
-  );
   const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
   const isCommerceLockedPage =
     commerceStatusResolved &&
@@ -669,9 +664,7 @@ export default function App() {
     return true;
   });
 
-  const nodeSettingsNav = localLightningDetected
-    ? [{ key: "node-lightning" as const, label: "Lightning", hint: "Node payments infrastructure" }]
-    : [];
+  const nodeSettingsNav = [{ key: "node-lightning" as const, label: "Lightning", hint: "Node payments infrastructure" }];
 
   const pageTitle =
     page === "config" ? "Configuration" :
@@ -706,10 +699,6 @@ export default function App() {
     (lightningAdminSnapshot?.runtime?.canReceive || lightningAdminSnapshot?.runtime?.canSend || lightningAdminSnapshot?.configured) ?? null;
 
   function goToNodeLightning() {
-    if (!localLightningDetected) {
-      setPage("config");
-      return;
-    }
     window.history.pushState({}, "", "/node/lightning");
     setPage("node-lightning");
   }
@@ -719,12 +708,6 @@ export default function App() {
       setPage("store");
     }
   }, [page, canSeeProviderConsole]);
-
-  useEffect(() => {
-    if (page === "node-lightning" && !localLightningDetected) {
-      setPage("config");
-    }
-  }, [page, localLightningDetected]);
 
   // Show loading state or Auth page if not logged in
   if (loading) {
@@ -1213,6 +1196,7 @@ export default function App() {
                 <ConfigPage
                   showAdvanced={showAdvancedNav}
                   onIdentityRefresh={refreshIdentityDetail}
+                  onOpenLightningConfig={() => setPage("node-lightning")}
                   onOpenPayments={() => {
                     window.location.hash = "#payments";
                     setPage("profile");
