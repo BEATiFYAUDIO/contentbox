@@ -398,7 +398,51 @@ function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): Normal
       participation: winner.participation || loser.participation
     });
   }
-  return Array.from(deduped.values());
+  const byContentId = new Map<string, NormalizedLibraryItem[]>();
+  for (const entry of deduped.values()) {
+    const contentId = String(entry.item?.id || "").trim();
+    if (!contentId) continue;
+    const list = byContentId.get(contentId) || [];
+    list.push(entry);
+    byContentId.set(contentId, list);
+  }
+
+  const collapsed: NormalizedLibraryItem[] = [];
+  for (const list of byContentId.values()) {
+    if (list.length <= 1) {
+      collapsed.push(list[0]);
+      continue;
+    }
+    const localOwned = list.find((entry) => {
+      const access = String(entry.item?.libraryAccess || "").trim().toLowerCase();
+      const scopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
+      const origin = canonicalEntryOrigin(entry);
+      return access === "owned" && (origin === null || origin === "local") && scopes.has("authored");
+    });
+    if (!localOwned) {
+      collapsed.push(...list);
+      continue;
+    }
+    let merged = localOwned;
+    for (const entry of list) {
+      if (entry === localOwned) continue;
+      merged = {
+        ...merged,
+        item: {
+          ...merged.item,
+          buyUrl: firstNonEmptyString(merged.item.buyUrl, entry.item.buyUrl) || null,
+          attributionUrl: firstNonEmptyString(merged.item.attributionUrl, entry.item.attributionUrl) || null,
+          remoteOrigin: firstNonEmptyString(merged.item.remoteOrigin, entry.item.remoteOrigin) || null,
+          appearsBecause: Array.from(new Set([...(merged.item.appearsBecause || []), ...(entry.item.appearsBecause || [])])),
+          libraryScopes: Array.from(new Set([...(merged.item.libraryScopes || []), ...(entry.item.libraryScopes || [])]))
+        },
+        libraryScopes: new Set([...(merged.libraryScopes || new Set()), ...(entry.libraryScopes || new Set())]),
+        relationshipTags: Array.from(new Set([...(merged.relationshipTags || []), ...(entry.relationshipTags || [])]))
+      };
+    }
+    collapsed.push(merged);
+  }
+  return collapsed;
 }
 
 type DerivativeApprovalRow = {
