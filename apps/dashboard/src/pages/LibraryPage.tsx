@@ -1880,7 +1880,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       String(f?.mime || "").toLowerCase().startsWith("video/")
                     );
                     const genericPreviewFallback = buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase);
-                    const rankedPlaybackCandidates = rankLibraryMediaCandidates(apiBase, cardAssetOrigin || apiBase, [
+                    const rawPlaybackCandidates = [
                       genericPreviewFallback,
                       ...apiPreviewCandidates,
                       it.manifestPrimaryFileUrl,
@@ -1893,7 +1893,15 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       preferredPublishedPlaybackUrl,
                       previewUrl,
                       participantPreviewFallback
-                    ]);
+                    ];
+                    const nonImagePlaybackCandidates = rawPlaybackCandidates.filter(
+                      (candidate) => !looksLikeImageAssetUrl(candidate)
+                    );
+                    const rankedPlaybackCandidates = rankLibraryMediaCandidates(
+                      apiBase,
+                      cardAssetOrigin || apiBase,
+                      nonImagePlaybackCandidates.length > 0 ? nonImagePlaybackCandidates : rawPlaybackCandidates
+                    );
                     const selectedPlaybackIndex = Math.max(0, Number(previewCandidateIndexById[it.id] || 0));
                     const fallbackPlaybackUrl =
                       rankedPlaybackCandidates[selectedPlaybackIndex] || rankedPlaybackCandidates[0] || null;
