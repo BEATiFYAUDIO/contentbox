@@ -27337,9 +27337,25 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       ? featuredDerivativeForRender
           .map((item) => renderFeaturedContentCard(item, "Derivative collaboration • Upstream royalty"))
           .join("")
-      : "";  const highlightedParticipations = lockedParticipations
-    .filter((row) => row.highlightedOnProfile && row.contentStatus === "published" && !row.contentDeletedAt)
-    .slice(0, 12);
+      : "";
+  const highlightedParticipations = (
+    await Promise.all(
+      lockedParticipations.map(async (row) => {
+        if (!row.highlightedOnProfile) return null;
+        if (row.contentStatus !== "published") return null;
+        if (!row.contentDeletedAt) return row;
+        const contentId = asString(row.contentId || "").trim();
+        if (!contentId) return null;
+        const shadow = await isCurrentApprovedFeatureableDerivativeShadow({
+          contentId,
+          ownerUserId: user.id
+        });
+        return shadow.eligible ? row : null;
+      })
+    )
+  )
+    .filter(Boolean)
+    .slice(0, 12) as ParticipationProjection[];
   const highlightedParticipationsForRender =
     highlightedParticipations.length > 0
       ? highlightedParticipations
