@@ -27472,12 +27472,54 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               </div>
             </article>`;
   };
-  const featuredAuthoredForRender = featuredContentForRender.filter(
+  const normalizeProfilePathname = (raw: unknown): string | null => {
+    const value = asString(raw || "").trim();
+    if (!value) return null;
+    try {
+      const u = new URL(value);
+      return (u.pathname || "/").replace(/\/+$/, "") || "/";
+    } catch {
+      return value.replace(/\/+$/, "") || null;
+    }
+  };
+  const normalizeProfileContentId = (raw: unknown): string | null => {
+    const value = asString(raw || "").trim().toLowerCase();
+    if (!value) return null;
+    const token = value.match(/cmo[a-z0-9]+/i);
+    return token?.[0]?.toLowerCase() || value;
+  };
+  const profileCanonicalContentKey = (entry: any): string => {
+    const discoveryKey = asString(entry?.discoveryKey || "").trim().toLowerCase();
+    if (discoveryKey) return `dk::${discoveryKey}`;
+    const contentId = normalizeProfileContentId(entry?.id || entry?.contentId || null);
+    if (contentId) return `cid::${contentId}`;
+    const path =
+      normalizeProfilePathname(entry?.buyUrl || null) ||
+      normalizeProfilePathname(entry?.attributionUrl || null) ||
+      normalizeProfilePathname(entry?.publicPageUrl || null);
+    if (path) return `path::${path.toLowerCase()}`;
+    return `fallback::${asString(entry?.title || entry?.contentTitle || "untitled").trim().toLowerCase()}`;
+  };
+  const dedupeProfileEntries = <T extends any>(rows: T[]): T[] => {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const row of rows || []) {
+      const key = profileCanonicalContentKey(row);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(row);
+    }
+    return out;
+  };
+
+  const featuredAuthoredForRender = dedupeProfileEntries(featuredContentForRender.filter(
     (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
-  );
-  const featuredDerivativeForRender = featuredContentForRender.filter(
+  ));
+  const authoredKeys = new Set(featuredAuthoredForRender.map((item: any) => profileCanonicalContentKey(item)));
+
+  const featuredDerivativeForRender = dedupeProfileEntries(featuredContentForRender.filter(
     (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() === "collaborations"
-  );
+  )).filter((item: any) => !authoredKeys.has(profileCanonicalContentKey(item)));
   const featuredContentHtml =
     featuredAuthoredForRender.length > 0
       ? featuredAuthoredForRender.map((item) => renderFeaturedContentCard(item)).join("")
@@ -27723,10 +27765,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     resolvedHighlightedRemoteParticipations.length > 0
       ? resolvedHighlightedRemoteParticipations
       : (cachedRenderSnapshot?.highlightedRemoteParticipations || []);
+
+  const dedupedHighlightedParticipationsForRender = dedupeProfileEntries(highlightedParticipationsForRender).filter(
+    (item: any) => !authoredKeys.has(profileCanonicalContentKey(item))
+  );
+  const dedupedHighlightedRemoteParticipationsForRender = dedupeProfileEntries(highlightedRemoteParticipationsForRender).filter(
+    (item: any) => !authoredKeys.has(profileCanonicalContentKey(item))
+  );
   app.log.info(
     {
       userId: user.id,
-      highlightedCount: highlightedParticipationsForRender.length + highlightedRemoteParticipationsForRender.length
+      highlightedCount:
+        dedupedHighlightedParticipationsForRender.length +
+        dedupedHighlightedRemoteParticipationsForRender.length
     },
     "participationProjection.profile_list"
   );
@@ -27768,10 +27819,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${escHtml(type || "Participation")}</span></div>`;
   };
   const highlightedParticipationsHtml =
-    featuredDerivativeCollaborationHtml || highlightedParticipationsForRender.length > 0 || highlightedRemoteParticipationsForRender.length > 0
+    featuredDerivativeCollaborationHtml ||
+    dedupedHighlightedParticipationsForRender.length > 0 ||
+    dedupedHighlightedRemoteParticipationsForRender.length > 0
       ? [
           featuredDerivativeCollaborationHtml,
-          ...highlightedParticipationsForRender.map((item) => {
+          ...dedupedHighlightedParticipationsForRender.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.participantRole || "participant"));
             const safeType = escHtml(asString(item.contentType || "Participation"));
@@ -27811,7 +27864,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               </div>
             </article>`;
           }),
-          ...highlightedRemoteParticipationsForRender.map((item) => {
+          ...dedupedHighlightedRemoteParticipationsForRender.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.role || "participant"));
             const relation = asString((item as any).derivativeRelation || "").trim().toLowerCase();
