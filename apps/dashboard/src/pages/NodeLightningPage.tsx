@@ -21,6 +21,11 @@ type LightningAdminConfig = {
     tlsCertPath?: string | null;
     macaroonPath?: string | null;
   };
+  runtime?: {
+    connected?: boolean;
+    canReceive?: boolean;
+    canSend?: boolean;
+  };
 };
 
 type LightningTestResult =
@@ -30,6 +35,13 @@ type LightningTestResult =
 type LightningDiscoverResult =
   | { ok: true; candidates: Array<{ restUrl: string; requiresTlsCertHint?: boolean; notes?: string }> }
   | { ok: false; error: string };
+
+type LightningReadiness = {
+  ok: true;
+  configured: boolean;
+  nodeReachable: boolean;
+  receiveReady: boolean;
+};
 
 function statusText(value: boolean | null, positive: string, negative: string) {
   if (value === null) return "Unknown";
@@ -55,13 +67,29 @@ export default function NodeLightningPage({
   const [wizardError, setWizardError] = useState<string | null>(null);
   const [wizardTest, setWizardTest] = useState<LightningTestResult | null>(null);
   const [wizardCandidates, setWizardCandidates] = useState<Array<{ restUrl: string; requiresTlsCertHint?: boolean; notes?: string }>>([]);
+  const [adminSnapshot, setAdminSnapshot] = useState<LightningAdminConfig | null>(null);
+  const [readinessSnapshot, setReadinessSnapshot] = useState<LightningReadiness | null>(null);
+
+  const derivedLightningConfigured = Boolean(
+    adminSnapshot?.runtime?.connected ||
+      adminSnapshot?.runtime?.canReceive ||
+      adminSnapshot?.runtime?.canSend ||
+      adminSnapshot?.configured ||
+      readinessSnapshot?.configured ||
+      readinessSnapshot?.nodeReachable
+  );
 
   useEffect(() => {
     let active = true;
     (async () => {
       try {
-        const admin = await api<LightningAdminConfig>("/api/admin/lightning", "GET");
+        const [admin, readiness] = await Promise.all([
+          api<LightningAdminConfig>("/api/admin/lightning", "GET"),
+          api<LightningReadiness>("/api/admin/lightning/readiness", "GET").catch(() => null)
+        ]);
         if (!active || !admin) return;
+        setAdminSnapshot(admin);
+        setReadinessSnapshot(readiness);
         if (admin.restUrl) setLndRestUrl(admin.restUrl);
         else if (admin.defaults?.restUrl) setLndRestUrl(String(admin.defaults.restUrl));
         if (admin.network === "mainnet" || admin.network === "testnet" || admin.network === "regtest") {
@@ -76,7 +104,7 @@ export default function NodeLightningPage({
     return () => {
       active = false;
     };
-  }, []);
+  }, [railsRefreshTick]);
 
   async function onDiscoverLightning() {
     setWizardError(null);
@@ -183,10 +211,10 @@ export default function NodeLightningPage({
 
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Node Status</div>
-          <div className="mt-2 grid gap-2 text-sm text-neutral-200 sm:grid-cols-3">
+            <div className="mt-2 grid gap-2 text-sm text-neutral-200 sm:grid-cols-3">
             <div>Tunnel: {statusText(tunnelActive, "Active", "Inactive")}</div>
             <div>Identity: {statusText(identityVerified, "Verified", "Not verified")}</div>
-            <div>Lightning: {statusText(lightningConfigured, "Configured", "Not configured")}</div>
+            <div>Lightning: {statusText(derivedLightningConfigured || lightningConfigured, "Connected", "Not connected")}</div>
           </div>
         </div>
 

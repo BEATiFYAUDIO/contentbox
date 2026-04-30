@@ -695,8 +695,12 @@ export default function App() {
   const isOperatorPage = page === "config" || page === "diagnostics" || page === "provider-console";
   const tunnelActive = publicStatus?.status === "online";
   const identityVerified = identityDetail?.level === "PERSISTENT";
-  const lightningConfigured =
-    (lightningAdminSnapshot?.runtime?.canReceive || lightningAdminSnapshot?.runtime?.canSend || lightningAdminSnapshot?.configured) ?? null;
+  const lightningConfigured = Boolean(
+    lightningAdminSnapshot?.runtime?.connected ||
+      lightningAdminSnapshot?.runtime?.canReceive ||
+      lightningAdminSnapshot?.runtime?.canSend ||
+      lightningAdminSnapshot?.configured
+  );
 
   function goToNodeLightning() {
     window.history.pushState({}, "", "/node/lightning");

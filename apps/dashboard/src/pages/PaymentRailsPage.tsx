@@ -28,6 +28,11 @@ type LightningAdminConfig = {
   lastTestedAt: string | null;
   lastStatus: string | null;
   lastError: string | null;
+  runtime?: {
+    connected?: boolean;
+    canReceive?: boolean;
+    canSend?: boolean;
+  };
 };
 
 type LightningReadiness = {
@@ -231,8 +236,8 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
 
   const visibleRails = rails.filter((r) => (r.type === "lnurl" ? SHOW_LNURL : true));
   const formatSats = (n: number | null | undefined) => `${Math.round(Number(n || 0)).toLocaleString()} sats`;
-  const configured = Boolean(lightningAdmin?.configured);
-  const reachable = Boolean(lightningReadiness?.nodeReachable);
+  const configured = Boolean(lightningAdmin?.configured || lightningReadiness?.configured || lightningReadiness?.nodeReachable);
+  const reachable = Boolean(lightningReadiness?.nodeReachable || lightningAdmin?.runtime?.connected);
   const receiveReady = Boolean(lightningReadiness?.receiveReady);
 
   useEffect(() => {
