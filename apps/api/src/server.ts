@@ -10925,9 +10925,10 @@ function buildPublishAnchor(content: any, splitAnchor: SplitAnchor, manifest: an
 }
 
 async function buildParentPublishAnchor(contentId: string): Promise<ParentPublishAnchor | undefined> {
-  const link = await prisma.contentLink.findFirst({
-    where: { childContentId: contentId },
-    orderBy: { parentContentId: "asc" },
+  const authorityLink = await getAuthoritativeContentLinkForChild(contentId);
+  if (!authorityLink?.id) return undefined;
+  const link = await prisma.contentLink.findUnique({
+    where: { id: authorityLink.id },
     include: {
       parentContent: {
         include: {
@@ -14627,7 +14628,6 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   const email = (me?.email || "").toLowerCase();
   const upstreamPairKey = (parentContentId: string, childContentId: string) => `${parentContentId}:${childContentId}`;
   const derivativeRelations = ["derivative", "remix", "mashup"] as any[];
-  const authorityLinkByChildId = new Map<string, any | null>();
   const lockedSplitById = new Map<string, any | null>();
   const resolveParentRoyaltyStake = (parentContent: { ownerUserId?: string | null } | null | undefined, parentSplit: any) => {
     const parentParticipant =
@@ -14660,41 +14660,6 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     const split = await getLockedSplitVersionById(key);
     lockedSplitById.set(key, split || null);
     return split || null;
-  };
-  const getAuthorityDerivativeLinkForChild = async (childContentId: string) => {
-    const childId = asString(childContentId || "").trim();
-    if (!childId) return null;
-    if (authorityLinkByChildId.has(childId)) return authorityLinkByChildId.get(childId) || null;
-    const links = await prisma.contentLink.findMany({
-      where: { childContentId: childId, relation: { in: derivativeRelations as any } },
-      select: {
-        id: true,
-        parentContentId: true,
-        childContentId: true,
-        parentSplitVersionId: true,
-        upstreamBps: true,
-        approvedAt: true,
-        requiresApproval: true
-      }
-    });
-    if (!links.length) {
-      authorityLinkByChildId.set(childId, null);
-      return null;
-    }
-    const ranked = links
-      .slice()
-      .sort((a, b) => {
-        const aHasSnapshot = asString(a.parentSplitVersionId || "").trim() ? 1 : 0;
-        const bHasSnapshot = asString(b.parentSplitVersionId || "").trim() ? 1 : 0;
-        if (aHasSnapshot !== bHasSnapshot) return bHasSnapshot - aHasSnapshot;
-        const aApproved = a.approvedAt instanceof Date ? a.approvedAt.getTime() : 0;
-        const bApproved = b.approvedAt instanceof Date ? b.approvedAt.getTime() : 0;
-        if (aApproved !== bApproved) return bApproved - aApproved;
-        return String(b.id || "").localeCompare(String(a.id || ""));
-      });
-    const winner = ranked[0] || null;
-    authorityLinkByChildId.set(childId, winner || null);
-    return winner || null;
   };
 
   const owned = await prisma.contentItem.findMany({
@@ -14822,7 +14787,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     if (l.role !== "upstream") continue;
     const childContentId = l.settlement?.contentId;
     if (!childContentId) continue;
-    const link = await getAuthorityDerivativeLinkForChild(childContentId);
+    const link = await getAuthoritativeContentLinkForChild(childContentId);
     if (!link) continue;
     const parentSplitVersionId = asString((link as any)?.parentSplitVersionId || "").trim();
     if (!parentSplitVersionId) {
@@ -33400,19 +33365,7 @@ app.get("/content/:id", { preHandler: requireAuth }, async (req: any, reply) => 
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }]
   });
 
-  const parentLink = await prisma.contentLink.findFirst({
-    where: { childContentId: contentId },
-    select: {
-      id: true,
-      parentContentId: true,
-      parentSplitVersionId: true,
-      childContentId: true,
-      relation: true,
-      requiresApproval: true,
-      upstreamBps: true,
-      approvedAt: true
-    }
-  });
+  const parentLink = await getAuthoritativeContentLinkForChild(contentId);
 
   return reply.send({
     id: c.id,
@@ -34777,6 +34730,40 @@ async function getLockedSplitVersion(input: { contentId?: string | null; splitVe
 
 async function getLockedSplitForContent(contentId: string) {
   return getLockedSplitVersion({ contentId });
+}
+
+// Deterministic authority selector for child->parent ContentLink resolution.
+// Selection order:
+// 1) Links with parentSplitVersionId
+// 2) createdAt desc
+// 3) id desc
+async function getAuthoritativeContentLinkForChild(childContentId: string) {
+  const childId = asString(childContentId || "").trim();
+  if (!childId) return null;
+  const links = await prisma.contentLink.findMany({
+    where: { childContentId: childId },
+    select: {
+      id: true,
+      parentContentId: true,
+      childContentId: true,
+      parentSplitVersionId: true,
+      relation: true,
+      requiresApproval: true,
+      upstreamBps: true,
+      approvedAt: true
+    }
+  });
+  if (!links.length) return null;
+  const ranked = links.slice().sort((a, b) => {
+    const aHasSnapshot = asString(a.parentSplitVersionId || "").trim() ? 1 : 0;
+    const bHasSnapshot = asString(b.parentSplitVersionId || "").trim() ? 1 : 0;
+    if (aHasSnapshot !== bHasSnapshot) return bHasSnapshot - aHasSnapshot;
+    const aApproved = a.approvedAt instanceof Date ? a.approvedAt.getTime() : 0;
+    const bApproved = b.approvedAt instanceof Date ? b.approvedAt.getTime() : 0;
+    if (aApproved !== bApproved) return bApproved - aApproved;
+    return String(b.id || "").localeCompare(String(a.id || ""));
+  });
+  return ranked[0] || null;
 }
 
 async function ensureRemoteShadowLockedSplitForParent(input: {
@@ -39593,12 +39580,7 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
         select: { id: true, title: true, type: true }
       })
     : null;
-  const parentLink = paymentIntent.contentId
-    ? await prisma.contentLink.findFirst({
-        where: { childContentId: paymentIntent.contentId },
-        select: { parentContentId: true }
-      })
-    : null;
+  const parentLink = paymentIntent.contentId ? await getAuthoritativeContentLinkForChild(paymentIntent.contentId) : null;
   const sourceContent = parentLink?.parentContentId
     ? await prisma.contentItem.findUnique({
         where: { id: parentLink.parentContentId },
