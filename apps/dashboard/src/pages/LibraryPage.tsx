@@ -609,7 +609,7 @@ function applyLibraryFilters(
   typeFilter: LibraryTypeFilter,
   relationshipFilter: LibraryRelationshipFilter
 ): NormalizedLibraryItem[] {
-  return items.filter((entry) => {
+  const filtered = items.filter((entry) => {
     if (!shouldRenderActiveLibraryRow(entry)) return false;
     const typeMatch = typeFilter === "all" || entry.contentType === typeFilter;
     const relationMatch = (() => {
@@ -637,6 +637,50 @@ function applyLibraryFilters(
     }
     return include;
   });
+
+  // Final render-level dedupe guard, especially for "All":
+  // keep one canonical card per public identity and merge scope/reason metadata.
+  const deduped = new Map<string, NormalizedLibraryItem>();
+  for (const entry of filtered) {
+    const buyUrl = String(entry.item?.buyUrl || "").trim().toLowerCase();
+    const attributionUrl = String(entry.item?.attributionUrl || "").trim().toLowerCase();
+    const publicPageUrl = String(entry.publicPageUrl || "").trim().toLowerCase();
+    const remoteOrigin = String(canonicalEntryOrigin(entry) || "").trim().toLowerCase();
+    const title = String(entry.item?.title || "").trim().toLowerCase();
+    const type = String(entry.item?.type || "").trim().toLowerCase();
+    const owner = String(entry.item?.ownerUserId || "").trim().toLowerCase();
+    const key =
+      (buyUrl && `buy::${buyUrl}`) ||
+      (attributionUrl && `attr::${attributionUrl}`) ||
+      (publicPageUrl && `public::${publicPageUrl}`) ||
+      `fallback::${remoteOrigin}::${title}::${type}::${owner}`;
+
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, entry);
+      continue;
+    }
+
+    const existingOwned = String(existing.item?.libraryAccess || "").toLowerCase() === "owned";
+    const incomingOwned = String(entry.item?.libraryAccess || "").toLowerCase() === "owned";
+    const winner = incomingOwned && !existingOwned ? entry : existing;
+    const loser = winner === entry ? existing : entry;
+    deduped.set(key, {
+      ...winner,
+      item: {
+        ...winner.item,
+        buyUrl: firstNonEmptyString(winner.item.buyUrl, loser.item.buyUrl) || null,
+        attributionUrl: firstNonEmptyString(winner.item.attributionUrl, loser.item.attributionUrl) || null,
+        remoteOrigin: firstNonEmptyString(winner.item.remoteOrigin, loser.item.remoteOrigin) || null,
+        appearsBecause: Array.from(new Set([...(winner.item.appearsBecause || []), ...(loser.item.appearsBecause || [])])),
+        libraryScopes: Array.from(new Set([...(winner.item.libraryScopes || []), ...(loser.item.libraryScopes || [])]))
+      },
+      libraryScopes: new Set([...(winner.libraryScopes || new Set()), ...(loser.libraryScopes || new Set())]),
+      relationshipTags: Array.from(new Set([...(winner.relationshipTags || []), ...(loser.relationshipTags || [])]))
+    });
+  }
+
+  return Array.from(deduped.values());
 }
 
 export default function LibraryPage() {
@@ -1855,7 +1899,9 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                           )}`
                         : null;
                     const apiPreviewCandidates = Array.isArray(it.libraryPreviewCandidates) ? it.libraryPreviewCandidates : [];
-                    const previewPrimaryObjectKey = String(preview?.manifest?.primaryFile || "").trim();
+                    const previewPrimaryObjectKey = String(
+                      preview?.manifest?.primaryFile || it.manifestPrimaryFilePath || it.primaryFile || ""
+                    ).trim();
                     const previewPrimaryObjectUrl = previewPrimaryObjectKey
                       ? `${buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase)}?objectKey=${encodeURIComponent(
                           previewPrimaryObjectKey
@@ -1881,7 +1927,6 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                     );
                     const genericPreviewFallback = buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase);
                     const rawPlaybackCandidates = [
-                      genericPreviewFallback,
                       ...apiPreviewCandidates,
                       it.manifestPrimaryFileUrl,
                       it.previewFileUrl,
@@ -1892,7 +1937,8 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       previewAvObjectUrl,
                       preferredPublishedPlaybackUrl,
                       previewUrl,
-                      participantPreviewFallback
+                      participantPreviewFallback,
+                      genericPreviewFallback
                     ];
                     const nonImagePlaybackCandidates = rawPlaybackCandidates.filter(
                       (candidate) => !looksLikeImageAssetUrl(candidate)
