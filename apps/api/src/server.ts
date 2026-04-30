@@ -26285,7 +26285,7 @@ async function handlePublicAttribution(req: any, reply: any) {
     getLockedSplitForContent(contentId),
     prisma.contentLink.findMany({
       where: { childContentId: contentId },
-      include: { parentContent: { include: { owner: { select: { displayName: true } } } } },
+      include: { parentContent: { include: { owner: { select: { displayName: true }, }, }, }, },
       orderBy: { id: "asc" }
     })
   ]);
@@ -26348,8 +26348,15 @@ async function handlePublicAttribution(req: any, reply: any) {
     kind: "derivative";
     items: Array<{
       parentContentId: string | null;
+      parentBuyUrl: string | null;
+      parentAttributionUrl: string | null;
       title: string | null;
-      primaryCreator: { displayName: string; handle: string | null; verification: { badge: string | null } };
+      primaryCreator: {
+        displayName: string;
+        handle: string | null;
+        profilePath: string | null;
+        verification: { badge: string | null };
+      };
       shareholders: Array<{ displayName: string; handle: string | null; profilePath: string | null; bps: number }>;
     }>;
     truncated: boolean;
@@ -26359,12 +26366,34 @@ async function handlePublicAttribution(req: any, reply: any) {
     const items = await Promise.all(
       parentLinks.slice(0, maxItems).map(async (l) => {
         const parentContentId = asString(l.parentContent?.id || "").trim() || null;
+        const parentOrigin = getRemoteOriginFromDescription((l.parentContent as any)?.description || null);
+        const parentBuyUrl = parentContentId
+          ? (parentOrigin ? `${parentOrigin.replace(/\/+$/, "")}/buy/${encodeURIComponent(parentContentId)}` : `/buy/${encodeURIComponent(parentContentId)}`)
+          : null;
+        const parentAttributionUrl = parentContentId
+          ? (parentOrigin
+              ? `${parentOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(parentContentId)}/attribution`
+              : `/public/content/${encodeURIComponent(parentContentId)}/attribution`)
+          : null;
         // Derivative upstream attribution must be tied to the authority snapshot captured
         // on the derivative link, not "latest locked split by parent content".
         const parentSplitVersionId = asString((l as any)?.parentSplitVersionId || "").trim() || null;
         const parentSplit = parentSplitVersionId ? await getLockedSplitVersionById(parentSplitVersionId) : null;
         const parentSnapshots = parentSplit ? await getLockedParticipantSnapshotsForSplitVersion(parentSplit.id) : [];
-        const shareholders = parentSnapshots
+        let remoteAttribution: any = null;
+        if (parentOrigin && parentContentId) {
+          try {
+            const ctrl = new AbortController();
+            const timeout = setTimeout(() => ctrl.abort(), 3000);
+            const r = await fetch(
+              `${parentOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(parentContentId)}/attribution`,
+              { signal: ctrl.signal as any }
+            );
+            clearTimeout(timeout);
+            if (r.ok) remoteAttribution = await r.json().catch(() => null);
+          } catch {}
+        }
+        const shareholdersFromSnapshots = parentSnapshots
           .map((snapshot) => {
             const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
             const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
@@ -26389,15 +26418,59 @@ async function handlePublicAttribution(req: any, reply: any) {
           })
           .filter((s) => s.bps > 0)
           .sort((a, b) => b.bps - a.bps);
+        const shareholdersFromRemote = Array.isArray(remoteAttribution?.contributors)
+          ? remoteAttribution.contributors
+              .map((c: any) => {
+                const displayName = asString(c?.displayName || c?.name || c?.handle || "").trim() || "Shareholder";
+                const handleNorm = normalizePublicProfileHandle(c?.handle || "");
+                const safeHandle = handleNorm && !looksLikeInternalUserId(handleNorm) ? `@${handleNorm}` : null;
+                const rawProfilePath = normalizePublicProfileHref(c?.profilePath || "");
+                const safeProfilePath = rawProfilePath
+                  ? (/^https?:\/\//i.test(rawProfilePath)
+                      ? rawProfilePath
+                      : (parentOrigin ? `${parentOrigin.replace(/\/+$/, "")}${rawProfilePath.startsWith("/") ? "" : "/"}${rawProfilePath}` : null))
+                  : (safeHandle && parentOrigin
+                      ? `${parentOrigin.replace(/\/+$/, "")}/u/${encodeURIComponent(safeHandle.replace(/^@/, ""))}`
+                      : null);
+                return {
+                  displayName,
+                  handle: safeHandle,
+                  profilePath: safeProfilePath,
+                  bps: Math.max(0, Math.round(Number(c?.bps || 0)))
+                };
+              })
+              .filter((s: any) => s.bps > 0)
+          : [];
+        const shareholders = shareholdersFromRemote.length ? shareholdersFromRemote : shareholdersFromSnapshots;
+        const remotePrimary = remoteAttribution?.primaryCreator || null;
+        const remotePrimaryDisplay = asString(remotePrimary?.displayName || remotePrimary?.name || "").trim();
+        const remotePrimaryHandleNorm = normalizePublicProfileHandle(remotePrimary?.handle || "");
+        const remotePrimaryHandle =
+          remotePrimaryHandleNorm && !looksLikeInternalUserId(remotePrimaryHandleNorm) ? remotePrimaryHandleNorm : null;
+        const remotePrimaryProfilePathRaw = normalizePublicProfileHref(remotePrimary?.profilePath || "");
+        const remotePrimaryProfilePath = remotePrimaryProfilePathRaw
+          ? (/^https?:\/\//i.test(remotePrimaryProfilePathRaw)
+              ? remotePrimaryProfilePathRaw
+              : (parentOrigin
+                  ? `${parentOrigin.replace(/\/+$/, "")}${remotePrimaryProfilePathRaw.startsWith("/") ? "" : "/"}${remotePrimaryProfilePathRaw}`
+                  : null))
+          : (remotePrimaryHandle && parentOrigin
+              ? `${parentOrigin.replace(/\/+$/, "")}/u/${encodeURIComponent(remotePrimaryHandle)}`
+              : null);
+        const localPrimary = toPublicCreator(l.parentContent?.owner);
         return {
           parentContentId,
+          parentBuyUrl,
+          parentAttributionUrl,
           title: l.parentContent?.title || null,
-          primaryCreator:
-            toPublicCreator(l.parentContent?.owner) || {
-              displayName: "Creator",
-              handle: null,
-              verification: { badge: null as string | null }
-            },
+          primaryCreator: {
+            displayName: remotePrimaryDisplay || localPrimary?.displayName || "Creator",
+            handle: remotePrimaryHandle || localPrimary?.handle || null,
+            profilePath: remotePrimaryProfilePath || (parentOrigin && localPrimary?.handle
+              ? `${parentOrigin.replace(/\/+$/, "")}/u/${encodeURIComponent(localPrimary.handle)}`
+              : null),
+            verification: { badge: null as string | null }
+          },
           shareholders
         };
       })
@@ -29345,7 +29418,19 @@ async function handleBuyPage(req: any, reply: any) {
     return /^[a-z0-9._-]{2,32}$/i.test(raw);
   }
   function normalizeHandleText(v){
-    return String(v == null ? "" : v).trim().replace(/^@+/, "");
+    const raw = String(v == null ? "" : v).trim().replace(/^@+/, "");
+    if (!raw) return "";
+    const lowered = raw.toLowerCase();
+    if (lowered.startsWith("remote:") || lowered.startsWith("identity_ref:remote:")) {
+      const remoteRef = lowered.startsWith("identity_ref:") ? raw.slice("identity_ref:".length) : raw;
+      const rest = remoteRef.slice("remote:".length);
+      const hashIdx = rest.indexOf("#user:");
+      const origin = hashIdx >= 0 ? rest.slice(0, hashIdx).trim() : "";
+      const m = origin.match(/^https?:\/\/[^/]+\/u\/([^/?#]+)/i);
+      if (m && m[1]) return decodeURIComponent(m[1]).replace(/^@+/, "");
+    }
+    if (lowered.startsWith("remotehttp")) return "";
+    return raw;
   }
   function resolvePublicPersonLabel(candidateName, candidateHandle, fallbackLabel){
     const cleanName = String(candidateName == null ? "" : candidateName).trim();
@@ -29473,13 +29558,15 @@ async function handleBuyPage(req: any, reply: any) {
             const phRaw = String(pc.handle || "").trim();
             const normalizedHandle = normalizeHandleText(phRaw);
             const ph = isCleanPublicHandle(normalizedHandle) ? (" @" + esc(normalizedHandle)) : "";
-            const creatorProfileHref = isCleanPublicHandle(normalizedHandle) ? "/u/" + encodeURIComponent(normalizedHandle) : "";
+            const creatorProfileHrefRaw = resolveSafeProfilePath(String(pc.profilePath || "").trim());
+            const creatorProfileHref =
+              creatorProfileHrefRaw ||
+              (isCleanPublicHandle(normalizedHandle) ? "/u/" + encodeURIComponent(normalizedHandle) : "");
             const creatorHtml = creatorProfileHref
-              ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\">" + pn + ph + "</a>")
+              ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\" " + (/^https?:\\/\\//i.test(creatorProfileHref) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + pn + ph + "</a>")
               : (pn + ph);
-            const parentContentUrl = it?.parentContentId
-              ? "/buy/" + encodeURIComponent(String(it.parentContentId))
-              : "";
+            const parentContentUrlRaw = String(it?.parentBuyUrl || "").trim();
+            const parentContentUrl = parentContentUrlRaw || (it?.parentContentId ? "/buy/" + encodeURIComponent(String(it.parentContentId)) : "");
             const shareholders = Array.isArray(it?.shareholders) ? it.shareholders : [];
             const shareholdersHtml = shareholders.length > 0
               ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">Upstream royalty recipients:</div><ul class=\\"muted\\" style=\\"margin:4px 0 0 16px;padding:0;\\">" + shareholders
@@ -29501,8 +29588,9 @@ async function handleBuyPage(req: any, reply: any) {
                 (shareholders.length > 6 ? "<li>...</li>" : "") +
                 "</ul>"
               : "";
-            const attributionLinkHtml = parentContentUrl
-              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(parentContentUrl) + "\\" style=\\"text-decoration:underline;\\">Original work attribution</a></div>"
+            const attributionHrefRaw = String(it?.parentAttributionUrl || parentContentUrl || "").trim();
+            const attributionLinkHtml = attributionHrefRaw
+              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(attributionHrefRaw) + "\\" style=\\"text-decoration:underline;\\" " + (/^https?:\\/\\//i.test(attributionHrefRaw) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">Original work attribution</a></div>"
               : "";
             return "<li><div>" + t + " - " + creatorHtml + "</div>" + shareholdersHtml + attributionLinkHtml + "</li>";
           }).join("") +
