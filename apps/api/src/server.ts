@@ -14621,6 +14621,48 @@ app.get("/my/split-participations", { preHandler: requireAuth }, async (req: any
   );
 });
 
+type RoyaltyEarningSourceType =
+  | "catalog_earning"
+  | "collaboration_earning"
+  | "derivative_creator_earning"
+  | "upstream_royalty_earning";
+
+function inferRoyaltyEarningSourceType(
+  participantRefRaw: string | null | undefined,
+  roleRaw: string | null | undefined
+): RoyaltyEarningSourceType {
+  const participantRef = String(participantRefRaw || "").trim().toLowerCase();
+  const role = String(roleRaw || "").trim().toLowerCase();
+  if (participantRef.startsWith("upstream") || role === "upstream") return "upstream_royalty_earning";
+  if (participantRef.startsWith("derivative:") || role.startsWith("derivative")) return "derivative_creator_earning";
+  if (role === "owner") return "catalog_earning";
+  return "collaboration_earning";
+}
+
+function buildSettlementLineBucketsByContent(
+  lines: Array<{ settlement?: { contentId?: string | null } | null; role?: string | null; amountSats?: any }>
+) {
+  const byContent = new Map<
+    string,
+    { total: bigint; nonUpstream: bigint; bySource: Map<RoyaltyEarningSourceType, bigint> }
+  >();
+  for (const line of lines || []) {
+    const contentId = asString(line?.settlement?.contentId || "").trim();
+    if (!contentId) continue;
+    const amount = BigInt(line?.amountSats as any);
+    const sourceType = inferRoyaltyEarningSourceType(null, asString(line?.role || "").trim() || null);
+    let bucket = byContent.get(contentId);
+    if (!bucket) {
+      bucket = { total: 0n, nonUpstream: 0n, bySource: new Map() };
+      byContent.set(contentId, bucket);
+    }
+    bucket.total += amount;
+    if (sourceType !== "upstream_royalty_earning") bucket.nonUpstream += amount;
+    bucket.bySource.set(sourceType, (bucket.bySource.get(sourceType) || 0n) + amount);
+  }
+  return byContent;
+}
+
 // Royalties (works + upstream income)
 app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
@@ -14711,6 +14753,9 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   settlementLines.forEach((l) => {
     if (l.settlement?.contentId) settlementContentIds.add(l.settlement.contentId);
   });
+  const settlementBucketsByContent = buildSettlementLineBucketsByContent(
+    settlementLines as Array<{ settlement?: { contentId?: string | null } | null; role?: string | null; amountSats?: any }>
+  );
 
   // Union of contentIds for works
   const workContentIds = new Set<string>();
@@ -14759,9 +14804,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     }));
 
     // earned sats for this content (exclude upstream lines from derivative settlements)
-    const earned = settlementLines
-      .filter((l) => l.settlement?.contentId === content.id && l.role !== "upstream")
-      .reduce((acc, l) => acc + BigInt(l.amountSats as any), 0n);
+    const earned = settlementBucketsByContent.get(content.id)?.nonUpstream || 0n;
 
     works.push({
       contentId: content.id,
@@ -14784,7 +14827,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   // Upstream income + pending clearance from derivatives
   const upstreamIncomeMap = new Map<string, any>();
   for (const l of settlementLines) {
-    if (l.role !== "upstream") continue;
+    if (inferRoyaltyEarningSourceType(null, asString(l.role || "").trim() || null) !== "upstream_royalty_earning") continue;
     const childContentId = l.settlement?.contentId;
     if (!childContentId) continue;
     const link = await getAuthoritativeContentLinkForChild(childContentId);
@@ -18553,18 +18596,6 @@ app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async 
     parentByChild.set(childId, parentId);
   }
 
-  const inferEarningSourceType = (
-    participantRefRaw: string | null | undefined,
-    roleRaw: string | null | undefined
-  ): "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" => {
-    const participantRef = String(participantRefRaw || "").trim().toLowerCase();
-    const role = String(roleRaw || "").trim().toLowerCase();
-    if (participantRef.startsWith("upstream") || role === "upstream") return "upstream_royalty_earning";
-    if (participantRef.startsWith("derivative:") || role.startsWith("derivative")) return "derivative_creator_earning";
-    if (role === "owner") return "catalog_earning";
-    return "collaboration_earning";
-  };
-
   const items = rows.map((row) => {
     const creatorNodeId = intentCreatorById.get(String(row.providerPaymentIntentId || "").trim()) || null;
     const contentId = String((row as any)?.allocation?.contentId || "").trim() || null;
@@ -18575,7 +18606,7 @@ app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async 
     const allocationRole = String((row as any)?.allocation?.role || "").trim() || null;
     const allocationBps = Number((row as any)?.allocation?.bps || 0);
     const allocationSource = String((row as any)?.allocation?.allocationSource || "").trim() || null;
-    const sourceType = inferEarningSourceType(participantRef, allocationRole);
+    const sourceType = inferRoyaltyEarningSourceType(participantRef, allocationRole);
     const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
     const allocationId = String((row as any)?.allocationId || "").trim();
     const accounting = paymentIntentId ? accountingByIntent.get(paymentIntentId)?.get(allocationId) : undefined;
@@ -39169,6 +39200,9 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     },
     include: { settlement: true }
   });
+  const settlementBucketsByContent = buildSettlementLineBucketsByContent(
+    lines as Array<{ settlement?: { contentId?: string | null } | null; role?: string | null; amountSats?: any }>
+  );
 
   const payoutRows = await prisma.participantPayout.findMany({
     where: {
@@ -39234,11 +39268,10 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     row.total += BigInt(s.netAmountSats as any);
   }
 
-  for (const l of lines) {
-    if (!l.settlement?.contentId) continue;
-    const row = rows.get(l.settlement.contentId);
+  for (const [contentId, bucket] of settlementBucketsByContent.entries()) {
+    const row = rows.get(contentId);
     if (!row) continue;
-    row.yourShare += BigInt(l.amountSats as any);
+    row.yourShare += bucket.total;
   }
 
   for (const payout of canonicalPayoutRows) {
@@ -39444,18 +39477,6 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
   let pendingSats = 0n;
   let failedSats = 0n;
 
-  const inferEarningSourceType = (
-    participantRefRaw: string | null | undefined,
-    roleRaw: string | null | undefined
-  ): "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" => {
-    const participantRef = String(participantRefRaw || "").trim().toLowerCase();
-    const role = String(roleRaw || "").trim().toLowerCase();
-    if (participantRef.startsWith("upstream") || role === "upstream") return "upstream_royalty_earning";
-    if (participantRef.startsWith("derivative:") || role.startsWith("derivative")) return "derivative_creator_earning";
-    if (role === "owner") return "catalog_earning";
-    return "collaboration_earning";
-  };
-
   const items = canonicalRows.map((row) => {
     const amount = BigInt(String((row as any)?.amountSats || "0"));
     const status = parseParticipantPayoutStatus((row as any)?.status);
@@ -39473,7 +39494,7 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
     const allocationParticipantRef = String((row as any)?.allocation?.participantRef || "").trim() || null;
     const allocationBps = Number((row as any)?.allocation?.bps || 0);
     const allocationSource = String((row as any)?.allocation?.allocationSource || "").trim() || null;
-    const earningSourceType = inferEarningSourceType(allocationParticipantRef, allocationRole);
+    const earningSourceType = inferRoyaltyEarningSourceType(allocationParticipantRef, allocationRole);
     const netAmountSats = BigInt(String((row as any)?.amountSats || "0"));
     const netPaidSats = status === "paid" ? netAmountSats : 0n;
     const netPayableSats =
@@ -39561,18 +39582,6 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
     }
   });
   if (!paymentIntent) return notFound(reply, "payment intent not found");
-
-  const inferEarningSourceType = (
-    participantRefRaw: string | null | undefined,
-    roleRaw: string | null | undefined
-  ): "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" => {
-    const participantRef = String(participantRefRaw || "").trim().toLowerCase();
-    const role = String(roleRaw || "").trim().toLowerCase();
-    if (participantRef.startsWith("upstream") || role === "upstream") return "upstream_royalty_earning";
-    if (participantRef.startsWith("derivative:") || role.startsWith("derivative")) return "derivative_creator_earning";
-    if (role === "owner") return "catalog_earning";
-    return "collaboration_earning";
-  };
 
   const soldContent = paymentIntent.contentId
     ? await prisma.contentItem.findUnique({
@@ -39782,7 +39791,7 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
         const role = String(row.role || "").trim() || null;
         const amount = BigInt(String(row.amountSats || "0"));
         return {
-          sourceType: inferEarningSourceType(participantRef, role),
+          sourceType: inferRoyaltyEarningSourceType(participantRef, role),
           grossShareSats: (accounting?.grossShareSats || amount).toString(),
           feeWithheldSats: (accounting?.feeWithheldSats || 0n).toString(),
           netObligationSats: (accounting?.netShareSats || amount).toString()
@@ -39811,7 +39820,7 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
         participantUserId: allocation?.participantUserId || null,
         participantEmail: allocation?.participantEmail || null,
         role: allocation?.role || null,
-        sourceType: inferEarningSourceType(allocation?.participantRef, allocation?.role),
+        sourceType: inferRoyaltyEarningSourceType(allocation?.participantRef, allocation?.role),
         allocationSource: allocation?.allocationSource || null,
         grossShareSats: allocation
           ? (accountingForIntent.get(String(allocation.id || "").trim())?.grossShareSats || BigInt(String(allocation.amountSats || "0"))).toString()
