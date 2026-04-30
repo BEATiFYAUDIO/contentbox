@@ -14626,6 +14626,9 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
   const email = (me?.email || "").toLowerCase();
   const upstreamPairKey = (parentContentId: string, childContentId: string) => `${parentContentId}:${childContentId}`;
+  const derivativeRelations = ["derivative", "remix", "mashup"] as any[];
+  const authorityLinkByChildId = new Map<string, any | null>();
+  const lockedSplitById = new Map<string, any | null>();
   const resolveParentRoyaltyStake = (parentContent: { ownerUserId?: string | null } | null | undefined, parentSplit: any) => {
     const parentParticipant =
       parentSplit?.participants.find((p: any) => p.participantUserId === userId) ||
@@ -14649,6 +14652,49 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
       parentParticipant: null,
       parentBps: null as number | null
     };
+  };
+  const getLockedSplitBySnapshotId = async (splitVersionId: string | null | undefined) => {
+    const key = asString(splitVersionId || "").trim();
+    if (!key) return null;
+    if (lockedSplitById.has(key)) return lockedSplitById.get(key) || null;
+    const split = await getLockedSplitVersionById(key);
+    lockedSplitById.set(key, split || null);
+    return split || null;
+  };
+  const getAuthorityDerivativeLinkForChild = async (childContentId: string) => {
+    const childId = asString(childContentId || "").trim();
+    if (!childId) return null;
+    if (authorityLinkByChildId.has(childId)) return authorityLinkByChildId.get(childId) || null;
+    const links = await prisma.contentLink.findMany({
+      where: { childContentId: childId, relation: { in: derivativeRelations as any } },
+      select: {
+        id: true,
+        parentContentId: true,
+        childContentId: true,
+        parentSplitVersionId: true,
+        upstreamBps: true,
+        approvedAt: true,
+        requiresApproval: true
+      }
+    });
+    if (!links.length) {
+      authorityLinkByChildId.set(childId, null);
+      return null;
+    }
+    const ranked = links
+      .slice()
+      .sort((a, b) => {
+        const aHasSnapshot = asString(a.parentSplitVersionId || "").trim() ? 1 : 0;
+        const bHasSnapshot = asString(b.parentSplitVersionId || "").trim() ? 1 : 0;
+        if (aHasSnapshot !== bHasSnapshot) return bHasSnapshot - aHasSnapshot;
+        const aApproved = a.approvedAt instanceof Date ? a.approvedAt.getTime() : 0;
+        const bApproved = b.approvedAt instanceof Date ? b.approvedAt.getTime() : 0;
+        if (aApproved !== bApproved) return bApproved - aApproved;
+        return String(b.id || "").localeCompare(String(a.id || ""));
+      });
+    const winner = ranked[0] || null;
+    authorityLinkByChildId.set(childId, winner || null);
+    return winner || null;
   };
 
   const owned = await prisma.contentItem.findMany({
@@ -14776,13 +14822,25 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     if (l.role !== "upstream") continue;
     const childContentId = l.settlement?.contentId;
     if (!childContentId) continue;
-    const link = await prisma.contentLink.findFirst({ where: { childContentId } });
+    const link = await getAuthorityDerivativeLinkForChild(childContentId);
     if (!link) continue;
+    const parentSplitVersionId = asString((link as any)?.parentSplitVersionId || "").trim();
+    if (!parentSplitVersionId) {
+      req.log.warn({ childContentId, linkId: (link as any)?.id || null }, "royalties.derivative_authority_missing_parent_split_snapshot");
+      continue;
+    }
     const parentContent = await prisma.contentItem.findUnique({ where: { id: link.parentContentId } });
     const childContent = await prisma.contentItem.findUnique({ where: { id: childContentId } });
     if (!parentContent || !childContent) continue;
 
-    const parentSplit = await getLockedSplitForContent(parentContent.id);
+    const parentSplit = await getLockedSplitBySnapshotId(parentSplitVersionId);
+    if (!parentSplit) {
+      req.log.warn(
+        { childContentId, linkId: (link as any)?.id || null, parentSplitVersionId },
+        "royalties.derivative_authority_parent_split_not_locked"
+      );
+      continue;
+    }
     const parentStake = resolveParentRoyaltyStake(parentContent, parentSplit);
     if (!parentStake.visible) continue;
 
@@ -14814,7 +14872,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   }
 
   const linksForStatus = await prisma.contentLink.findMany({
-    where: { relation: { in: ["derivative", "remix", "mashup"] as any } },
+    where: { relation: { in: derivativeRelations as any } },
     include: { parentContent: true, childContent: true }
   });
   const auths = await prisma.derivativeAuthorization.findMany({
@@ -14825,15 +14883,11 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   // Include cleared + pending upstream links even if no earnings yet
   const clearedLinks = linksForStatus.filter((l) => l.approvedAt);
   const pendingLinks = linksForStatus.filter((l) => !l.approvedAt);
-  const parentSplits = new Map<string, any>();
   for (const link of [...clearedLinks, ...pendingLinks]) {
-    if (!parentSplits.has(link.parentContentId)) {
-      const ps = await getLockedSplitForContent(link.parentContentId);
-      parentSplits.set(link.parentContentId, ps);
-    }
-  }
-  for (const link of [...clearedLinks, ...pendingLinks]) {
-    const ps = parentSplits.get(link.parentContentId);
+    const parentSplitVersionId = asString(link.parentSplitVersionId || "").trim();
+    if (!parentSplitVersionId) continue;
+    const ps = await getLockedSplitBySnapshotId(parentSplitVersionId);
+    if (!ps) continue;
     const parentStake = resolveParentRoyaltyStake(link.parentContent, ps);
     if (!parentStake.visible) continue;
     const key = upstreamPairKey(link.parentContentId, link.childContentId);
