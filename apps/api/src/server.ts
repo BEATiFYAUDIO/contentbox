@@ -4625,6 +4625,9 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
         },
         "providerRemittance.participant_snapshot_failed"
       );
+      if (settledExisting.payoutExecutionMode === "participant") {
+        return markProviderParticipantPayoutFailed(settledExisting, e, "ensureProviderPaymentSettlement_existing_receipt");
+      }
     }
     const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settledExisting.id).catch(() => settledExisting.payoutSummaryStatus || "pending");
     const withSummaryExistingBase =
@@ -4779,6 +4782,9 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
       },
       "providerRemittance.participant_snapshot_failed"
     );
+    if (settled.payoutExecutionMode === "participant") {
+      return markProviderParticipantPayoutFailed(settled, e, "ensureProviderPaymentSettlement_new_receipt");
+    }
   }
   const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
   app.log.info(
@@ -6874,6 +6880,33 @@ function persistRuntimeHealthFromApi(input: {
     }
   };
   writeRuntimeHealthState(next);
+  return next;
+}
+
+function markProviderParticipantPayoutFailed(
+  intent: ProviderPaymentIntentRecord,
+  error: unknown,
+  context: string
+): ProviderPaymentIntentRecord {
+  const message = String((error as any)?.message || error || "participant_payout_allocation_failed")
+    .trim()
+    .slice(0, 500);
+  const next =
+    updateProviderPaymentIntent(intent.id, {
+      payoutStatus: "failed",
+      payoutSummaryStatus: "failed",
+      payoutLastError: message || "participant_payout_allocation_failed",
+      remittanceLastCheckedAt: new Date().toISOString()
+    }) || intent;
+  app.log.error(
+    {
+      providerPaymentIntentId: intent.id,
+      paymentIntentId: intent.paymentIntentId,
+      context,
+      error: message
+    },
+    "participantPayout.allocation_failed_marked"
+  );
   return next;
 }
 
@@ -18838,6 +18871,16 @@ app.post("/api/provider/payment-intents/:id/retry-remittance", { preHandler: req
       return reply.code(409).send({
         error: "PARTICIPANT_PAYOUT_EXECUTION_DISABLED",
         message: "Participant payout execution is currently disabled."
+      });
+    }
+    try {
+      await ensureParticipantPayoutRowsForProviderIntent(current);
+    } catch (err: any) {
+      const failed = markProviderParticipantPayoutFailed(current, err, "retry-remittance_snapshot");
+      return reply.code(409).send({
+        error: "PARTICIPANT_PAYOUT_SNAPSHOT_FAILED",
+        message: String(err?.message || err || "participant payout snapshot failed"),
+        item: failed
       });
     }
     await executeParticipantPayoutRowsForIntent(current, "provider_retry_participant_remittance");
@@ -34507,15 +34550,155 @@ async function ensureRemoteShadowLockedSplitForParent(input: {
     !parent.repoPath;
   if (!isRemoteShadowParent) return null;
 
+  const hydrateLockedSplitParticipantsIfMissing = async (splitVersionId: string): Promise<void> => {
+    const splitVersion = await prisma.splitVersion.findUnique({
+      where: { id: splitVersionId },
+      include: { participants: true }
+    });
+    if (!splitVersion || splitVersion.status !== "locked") return;
+    if ((splitVersion.participants || []).length > 0) {
+      await buildLockedParticipantSnapshotsForSplitVersion({
+        splitVersion,
+        lockTime: splitVersion.lockedAt || null,
+        persist: true
+      }).catch(() => {});
+      return;
+    }
+    if (!inferredOrigin) return;
+
+    type RemoteContributor = { role: string; bps: number; targetType: "identity_ref" | "email"; targetValue: string; participantEmail: string | null };
+    const contributors: RemoteContributor[] = [];
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      const attributionUrl = `${inferredOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(parentContentId)}/attribution`;
+      const res = await fetch(attributionUrl, { signal: ctrl.signal as any });
+      const data: any = await res.json().catch(() => null);
+      clearTimeout(timeout);
+      const rows = Array.isArray(data?.contributors) ? data.contributors : [];
+      for (const row of rows) {
+        const bps = Math.max(0, Math.round(Number((row as any)?.bps || 0)));
+        if (bps <= 0) continue;
+        const role = asString((row as any)?.role || "").trim() || "writer";
+        const profilePath = asString((row as any)?.profilePath || "").trim();
+        const handleRaw = asString((row as any)?.handle || "").trim().replace(/^@+/, "");
+        const participantEmail = normalizeEmail((row as any)?.participantEmail || "");
+        if (participantEmail) {
+          contributors.push({
+            role,
+            bps,
+            targetType: "email",
+            targetValue: participantEmail,
+            participantEmail
+          });
+          continue;
+        }
+        if (profilePath) {
+          const identityRefValue = /^https?:\/\//i.test(profilePath)
+            ? profilePath
+            : `${inferredOrigin.replace(/\/+$/, "")}${profilePath.startsWith("/") ? "" : "/"}${profilePath}`;
+          contributors.push({
+            role,
+            bps,
+            targetType: "identity_ref",
+            targetValue: identityRefValue,
+            participantEmail: null
+          });
+          continue;
+        }
+        if (handleRaw) {
+          contributors.push({
+            role,
+            bps,
+            targetType: "identity_ref",
+            targetValue: `profile:${handleRaw}`,
+            participantEmail: null
+          });
+        }
+      }
+    } catch {}
+
+    const normalizedContributors = (() => {
+      if (!contributors.length) {
+        return [
+          {
+            role: "writer",
+            bps: 10000,
+            targetType: "local_user" as const,
+            targetValue: asString(input.fallbackUserId || "").trim(),
+            participantEmail: null
+          }
+        ];
+      }
+      const total = contributors.reduce((sum, row) => sum + Math.max(0, Math.round(Number(row.bps || 0))), 0);
+      if (total <= 0) return [];
+      return contributors.map((row, idx) => {
+        if (idx === contributors.length - 1) {
+          const prior = contributors
+            .slice(0, -1)
+            .reduce((sum, c) => sum + Math.max(0, Math.round((Number(c.bps || 0) * 10000) / total)), 0);
+          return { ...row, bps: Math.max(0, 10000 - prior) };
+        }
+        return { ...row, bps: Math.max(0, Math.round((Number(row.bps || 0) * 10000) / total)) };
+      });
+    })();
+
+    if (!normalizedContributors.length) return;
+    const now = new Date();
+    for (const row of normalizedContributors) {
+      const bps = Math.max(0, Math.floor(Number((row as any).bps || 0)));
+      if (bps <= 0) continue;
+      const percent = bps / 100;
+      await prisma.splitParticipant.create({
+        data: {
+          splitVersionId,
+          participantEmail: normalizeEmail((row as any).participantEmail || "") || null,
+          participantUserId:
+            (row as any).targetType === "local_user"
+              ? asString((row as any).targetValue || "").trim() || null
+              : null,
+          targetType: normalizeInviteTargetType((row as any).targetType || "identity_ref"),
+          targetValue: asString((row as any).targetValue || "").trim() || null,
+          acceptedAt: now,
+          verifiedAt: now,
+          role: asString((row as any).role || "").trim() || "writer",
+          roleCode: "writer" as any,
+          percent,
+          bps
+        }
+      });
+    }
+
+    const refreshed = await prisma.splitVersion.findUnique({
+      where: { id: splitVersionId },
+      include: { participants: true }
+    });
+    if (refreshed && refreshed.status === "locked") {
+      await buildLockedParticipantSnapshotsForSplitVersion({
+        splitVersion: refreshed,
+        lockTime: refreshed.lockedAt || null,
+        persist: true
+      }).catch(() => {});
+    }
+  };
+
   const lockedExisting = await getLockedSplitForContent(parentContentId);
-  if (lockedExisting && lockedExisting.status === "locked") return lockedExisting;
+  if (lockedExisting && lockedExisting.status === "locked") {
+    await hydrateLockedSplitParticipantsIfMissing(lockedExisting.id);
+    const afterHydrate = await getLockedSplitForContent(parentContentId);
+    return afterHydrate && afterHydrate.status === "locked" ? afterHydrate : lockedExisting;
+  }
 
   const latest = await prisma.splitVersion.findFirst({
     where: { contentId: parentContentId },
     orderBy: { versionNumber: "desc" },
     include: { participants: true }
   });
-  if (latest && latest.status === "locked") return latest;
+  if (latest && latest.status === "locked") {
+    await hydrateLockedSplitParticipantsIfMissing(latest.id);
+    const refreshed = await prisma.splitVersion.findUnique({ where: { id: latest.id }, include: { participants: true } });
+    return refreshed || latest;
+  }
 
   const nextVersion = Math.max(1, Number(latest?.versionNumber || 0) + 1);
   const createdByUserId = asString(parent.ownerUserId || "").trim() || asString(input.fallbackUserId || "").trim();
@@ -34531,7 +34714,9 @@ async function ensureRemoteShadowLockedSplitForParent(input: {
     },
     include: { participants: true }
   });
-  return created;
+  await hydrateLockedSplitParticipantsIfMissing(created.id);
+  const hydrated = await prisma.splitVersion.findUnique({ where: { id: created.id }, include: { participants: true } });
+  return hydrated || created;
 }
 
 async function getLockedSplitVersionById(splitVersionId: string) {
@@ -34553,12 +34738,29 @@ async function getParentLockedSplitSnapshotForDerivative(link: {
   parentSplitVersionId?: string | null;
 }) {
   const parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
-  const parentSplit = await getLockedSplitVersionById(parentSplitVersionId);
+  let parentSplit = await getLockedSplitVersionById(parentSplitVersionId);
   if (!parentSplit) {
     const err: any = new Error("PARENT_SPLIT_NOT_LOCKED");
     err.code = "PARENT_SPLIT_NOT_LOCKED";
     err.statusCode = 409;
     throw err;
+  }
+  // Remote-shadow parents can carry a locked split id without local participant rows.
+  // Re-hydrate that exact authoritative snapshot (no latest-split fallback) before allocation.
+  if (!Array.isArray((parentSplit as any).participants) || (parentSplit as any).participants.length === 0) {
+    const parentContent = await prisma.contentItem.findUnique({
+      where: { id: asString(link.parentContentId || "").trim() },
+      select: { ownerUserId: true, description: true }
+    });
+    if (parentContent) {
+      await ensureRemoteShadowLockedSplitForParent({
+        parentContentId: asString(link.parentContentId || "").trim(),
+        parentOrigin: getRemoteOriginFromDescription(parentContent.description || null),
+        fallbackUserId: asString(parentContent.ownerUserId || "").trim() || asString(link.parentContentId || "").trim()
+      }).catch(() => null);
+      const refreshed = await getLockedSplitVersionById(parentSplitVersionId);
+      if (refreshed) parentSplit = refreshed;
+    }
   }
   return parentSplit;
 }
@@ -36265,17 +36467,28 @@ async function bridgeDirectSaleToParticipantPayouts(
     } catch (err: any) {
       if (!isMissingParticipantPayoutTableError(err)) throw err;
     }
+    const settledAfterBridgeGuard =
+      settled.payoutExecutionMode === "participant" &&
+      settled.status === "paid" &&
+      allocationCount === 0
+        ? markProviderParticipantPayoutFailed(
+            settled,
+            new Error("NO_PARTICIPANT_ALLOCATIONS_FOR_PAID_INTENT"),
+            "bridgeDirectSaleToParticipantPayouts_allocation_guard"
+          )
+        : settled;
 
     app.log.info(
       {
         paymentIntentId,
         trigger,
         bridged: true,
-        providerPaymentIntentId: settled.id,
+        providerPaymentIntentId: settledAfterBridgeGuard.id,
         allocationCount,
         payoutRowCount,
-        payoutExecutionMode: settled.payoutExecutionMode,
-        providerRemitMode: settled.providerRemitMode
+        payoutExecutionMode: settledAfterBridgeGuard.payoutExecutionMode,
+        providerRemitMode: settledAfterBridgeGuard.providerRemitMode,
+        payoutStatus: settledAfterBridgeGuard.payoutStatus
       },
       "payments.finalize.payout_bridge_result"
     );
@@ -42212,7 +42425,3 @@ start().catch((err) => {
 process.on("exit", () => {
   releaseApiRuntimeLock();
 });
-
-
-
-
