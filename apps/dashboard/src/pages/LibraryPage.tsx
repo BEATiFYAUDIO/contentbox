@@ -442,7 +442,37 @@ function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): Normal
     }
     collapsed.push(merged);
   }
-  return collapsed;
+  const byPublicTarget = new Map<string, NormalizedLibraryItem>();
+  for (const entry of collapsed) {
+    const buy = String(entry.item?.buyUrl || "").trim().toLowerCase();
+    const attr = String(entry.item?.attributionUrl || "").trim().toLowerCase();
+    const contentId = String(entry.item?.id || "").trim();
+    const publicKey = buy || attr;
+    const key = publicKey ? `public::${publicKey}` : `id::${contentId}`;
+    const existing = byPublicTarget.get(key);
+    if (!existing) {
+      byPublicTarget.set(key, entry);
+      continue;
+    }
+    const existingOwned = String(existing.item?.libraryAccess || "").toLowerCase() === "owned";
+    const incomingOwned = String(entry.item?.libraryAccess || "").toLowerCase() === "owned";
+    const winner = incomingOwned && !existingOwned ? entry : existing;
+    const loser = winner === entry ? existing : entry;
+    byPublicTarget.set(key, {
+      ...winner,
+      item: {
+        ...winner.item,
+        buyUrl: firstNonEmptyString(winner.item.buyUrl, loser.item.buyUrl) || null,
+        attributionUrl: firstNonEmptyString(winner.item.attributionUrl, loser.item.attributionUrl) || null,
+        remoteOrigin: firstNonEmptyString(winner.item.remoteOrigin, loser.item.remoteOrigin) || null,
+        appearsBecause: Array.from(new Set([...(winner.item.appearsBecause || []), ...(loser.item.appearsBecause || [])])),
+        libraryScopes: Array.from(new Set([...(winner.item.libraryScopes || []), ...(loser.item.libraryScopes || [])]))
+      },
+      libraryScopes: new Set([...(winner.libraryScopes || new Set()), ...(loser.libraryScopes || new Set())]),
+      relationshipTags: Array.from(new Set([...(winner.relationshipTags || []), ...(loser.relationshipTags || [])]))
+    });
+  }
+  return Array.from(byPublicTarget.values());
 }
 
 type DerivativeApprovalRow = {
