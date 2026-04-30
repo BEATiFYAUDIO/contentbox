@@ -443,9 +443,9 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
   return (
     <div className="space-y-6">
       <div>
-        <div className="text-lg font-semibold">Payouts & {PAYOUT_DESTINATIONS_LABEL}</div>
+        <div className="text-lg font-semibold">Payouts — your execution rows and payment status</div>
         <div className="text-sm text-neutral-400">
-          Payouts show payout execution status for this account.
+          Viewer-scoped payout rows. Full multi-party reconciliation is available in provider audit.
         </div>
         <div className="text-xs text-neutral-500 mt-1">
           These payouts execute money accrued from Royalties-defined participation and share.

@@ -97,7 +97,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
   const allTabs = useMemo(
     () => [
       { key: "overview", label: "Revenue Overview" },
-      { key: "ledger", label: "Sales" },
+      { key: "ledger", label: "Sales — buyer payments and seller-of-record" },
       { key: "earnings-v2", label: "Content" },
       { key: "royalties", label: "Earnings" },
       { key: "payouts", label: "Payouts" },
@@ -123,7 +123,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-lg font-semibold">Revenue</div>
-            <div className="text-xs text-neutral-500 mt-1">Sales (payment truth), earnings (entitlement truth), and payouts (execution truth).</div>
+            <div className="text-xs text-neutral-500 mt-1">Sales — buyer payments and seller-of-record. Earnings — aggregated entitlement across your works. Payouts — your execution rows and payment status.</div>
           </div>
           <button
             onClick={() => {
@@ -178,8 +178,8 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
             ].join(" ")}
           >
             <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 1</div>
-            <div className="mt-1 text-sm font-semibold text-neutral-100">Sales Input</div>
-            <div className="mt-1 text-xs text-neutral-400">Buyer payment truth and settlement node context.</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-100">Sales — buyer payments and seller-of-record</div>
+            <div className="mt-1 text-xs text-neutral-400">Buyer payment recognition and seller-of-record truth.</div>
           </button>
           <button
             type="button"
@@ -206,8 +206,8 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
             ].join(" ")}
           >
             <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 3</div>
-            <div className="mt-1 text-sm font-semibold text-neutral-100">Earnings Statement</div>
-            <div className="mt-1 text-xs text-neutral-400">Your personal royalty money statement by status.</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-100">Earnings — aggregated entitlement across your works</div>
+            <div className="mt-1 text-xs text-neutral-400">Grouped by content and earning source. Not a full per-intent transaction audit.</div>
           </button>
           <button
             type="button"
@@ -220,11 +220,9 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
             ].join(" ")}
           >
             <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 4</div>
-            <div className="mt-1 text-sm font-semibold text-neutral-100">Payout Execution</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-100">Payouts — your execution rows and payment status</div>
             <div className="mt-1 text-xs text-neutral-400">
-              {financePosture === "sovereign_node"
-                ? "Paid, pending, failed, and node execution health."
-                : "Paid and pending execution state."}
+              Viewer-scoped payout rows. Full multi-party reconciliation is available in provider audit.
             </div>
           </button>
         </div>

@@ -398,8 +398,8 @@ export default function SalesPage({
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-        <div className="text-lg font-semibold">Sales</div>
-        <div className="text-sm text-neutral-400 mt-1">Sales events for your works, with fees and net after fees.</div>
+        <div className="text-lg font-semibold">Sales — buyer payments and seller-of-record</div>
+        <div className="text-sm text-neutral-400 mt-1">Buyer payment recognition rows for your works and seller-of-record outcomes.</div>
         <div className="mt-3">
           <TimeScopeControls
             basis={timeBasis}
@@ -794,7 +794,7 @@ export default function SalesPage({
                 </div>
                 <div className="pt-1">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-400">Audit evidence</div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-400">Intent audit — full transaction breakdown</div>
                     <button
                       type="button"
                       onClick={() => setShowScopedAudit((s) => !s)}
@@ -807,7 +807,7 @@ export default function SalesPage({
                     <AuditPanel
                       scopeType="content"
                       scopeId={String(selectedSale.content.id)}
-                      title="Audit"
+                      title="Intent audit"
                       defaultOpen
                       exportName={`content-audit-${selectedSale.content.id}.json`}
                       openSignal={auditOpenSignal}
@@ -816,7 +816,7 @@ export default function SalesPage({
                     />
                   ) : (
                     <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-500">
-                      Audit is hidden to keep Sales table first. Use “Show audit” when needed.
+                      Shows PaymentIntent, Sale, SettlementLine, allocations, and ParticipantPayout rows for all participants.
                     </div>
                   )}
                 </div>

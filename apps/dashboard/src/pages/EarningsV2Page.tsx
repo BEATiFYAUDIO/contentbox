@@ -865,14 +865,14 @@ export default function EarningsV2Page({
         <div className="text-lg font-semibold">
           {scopedWorkActive
             ? `Earnings for ${resolvedScopeTitle}`
-            : "Work Intelligence"}
+            : "Earnings — aggregated entitlement across your works"}
         </div>
         {scopedWorkActive ? (
           <div className="text-sm text-neutral-400 mt-1">
             Single-work earnings and remuneration view.
           </div>
         ) : (
-          <div className="text-sm text-neutral-400 mt-1">Earnings by work and remuneration outcome.</div>
+          <div className="text-sm text-neutral-400 mt-1">Grouped by content and earning source. Not a full per-intent transaction audit.</div>
         )}
         <div className="mt-3">
           <TimeScopeControls
