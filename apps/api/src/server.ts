@@ -29617,7 +29617,7 @@ async function handleBuyPage(req: any, reply: any) {
                 (shareholders.length > 6 ? "<li>...</li>" : "") +
                 "</ul>"
               : "";
-            const attributionHrefRaw = String(it?.parentAttributionUrl || parentContentUrl || "").trim();
+            const attributionHrefRaw = String(parentContentUrl || it?.parentAttributionUrl || "").trim();
             const attributionLinkHtml = attributionHrefRaw
               ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(attributionHrefRaw) + "\\" style=\\"text-decoration:underline;\\" " + (/^https?:\\/\\//i.test(attributionHrefRaw) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">Original work attribution</a></div>"
               : "";
