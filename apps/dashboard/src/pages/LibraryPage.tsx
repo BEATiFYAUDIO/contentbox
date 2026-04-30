@@ -1349,12 +1349,181 @@ export default function LibraryPage() {
     })();
   }, [apiBase, items, attributionByContentId, participationByContentId]);
 
-  const groupedEntries = {
-    owned: items.filter((e) => e.item.libraryAccess === "owned"),
-    purchased: items.filter((e) => e.item.libraryAccess === "purchased"),
-    preview: items.filter((e) => e.item.libraryAccess === "preview"),
-    participant: items.filter((e) => e.item.libraryAccess === "participant" || e.item.libraryAccess === "shared")
-  };
+  const groupedEntries = (() => {
+    const normalizePathname = (raw: string | null | undefined): string | null => {
+      const value = String(raw || "").trim();
+      if (!value) return null;
+      try {
+        const u = new URL(value);
+        return (u.pathname || "/").replace(/\/+$/, "") || "/";
+      } catch {
+        return value.replace(/\/+$/, "") || null;
+      }
+    };
+
+    const normalizeContentId = (raw: string | null | undefined): string | null => {
+      const value = String(raw || "").trim().toLowerCase();
+      if (!value) return null;
+      const token = value.match(/cmo[a-z0-9]+/i);
+      if (token?.[0]) return token[0].toLowerCase();
+      return value;
+    };
+
+    const canonicalKey = (row: NormalizedLibraryItem): string => {
+      const discoveryKey = String((row.item as any)?.discoveryKey || (row.participation as any)?.discoveryKey || "").trim();
+      const contentId = normalizeContentId(row.item?.id || null);
+      const buyPath = normalizePathname(row.item?.buyUrl || null);
+      const attrPath = normalizePathname(row.item?.attributionUrl || null);
+      const publicPath = normalizePathname(row.publicPageUrl || null);
+      if (discoveryKey) return `dk::${discoveryKey.toLowerCase()}`;
+      if (contentId) return `cid::${contentId}`;
+      if (buyPath) return `path::${buyPath.toLowerCase()}`;
+      if (attrPath) return `path::${attrPath.toLowerCase()}`;
+      if (publicPath) return `path::${publicPath.toLowerCase()}`;
+      return `fallback::${String(row.item?.title || "unknown").trim().toLowerCase()}::${String(row.item?.type || "other").trim().toLowerCase()}`;
+    };
+
+    const mergedByCanonical = new Map<string, NormalizedLibraryItem>();
+    for (const row of items) {
+      const key = canonicalKey(row);
+      const existing = mergedByCanonical.get(key);
+      if (!existing) {
+        mergedByCanonical.set(key, row);
+        continue;
+      }
+
+      const existingScore = libraryAccessRank(existing.item.libraryAccess) * 10 + relationRank(existing.relation);
+      const incomingScore = libraryAccessRank(row.item.libraryAccess) * 10 + relationRank(row.relation);
+      const winner = incomingScore >= existingScore ? row : existing;
+      const loser = winner === row ? existing : row;
+      const mergedRelationshipTags = Array.from(new Set([...(winner.relationshipTags || []), ...(loser.relationshipTags || [])]));
+
+      mergedByCanonical.set(key, {
+        ...winner,
+        item: {
+          ...winner.item,
+          appearsBecause: Array.from(new Set([...(winner.item.appearsBecause || []), ...(loser.item.appearsBecause || [])])),
+          libraryScopes: Array.from(new Set([...(winner.item.libraryScopes || []), ...(loser.item.libraryScopes || [])])),
+          buyUrl: firstNonEmptyString(winner.item.buyUrl, loser.item.buyUrl, winner.publicPageUrl, loser.publicPageUrl),
+          attributionUrl: firstNonEmptyString(winner.item.attributionUrl, loser.item.attributionUrl),
+          remoteOrigin: firstNonEmptyString(winner.item.remoteOrigin, loser.item.remoteOrigin),
+          coverUrl: firstNonEmptyString(winner.item.coverUrl, loser.item.coverUrl),
+          coverImageUrl: firstNonEmptyString(winner.item.coverImageUrl, loser.item.coverImageUrl),
+          artworkUrl: firstNonEmptyString(winner.item.artworkUrl, loser.item.artworkUrl),
+          thumbnailUrl: firstNonEmptyString(winner.item.thumbnailUrl, loser.item.thumbnailUrl),
+          posterUrl: firstNonEmptyString(winner.item.posterUrl, loser.item.posterUrl),
+          manifestCoverPath: firstNonEmptyString(winner.item.manifestCoverPath, loser.item.manifestCoverPath),
+          manifestCoverUrl: firstNonEmptyString(winner.item.manifestCoverUrl, loser.item.manifestCoverUrl),
+          manifestPrimaryFilePath: firstNonEmptyString(winner.item.manifestPrimaryFilePath, loser.item.manifestPrimaryFilePath),
+          manifestPrimaryFileUrl: firstNonEmptyString(winner.item.manifestPrimaryFileUrl, loser.item.manifestPrimaryFileUrl),
+          primaryFile: firstNonEmptyString(winner.item.primaryFile, loser.item.primaryFile),
+          fileUrl: firstNonEmptyString(winner.item.fileUrl, loser.item.fileUrl),
+          previewFileUrl: firstNonEmptyString(winner.item.previewFileUrl, loser.item.previewFileUrl),
+          previewUrl: firstNonEmptyString(winner.item.previewUrl, loser.item.previewUrl),
+          mediaUrl: firstNonEmptyString(winner.item.mediaUrl, loser.item.mediaUrl),
+          libraryCoverCandidates: Array.from(
+            new Set([...(winner.item.libraryCoverCandidates || []), ...(loser.item.libraryCoverCandidates || [])])
+          ),
+          libraryPreviewCandidates: Array.from(
+            new Set([...(winner.item.libraryPreviewCandidates || []), ...(loser.item.libraryPreviewCandidates || [])])
+          ),
+          isLocalAuthored: Boolean(winner.item.isLocalAuthored || loser.item.isLocalAuthored),
+          isDirectSharedSplit: Boolean(winner.item.isDirectSharedSplit || loser.item.isDirectSharedSplit),
+          isUpstreamRoyaltyWork: Boolean(winner.item.isUpstreamRoyaltyWork || loser.item.isUpstreamRoyaltyWork),
+          isDerivativeWork: Boolean(winner.item.isDerivativeWork || loser.item.isDerivativeWork),
+          isActionableShadow: Boolean(winner.item.isActionableShadow || loser.item.isActionableShadow),
+          isParentOfDerivative: Boolean(winner.item.isParentOfDerivative || loser.item.isParentOfDerivative)
+        },
+        libraryScopes: new Set([...(winner.libraryScopes || new Set()), ...(loser.libraryScopes || new Set())]),
+        relationshipTags: mergedRelationshipTags,
+        relationshipType: mergedRelationshipTags.includes("derivatives")
+          ? "derivatives"
+          : mergedRelationshipTags.includes("shared_splits")
+            ? "shared_splits"
+            : mergedRelationshipTags.includes("authored_work")
+              ? "authored_work"
+              : "other",
+        isLocalAuthored: winner.isLocalAuthored || loser.isLocalAuthored,
+        isDirectSharedSplit: winner.isDirectSharedSplit || loser.isDirectSharedSplit,
+        isUpstreamRoyaltyWork: winner.isUpstreamRoyaltyWork || loser.isUpstreamRoyaltyWork,
+        isDerivativeWork: winner.isDerivativeWork || loser.isDerivativeWork,
+        isActionableShadow: winner.isActionableShadow || loser.isActionableShadow,
+        isDerivativeChild: winner.isDerivativeChild || loser.isDerivativeChild,
+        isDerivativeParent: winner.isDerivativeParent || loser.isDerivativeParent,
+        publicPageUrl: firstNonEmptyString(winner.publicPageUrl, loser.publicPageUrl),
+        participation: winner.participation || loser.participation
+      });
+    }
+
+    const canonicalItems = Array.from(mergedByCanonical.values());
+
+    const rowKey = (row: NormalizedLibraryItem) => {
+      const id = String(row.item?.id || "").trim().toLowerCase();
+      const origin = String(canonicalEntryOrigin(row) || "local").trim().toLowerCase();
+      return `${origin}::${id}`;
+    };
+    const dedupeRows = (rows: NormalizedLibraryItem[]) => {
+      const map = new Map<string, NormalizedLibraryItem>();
+      for (const row of rows) {
+        const key = rowKey(row);
+        if (!key) continue;
+        if (!map.has(key)) map.set(key, row);
+      }
+      return Array.from(map.values());
+    };
+    const hasDerivativeScope = (row: NormalizedLibraryItem) => {
+      const scopes = row.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
+      const typeNormalized = String(row.item?.type || "").trim().toLowerCase();
+      const appearsBecause = new Set(Array.isArray(row.item?.appearsBecause) ? row.item.appearsBecause : []);
+      const relationshipTags = new Set(Array.isArray(row.relationshipTags) ? row.relationshipTags : []);
+      return (
+        row.isDerivativeChild ||
+        row.isDerivativeWork ||
+        scopes.has("derivatives") ||
+        relationshipTags.has("derivatives") ||
+        appearsBecause.has("derivative_child") ||
+        appearsBecause.has("derivative_parent") ||
+        typeNormalized === "derivative" ||
+        typeNormalized === "remix"
+      );
+    };
+
+    // Section-exclusive assignment to prevent duplicate cards across sections.
+    const ownedBase: NormalizedLibraryItem[] = [];
+    const participantBase: NormalizedLibraryItem[] = [];
+    const derivativesBase: NormalizedLibraryItem[] = [];
+    const seen = new Set<string>();
+
+    for (const row of canonicalItems) {
+      const key = rowKey(row);
+      if (!key || seen.has(key)) continue;
+      const derivativeScope = hasDerivativeScope(row);
+      const access = String(row.item?.libraryAccess || "").trim().toLowerCase();
+      const isShared = access === "participant" || access === "shared";
+      const isOwned = access === "owned";
+
+      if (isOwned) {
+        ownedBase.push(row);
+        seen.add(key);
+        continue;
+      }
+      if (isShared) {
+        participantBase.push(row);
+        seen.add(key);
+        continue;
+      }
+      if (derivativeScope) {
+        derivativesBase.push(row);
+        seen.add(key);
+      }
+    }
+
+    return {
+      owned: dedupeRows(ownedBase),
+      participant: dedupeRows(participantBase),
+      derivatives: dedupeRows(derivativesBase)
+    };
+  })();
 
   async function loadPreview(contentId: string) {
     setPreviewLoading((m) => ({ ...m, [contentId]: true }));
@@ -1789,13 +1958,19 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
         <div className="space-y-6">
           {(
             libraryRelationshipFilter === "shared_splits"
-              ? (["participant", "owned", "purchased", "preview"] as const)
-              : (["owned", "purchased", "preview", "participant"] as const)
+              ? (["participant"] as const)
+              : libraryRelationshipFilter === "derivatives"
+                ? (["derivatives"] as const)
+                : (["owned", "participant", "derivatives"] as const)
           ).map((key) => {
             const list = groupedEntries[key];
             if (!list.length) return null;
             const label =
-              key === "owned" ? "Owned" : key === "purchased" ? "Purchased" : key === "preview" ? "Preview" : "Shared splits";
+              key === "owned"
+                ? "Owned"
+                : key === "derivatives"
+                  ? "Derivatives"
+                  : "Shared splits";
             return (
               <div key={key} className="space-y-2">
                 <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>
