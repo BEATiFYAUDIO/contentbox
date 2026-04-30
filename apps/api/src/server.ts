@@ -29333,6 +29333,17 @@ async function handleBuyPage(req: any, reply: any) {
     const raw = String(v == null ? "" : v).trim();
     return /^c[a-z0-9]{20,}$/i.test(raw);
   }
+  function isCleanPublicHandle(v){
+    const raw = String(v == null ? "" : v).trim().replace(/^@+/, "");
+    if (!raw) return false;
+    const lower = raw.toLowerCase();
+    if (looksInternalId(raw)) return false;
+    if (lower.startsWith("remote")) return false;
+    if (lower.includes("certifyd.") || lower.includes(".comuser")) return false;
+    if (lower.includes("http") || lower.includes("https")) return false;
+    if (/[:/]/.test(lower)) return false;
+    return /^[a-z0-9._-]{2,32}$/i.test(raw);
+  }
   function normalizeHandleText(v){
     return String(v == null ? "" : v).trim().replace(/^@+/, "");
   }
@@ -29340,7 +29351,7 @@ async function handleBuyPage(req: any, reply: any) {
     const cleanName = String(candidateName == null ? "" : candidateName).trim();
     if (cleanName && !looksInternalId(cleanName)) return cleanName;
     const cleanHandle = normalizeHandleText(candidateHandle);
-    if (cleanHandle && !looksInternalId(cleanHandle)) return "@" + cleanHandle;
+    if (isCleanPublicHandle(cleanHandle)) return "@" + cleanHandle;
     return fallbackLabel || "Contributor";
   }
   function resolveSafeProfilePath(profilePathRaw){
@@ -29352,14 +29363,14 @@ async function handleBuyPage(req: any, reply: any) {
         const mRemote = String(parsed.pathname || "").match(/^\\/u\\/([^/?#]+)/i);
         if (!mRemote || !mRemote[1]) return "";
         const remoteHandle = normalizeHandleText(decodeURIComponent(mRemote[1]));
-        if (!remoteHandle || looksInternalId(remoteHandle)) return "";
+        if (!isCleanPublicHandle(remoteHandle)) return "";
         return parsed.origin + "/u/" + encodeURIComponent(remoteHandle);
       }
       const trimmed = raw.startsWith("/") ? raw : ("/" + raw);
       const mLocal = trimmed.match(/^\\/u\\/([^/?#]+)/i);
       if (!mLocal || !mLocal[1]) return "";
       const handle = normalizeHandleText(decodeURIComponent(mLocal[1]));
-      if (!handle || looksInternalId(handle)) return "";
+      if (!isCleanPublicHandle(handle)) return "";
       return "/u/" + encodeURIComponent(handle);
     } catch { return ""; }
   }
@@ -29405,7 +29416,7 @@ async function handleBuyPage(req: any, reply: any) {
     const contentboxHandleNormalized = normalizeHandleText(handleRaw);
     const contentboxHandle =
       contentboxHandleNormalized &&
-      !looksInternalId(contentboxHandleNormalized) &&
+      isCleanPublicHandle(contentboxHandleNormalized) &&
       creatorLabel.toLowerCase() !== ("@" + contentboxHandleNormalized).toLowerCase()
         ? (" @" + esc(contentboxHandleNormalized))
         : "";
@@ -29428,7 +29439,7 @@ async function handleBuyPage(req: any, reply: any) {
           const normalizedContributorHandle = normalizeHandleText(chRaw);
           const ch =
             normalizedContributorHandle &&
-            !looksInternalId(normalizedContributorHandle) &&
+            isCleanPublicHandle(normalizedContributorHandle) &&
             contributorLabel.toLowerCase() !== ("@" + normalizedContributorHandle).toLowerCase()
               ? ("(@" + esc(normalizedContributorHandle) + ")")
               : "";
@@ -29461,8 +29472,8 @@ async function handleBuyPage(req: any, reply: any) {
             const pn = esc(creatorLabel);
             const phRaw = String(pc.handle || "").trim();
             const normalizedHandle = normalizeHandleText(phRaw);
-            const ph = normalizedHandle && !looksInternalId(normalizedHandle) ? (" @" + esc(normalizedHandle)) : "";
-            const creatorProfileHref = normalizedHandle ? "/u/" + encodeURIComponent(normalizedHandle) : "";
+            const ph = isCleanPublicHandle(normalizedHandle) ? (" @" + esc(normalizedHandle)) : "";
+            const creatorProfileHref = isCleanPublicHandle(normalizedHandle) ? "/u/" + encodeURIComponent(normalizedHandle) : "";
             const creatorHtml = creatorProfileHref
               ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\">" + pn + ph + "</a>")
               : (pn + ph);
@@ -29478,7 +29489,7 @@ async function handleBuyPage(req: any, reply: any) {
                     const sn = esc(shareholderLabel);
                     const shRaw = String(s?.handle || "").trim();
                     const shNorm = normalizeHandleText(shRaw);
-                    const shLabel = shNorm && !looksInternalId(shNorm) ? (sn + " @" + esc(shNorm)) : sn;
+                    const shLabel = isCleanPublicHandle(shNorm) ? (sn + " @" + esc(shNorm)) : sn;
                     const pct = Number.isFinite(Number(s?.bps)) ? (Number(s.bps) / 100).toFixed(2) + "%" : "";
                     const profileHref = resolveSafeProfilePath(String(s?.profilePath || "").trim());
                     const linked = profileHref
