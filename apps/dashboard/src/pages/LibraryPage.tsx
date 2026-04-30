@@ -1925,7 +1925,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       ? `${chosenCoverBaseUrl}${chosenCoverBaseUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
                       : null;
                     const coverRenderable = Boolean(coverUrl);
-                    const isOpen = previewOpenById[it.id] ?? true;
+                    const isOpen = previewOpenById[it.id] ?? false;
                     const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && isImage);
                     const hasMediaCard = true;
                     const access = ACCESS_BADGE[(it.libraryAccess || "preview") as NonNullable<LibraryItem["libraryAccess"]>] || ACCESS_BADGE.preview;
