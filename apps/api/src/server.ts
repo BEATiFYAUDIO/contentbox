@@ -27433,6 +27433,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     highlightedParticipations.length > 0
       ? highlightedParticipations
       : (cachedRenderSnapshot?.highlightedParticipations || []);
+  const remoteHighlightedShadowEligibility = new Map<string, boolean>();
+  const isEligibleRemoteHighlightedShadow = async (contentIdRaw: unknown): Promise<boolean> => {
+    const contentId = asString(contentIdRaw || "").trim();
+    if (!contentId) return false;
+    if (remoteHighlightedShadowEligibility.has(contentId)) {
+      return Boolean(remoteHighlightedShadowEligibility.get(contentId));
+    }
+    const shadow = await isCurrentApprovedFeatureableDerivativeShadow({
+      contentId,
+      ownerUserId: user.id
+    });
+    remoteHighlightedShadowEligibility.set(contentId, Boolean(shadow.eligible));
+    return Boolean(shadow.eligible);
+  };
   const highlightedRemoteParticipationIds = new Set(highlightedRemoteParticipationRecords.map((row) => row.remoteInviteId));
   const cachedRemoteParticipations = getFreshTimedCache(profilePublicRemoteParticipationsCache, user.id) || [];
   const shouldAttemptRemoteEnrichment = Date.now() - profileStartMs < PROFILE_REMOTE_ENRICHMENT_BUDGET_MS;
@@ -27483,8 +27497,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           : null;
         const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
         if (selectedContentIds.length > 0) {
-          const selectedRows = selectedContentIds
-            .map((selectedContentId) => {
+          const selectedRows = (
+            await Promise.all(
+              selectedContentIds.map(async (selectedContentId) => {
               const highlightedMatch = inbox.find((entry: any) => asString(entry?.childContentId || "").trim() === selectedContentId);
               const contentId = asString(highlightedMatch?.childContentId || selectedContentId || "").trim();
               if (!contentId) return null;
@@ -27492,7 +27507,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               const contentDeletedAt = asString(row.contentDeletedAt || "").trim();
               const highlightedChildStatus = asString(highlightedMatch?.childStatus || "").trim().toLowerCase();
               if (highlightedMatch && highlightedChildStatus !== "published") return null;
-              if (!highlightedMatch && (contentStatus !== "published" || contentDeletedAt)) return null;
+              if (!highlightedMatch && contentStatus !== "published") return null;
+              if (!highlightedMatch && contentDeletedAt) {
+                const eligibleShadow = await isEligibleRemoteHighlightedShadow(contentId);
+                if (!eligibleShadow) return null;
+              }
               return {
                 ...row,
                 parentContentId: asString(highlightedMatch?.parentContentId || row.contentId || "").trim() || null,
@@ -27502,28 +27521,31 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 derivativeParentTitle: asString(highlightedMatch?.parentTitle || row.contentTitle || "").trim() || null,
                 derivativeRelation: asString(highlightedMatch?.relation || "").trim().toLowerCase() || null
               };
-            })
-            .filter(Boolean);
+              })
+            )
+          ).filter(Boolean);
           if (selectedRows.length > 0) return selectedRows as any[];
         }
         if (!hasUnscopedHighlight) return [] as any[];
         const baseContentId = asString(row.contentId || "").trim();
         const baseStatus = asString(row.contentStatus || "").trim().toLowerCase();
         const baseDeletedAt = asString(row.contentDeletedAt || "").trim();
-        const baseRows =
-          baseContentId && baseStatus === "published" && !baseDeletedAt
-            ? [
-                {
-                  ...row,
-                  parentContentId: null,
-                  contentId: baseContentId,
-                  contentTitle: asString(row.contentTitle || "").trim() || "Untitled",
-                  contentType: asString(row.contentType || "").trim() || "participation",
-                  derivativeParentTitle: null,
-                  derivativeRelation: null
-                }
-              ]
-            : [];
+        let baseRows: any[] = [];
+        if (baseContentId && baseStatus === "published") {
+          if (!baseDeletedAt || (await isEligibleRemoteHighlightedShadow(baseContentId))) {
+            baseRows = [
+              {
+                ...row,
+                parentContentId: null,
+                contentId: baseContentId,
+                contentTitle: asString(row.contentTitle || "").trim() || "Untitled",
+                contentType: asString(row.contentType || "").trim() || "participation",
+                derivativeParentTitle: null,
+                derivativeRelation: null
+              }
+            ];
+          }
+        }
         const derivativeRows = inbox
           .filter((entry: any) => {
             const childContentId = asString(entry?.childContentId || "").trim();
@@ -27587,14 +27609,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }],
                   take: 16
                 });
-                return rows
-                  .filter((row: any) => normalizeRemoteInviteStatusForList(row as any) === "accepted")
-                  .map((row: any) => {
+                const normalized = (
+                  await Promise.all(
+                    rows
+                      .filter((row: any) => normalizeRemoteInviteStatusForList(row as any) === "accepted")
+                      .map(async (row: any) => {
                     const contentId = asString(row.contentId || "").trim();
                     if (!contentId) return null;
                     const status = asString(row.contentStatus || "").trim().toLowerCase();
                     const deletedAt = asString(row.contentDeletedAt || "").trim();
-                    if (status !== "published" || deletedAt) return null;
+                    if (status !== "published") return null;
+                    if (deletedAt) {
+                      const eligibleShadow = await isEligibleRemoteHighlightedShadow(contentId);
+                      if (!eligibleShadow) return null;
+                    }
                     return {
                       ...row,
                       parentContentId: null,
@@ -27604,9 +27632,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                       derivativeParentTitle: null,
                       derivativeRelation: null
                     };
-                  })
-                  .filter(Boolean)
-                  .slice(0, 12) as any[];
+                      })
+                  )
+                ).filter(Boolean);
+                return normalized.slice(0, 12) as any[];
               })(),
               250,
               [] as any[]
