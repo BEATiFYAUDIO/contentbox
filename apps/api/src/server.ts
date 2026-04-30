@@ -29455,7 +29455,7 @@ async function handleBuyPage(req: any, reply: any) {
       const rest = remoteRef.slice("remote:".length);
       const hashIdx = rest.indexOf("#user:");
       const origin = hashIdx >= 0 ? rest.slice(0, hashIdx).trim() : "";
-      const m = origin.match(/^https?:\/\/[^/]+\/u\/([^/?#]+)/i);
+      const m = origin.match(/^https?:\\/\\/[^/]+\\/u\\/([^/?#]+)/i);
       if (m && m[1]) return decodeURIComponent(m[1]).replace(/^@+/, "");
     }
     if (lowered.startsWith("remotehttp")) return "";
