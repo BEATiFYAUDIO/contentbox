@@ -29455,12 +29455,13 @@ async function handleBuyPage(req: any, reply: any) {
       if (items.length > 0) {
         upstreamHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Upstream creators:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
           items.map((it) => {
-            const t = it?.title ? (esc(it.title) + " - ") : "";
+            const t = it?.title ? esc(it.title) : "Original work";
             const pc = it?.primaryCreator || {};
-            const pn = esc(pc.displayName || pc.name || pc.handle || "Creator");
+            const creatorLabel = resolvePublicPersonLabel(pc.displayName || pc.name || "", pc.handle || "", "Creator");
+            const pn = esc(creatorLabel);
             const phRaw = String(pc.handle || "").trim();
             const normalizedHandle = normalizeHandleText(phRaw);
-            const ph = normalizedHandle ? (" @" + esc(normalizedHandle)) : "";
+            const ph = normalizedHandle && !looksInternalId(normalizedHandle) ? (" @" + esc(normalizedHandle)) : "";
             const creatorProfileHref = normalizedHandle ? "/u/" + encodeURIComponent(normalizedHandle) : "";
             const creatorHtml = creatorProfileHref
               ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\">" + pn + ph + "</a>")
@@ -29470,28 +29471,29 @@ async function handleBuyPage(req: any, reply: any) {
               : "";
             const shareholders = Array.isArray(it?.shareholders) ? it.shareholders : [];
             const shareholdersHtml = shareholders.length > 0
-              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\">Shareholders: " + shareholders
+              ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">Upstream royalty recipients:</div><ul class=\\"muted\\" style=\\"margin:4px 0 0 16px;padding:0;\\">" + shareholders
                   .slice(0, 6)
                   .map((s) => {
-                    const sn = esc(String(s?.displayName || "Shareholder"));
+                    const shareholderLabel = resolvePublicPersonLabel(s?.displayName || s?.name || "", s?.handle || "", "Shareholder");
+                    const sn = esc(shareholderLabel);
                     const shRaw = String(s?.handle || "").trim();
                     const shNorm = normalizeHandleText(shRaw);
-                    const shLabel = shNorm ? (sn + " @" + esc(shNorm)) : sn;
+                    const shLabel = shNorm && !looksInternalId(shNorm) ? (sn + " @" + esc(shNorm)) : sn;
                     const pct = Number.isFinite(Number(s?.bps)) ? (Number(s.bps) / 100).toFixed(2) + "%" : "";
-                    const profileHref = String(s?.profilePath || "").trim();
+                    const profileHref = resolveSafeProfilePath(String(s?.profilePath || "").trim());
                     const linked = profileHref
                       ? "<a href=\\"" + esc(profileHref) + "\\" style=\\"text-decoration:underline;\\" " + (/^https?:\\/\\//i.test(profileHref) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + shLabel + "</a>"
                       : shLabel;
-                    return linked + (pct ? " (" + esc(pct) + ")" : "");
+                    return "<li>" + linked + (pct ? " - " + esc(pct) : "") + "</li>";
                   })
-                  .join(" - ") +
-                (shareholders.length > 6 ? " - ..." : "") +
-                "</div>"
+                  .join("") +
+                (shareholders.length > 6 ? "<li>...</li>" : "") +
+                "</ul>"
               : "";
             const attributionLinkHtml = parentContentUrl
               ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(parentContentUrl) + "\\" style=\\"text-decoration:underline;\\">Original work attribution</a></div>"
               : "";
-            return "<li>" + t + creatorHtml + shareholdersHtml + attributionLinkHtml + "</li>";
+            return "<li><div>" + t + " - " + creatorHtml + "</div>" + shareholdersHtml + attributionLinkHtml + "</li>";
           }).join("") +
         "</ul>" +
         (upstream?.truncated ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">...and more</div>" : "");
