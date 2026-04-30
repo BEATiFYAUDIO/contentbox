@@ -3220,6 +3220,33 @@ function computeProviderFeeBreakdown(
   };
 }
 
+type ProviderFeeReasonLabel =
+  | "no_provider_fee_local_node"
+  | "provider_fee_invoicing"
+  | "provider_fee_hosting"
+  | "provider_fee_invoicing_and_hosting";
+
+function deriveProviderFeeReasonLabel(input: {
+  providerFeeSats: string | number | bigint | null | undefined;
+  providerInvoicingFeeSats?: string | number | bigint | null | undefined;
+  providerDurableHostingFeeSats?: string | number | bigint | null | undefined;
+  needsProviderInvoicing?: boolean;
+  needsDurablePublicHosting?: boolean;
+}): ProviderFeeReasonLabel {
+  const providerFee = BigInt(String(input.providerFeeSats || "0"));
+  const invoicing = BigInt(String(input.providerInvoicingFeeSats || "0"));
+  const hosting = BigInt(String(input.providerDurableHostingFeeSats || "0"));
+  const byFlagInvoicing = Boolean(input.needsProviderInvoicing);
+  const byFlagHosting = Boolean(input.needsDurablePublicHosting);
+  const hasInvoicing = invoicing > 0n || byFlagInvoicing;
+  const hasHosting = hosting > 0n || byFlagHosting;
+  if (providerFee <= 0n && !hasInvoicing && !hasHosting) return "no_provider_fee_local_node";
+  if (hasInvoicing && hasHosting) return "provider_fee_invoicing_and_hosting";
+  if (hasHosting) return "provider_fee_hosting";
+  if (hasInvoicing) return "provider_fee_invoicing";
+  return "no_provider_fee_local_node";
+}
+
 function readJsonArrayState<T>(filePath: string): T[] {
   try {
     if (!fsSync.existsSync(filePath)) return [];
@@ -31771,12 +31798,31 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         ? `${durableReceiptOrigin}/buy/receipts/r/${encodeURIComponent(stableReceiptId)}/status`
         : null;
 
+    const feeBreakdownForResponse = computeProviderFeeBreakdown(amountSats.toString(), {
+      providerInvoicing: serviceProfile.needsProviderInvoicing,
+      durablePublicHosting: serviceProfile.needsDurablePublicHosting
+    });
+    const grossAmountSats = feeBreakdownForResponse.grossAmountSats;
+    const providerFeeSats = feeBreakdownForResponse.providerFeeSats;
+    const distributableAmountSats = feeBreakdownForResponse.creatorNetSats;
+    const providerFeeReason = deriveProviderFeeReasonLabel({
+      providerFeeSats,
+      providerInvoicingFeeSats: feeBreakdownForResponse.providerInvoicingFeeSats,
+      providerDurableHostingFeeSats: feeBreakdownForResponse.providerDurableHostingFeeSats,
+      needsProviderInvoicing: serviceProfile.needsProviderInvoicing,
+      needsDurablePublicHosting: serviceProfile.needsDurablePublicHosting
+    });
+
     return reply.send({
       ok: true,
       buyerId,
       paymentIntentId: intentWithReceipt.id,
       status: intentWithReceipt.status,
       amountSats: intentWithReceipt.amountSats.toString(),
+      grossAmountSats,
+      providerFeeSats,
+      distributableAmountSats,
+      providerFeeReason,
       bolt11: lightning?.bolt11 || null,
       lightningExpiresAt: lightning?.expiresAt || null,
       onchainAddress: onchain?.address || null,
@@ -32341,6 +32387,21 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     !asString(intent?.providerId || "").trim().toLowerCase().startsWith("lnd:") && isNetworkProviderConfigured(providerCfg)
       ? providerCfg.providerNodeId
       : null;
+  const providerIntent = findProviderPaymentIntentByPaymentIntentId(String(intent.id || "").trim());
+  const grossAmountSats = String(providerIntent?.grossAmountSats || intent.amountSats || "0");
+  const providerFeeSats = String(providerIntent?.providerFeeSats || "0");
+  const distributableAmountSats = providerIntent?.creatorNetSats
+    ? String(providerIntent.creatorNetSats || "0")
+    : (() => {
+        const gross = BigInt(grossAmountSats);
+        const fee = BigInt(providerFeeSats);
+        return (gross > fee ? gross - fee : 0n).toString();
+      })();
+  const providerFeeReason = deriveProviderFeeReasonLabel({
+    providerFeeSats,
+    providerInvoicingFeeSats: providerIntent?.providerInvoicingFeeSats || "0",
+    providerDurableHostingFeeSats: providerIntent?.providerDurableHostingFeeSats || "0"
+  });
   const durableReceiptStatusUrl = await buildDurableReceiptStatusUrlForIntent(intent as any);
 
   return reply.send({
@@ -32348,6 +32409,10 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     paymentStatus: intent.status,
     paymentMethod: resolvePaymentMethodFromIntent(intent),
     paidAt: intent.paidAt ? new Date(intent.paidAt).toISOString() : null,
+    grossAmountSats,
+    providerFeeSats,
+    distributableAmountSats,
+    providerFeeReason,
     paymentIntentId: intent.id,
     contentId: intent.contentId,
     manifestSha256: intent.manifestSha256,
@@ -32401,6 +32466,21 @@ async function handlePublicDurableReceiptStatus(req: any, reply: any) {
     !asString(intent?.providerId || "").trim().toLowerCase().startsWith("lnd:") && isNetworkProviderConfigured(providerCfg)
       ? providerCfg.providerNodeId
       : null;
+  const providerIntent = findProviderPaymentIntentByPaymentIntentId(String(intent.id || "").trim());
+  const grossAmountSats = String(providerIntent?.grossAmountSats || intent.amountSats || "0");
+  const providerFeeSats = String(providerIntent?.providerFeeSats || "0");
+  const distributableAmountSats = providerIntent?.creatorNetSats
+    ? String(providerIntent.creatorNetSats || "0")
+    : (() => {
+        const gross = BigInt(grossAmountSats);
+        const fee = BigInt(providerFeeSats);
+        return (gross > fee ? gross - fee : 0n).toString();
+      })();
+  const providerFeeReason = deriveProviderFeeReasonLabel({
+    providerFeeSats,
+    providerInvoicingFeeSats: providerIntent?.providerInvoicingFeeSats || "0",
+    providerDurableHostingFeeSats: providerIntent?.providerDurableHostingFeeSats || "0"
+  });
   const durableReceiptStatusUrl = await buildDurableReceiptStatusUrlForIntent(intent as any);
 
   return reply.send({
@@ -32408,6 +32488,10 @@ async function handlePublicDurableReceiptStatus(req: any, reply: any) {
     paymentStatus: intent.status,
     paymentMethod: resolvePaymentMethodFromIntent(intent),
     paidAt: intent.paidAt ? new Date(intent.paidAt).toISOString() : null,
+    grossAmountSats,
+    providerFeeSats,
+    distributableAmountSats,
+    providerFeeReason,
     paymentIntentId: intent.id,
     contentId: intent.contentId,
     manifestSha256: intent.manifestSha256,
@@ -39693,6 +39777,11 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
   const netSplitPool = providerIntent
     ? BigInt(String(providerIntent.creatorNetSats || "0"))
     : (gross > providerFee ? gross - providerFee : 0n);
+  const providerFeeReason = deriveProviderFeeReasonLabel({
+    providerFeeSats: providerIntent?.providerFeeSats || "0",
+    providerInvoicingFeeSats: providerIntent?.providerInvoicingFeeSats || "0",
+    providerDurableHostingFeeSats: providerIntent?.providerDurableHostingFeeSats || "0"
+  });
   const settlementLineTotal = settlementLines.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
   const allocationTotal = allocations.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
   const payoutTotal = payoutRows.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
@@ -39771,14 +39860,17 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
         : null
     },
     providerPaymentIntent: providerIntent
-      ? {
+        ? {
           id: providerIntent.id,
           payoutExecutionMode: providerIntent.payoutExecutionMode,
           providerRemitMode: providerIntent.providerRemitMode,
           payoutStatus: providerIntent.payoutStatus,
           payoutSummaryStatus: providerIntent.payoutSummaryStatus,
           payoutLastError: providerIntent.payoutLastError || null,
+          grossAmountSats: providerIntent.grossAmountSats || paymentIntent.amountSats.toString(),
           providerFeeSats: providerIntent.providerFeeSats || "0",
+          distributableAmountSats: providerIntent.creatorNetSats || paymentIntent.amountSats.toString(),
+          providerFeeReason,
           providerInvoicingFeeSats: providerIntent.providerInvoicingFeeSats || "0",
           providerDurableHostingFeeSats: providerIntent.providerDurableHostingFeeSats || "0",
           creatorNetSats: providerIntent.creatorNetSats || "0"

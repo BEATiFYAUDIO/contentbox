@@ -8,6 +8,14 @@ type ReceiptStatus = {
   contentId: string;
   manifestSha256: string | null;
   canFulfill: boolean;
+  grossAmountSats?: string;
+  providerFeeSats?: string;
+  distributableAmountSats?: string;
+  providerFeeReason?:
+    | "no_provider_fee_local_node"
+    | "provider_fee_invoicing"
+    | "provider_fee_hosting"
+    | "provider_fee_invoicing_and_hosting";
 };
 
 type FulfillPayload = {
@@ -70,6 +78,17 @@ export default function ReceiptPage(props: { token: string }) {
           <div className="text-sm text-neutral-400">Status</div>
           <div className="text-lg font-semibold">{status.paymentStatus}</div>
           <div className="mt-2 text-xs text-neutral-500">Content ID: {status.contentId}</div>
+          <div className="mt-3 grid gap-1 text-xs text-neutral-300">
+            <div>Gross: {status.grossAmountSats ?? "—"} sats</div>
+            <div>Provider fee: {status.providerFeeSats ?? "—"} sats</div>
+            <div>Distributable: {status.distributableAmountSats ?? "—"} sats</div>
+          </div>
+          <div className="mt-2 text-xs text-neutral-500">
+            Fee path: {status.providerFeeReason || "unknown"}
+          </div>
+          <div className="text-xs text-neutral-500">
+            Fees depend on checkout path (node vs provider), not the content itself.
+          </div>
         </div>
       )}
 

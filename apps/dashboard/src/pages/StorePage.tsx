@@ -1701,6 +1701,12 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         : commerceGuardLevel === "warn"
           ? "Provider-backed fallback is active and valid. You can self-provide capabilities later to reduce provider fees."
           : "Commerce path is fully configured for this mode.";
+  const checkoutFeePathMessage = providerCommerceActive
+    ? "Provider fee may apply depending on checkout path."
+    : "No provider fee - processed by your node.";
+  const checkoutFeeResolvedMessage = needsProviderInvoicing || needsDurablePublicHosting
+    ? "Provider fee applied - external infrastructure used."
+    : "No provider fee - processed by your node.";
   const payoutStatusVocabulary = {
     pending: "Pending payout",
     forwarding: "Forwarding payout",
@@ -2028,15 +2034,24 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
           <div className="text-[11px] uppercase tracking-wide text-neutral-500">Payment Flow</div>
-          <div className="mt-2 grid gap-1 text-xs text-neutral-300">
-            <div>1. Buyer pays</div>
-            <div>2. Provider settles</div>
-            <div>3. Provider fee retained</div>
-            <div>4. Creator net calculated</div>
-            <div>5. Creator payout sent</div>
-            <div>6. Payout status updated</div>
+            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+              <div>1. Buyer pays</div>
+              <div>2. Provider settles</div>
+              <div>3. Provider fee retained</div>
+              <div>4. Creator net calculated</div>
+              <div>5. Creator payout sent</div>
+              <div>6. Payout status updated</div>
+            </div>
+            <div className="mt-2 text-xs text-neutral-400">
+              {checkoutFeePathMessage}
+            </div>
+            <div className="text-xs text-neutral-500">
+              {checkoutFeeResolvedMessage}
+            </div>
+            <div className="text-xs text-neutral-500">
+              Fees depend on buyer checkout path (node vs provider), not the content itself.
+            </div>
           </div>
-        </div>
 
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
           <div className="text-[11px] uppercase tracking-wide text-neutral-500">Runtime</div>
