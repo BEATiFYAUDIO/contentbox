@@ -39219,7 +39219,9 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
       remittedAt: true,
       allocation: {
         select: {
-          contentId: true
+          contentId: true,
+          role: true,
+          participantRef: true
         }
       }
     }
@@ -39241,6 +39243,7 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     {
       contentId: string;
       title: string;
+      sourceType: RoyaltyEarningSourceType;
       total: bigint;
       yourShare: bigint;
       grossEarned: bigint;
@@ -39249,35 +39252,52 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
       pending: bigint;
     }
   >();
+  const rowKey = (contentId: string, sourceType: RoyaltyEarningSourceType) => `${contentId}::${sourceType}`;
+  const ensureRow = (contentId: string, sourceType: RoyaltyEarningSourceType) => {
+    const key = rowKey(contentId, sourceType);
+    let row = rows.get(key);
+    if (!row) {
+      const title = contents.find((c) => c.id === contentId)?.title || contentId;
+      row = {
+        contentId,
+        title,
+        sourceType,
+        total: 0n,
+        yourShare: 0n,
+        grossEarned: 0n,
+        feeWithheld: 0n,
+        withdrawn: 0n,
+        pending: 0n
+      };
+      rows.set(key, row);
+    }
+    return row;
+  };
   for (const c of contents) {
-    rows.set(c.id, {
-      contentId: c.id,
-      title: c.title,
-      total: 0n,
-      yourShare: 0n,
-      grossEarned: 0n,
-      feeWithheld: 0n,
-      withdrawn: 0n,
-      pending: 0n
-    });
+    ensureRow(c.id, "catalog_earning");
   }
 
   for (const s of settlements) {
-    const row = rows.get(s.contentId);
+    const row = ensureRow(asString(s.contentId || "").trim(), "catalog_earning");
     if (!row) continue;
     row.total += BigInt(s.netAmountSats as any);
   }
 
   for (const [contentId, bucket] of settlementBucketsByContent.entries()) {
-    const row = rows.get(contentId);
-    if (!row) continue;
-    row.yourShare += bucket.total;
+    for (const [sourceType, amount] of bucket.bySource.entries()) {
+      const row = ensureRow(contentId, sourceType);
+      row.yourShare += amount;
+    }
   }
 
   for (const payout of canonicalPayoutRows) {
     const contentId = String(payout.allocation?.contentId || "").trim();
     if (!contentId) continue;
-    const row = rows.get(contentId);
+    const sourceType = inferRoyaltyEarningSourceType(
+      asString((payout as any)?.allocation?.participantRef || "").trim() || null,
+      asString((payout as any)?.allocation?.role || "").trim() || null
+    );
+    const row = ensureRow(contentId, sourceType);
     if (!row) continue;
     const paymentIntentId = String((payout as any)?.paymentIntentId || "").trim();
     const allocationId = String((payout as any)?.allocationId || "").trim();
@@ -39306,6 +39326,7 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     return {
       contentId: r.contentId,
       title: r.title,
+      sourceType: r.sourceType,
       isDerivative: derivativeChildIds.has(String(r.contentId || "").trim()),
       totalSalesSats: r.total.toString(),
       grossRevenueSats: r.total.toString(),
