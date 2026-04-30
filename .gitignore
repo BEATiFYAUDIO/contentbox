@@ -8,3 +8,5 @@ state.json
 # Local Cloudflare worker config (routes/account-specific)
 infra/cloudflare/edge-content-worker/wrangler.toml
 infra/cloudflare/edge-content-worker/.wrangler/
+apps/api/prisma/dev.db
+apps/api/tmp/
