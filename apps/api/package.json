@@ -23,7 +23,8 @@
     "test:smoke-invite-split": "npx tsx src/scripts/smoke_invite_split_flow.ts",
     "test:participant-payout-phase2": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/payments/participant_payout_phase2.test.ts",
     "test:buyer-auth": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/buyer_auth_test.ts",
-    "test:lightning-onboarding": "npx tsx --test src/payments/lightning.onboarding.test.ts"
+    "test:lightning-onboarding": "npx tsx --test src/payments/lightning.onboarding.test.ts",
+    "test:derivative-accounting-regression": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/derivative_accounting_regression_checks.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
