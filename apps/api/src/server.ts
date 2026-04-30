@@ -26906,7 +26906,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   status: "published",
                   featureOnProfile: true
                 },
-                orderBy: { createdAt: "desc" },
+                orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
                 take: 12,
                 select: {
                   id: true,
