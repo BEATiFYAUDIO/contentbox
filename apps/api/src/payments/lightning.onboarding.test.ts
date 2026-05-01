@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import {
   interpretLightningDiscoveryHttpProbe,
   interpretLightningDiscoveryError,
-  mapLightningReadinessFromLnd
+  mapLightningReadinessFromLnd,
+  mapPendingOpenChannelsFromLnd
 } from "./lightning.js";
 
 test("discovery parser recognizes LND REST macaroon-missing response", () => {
@@ -42,5 +43,36 @@ test("readiness mapping reports not receive-ready when zero channels", () => {
   assert.equal(readiness.channels.count, 0);
   assert.equal(readiness.receiveReady, false);
   assert.ok(readiness.hints.some((h) => /no channels/i.test(h)));
+});
+
+test("pending channel mapping includes balances and confirmation fields", () => {
+  const pending = mapPendingOpenChannelsFromLnd({
+    pending_open_channels: [
+      {
+        channel: {
+          remote_node_pub: "03abc",
+          channel_point: "txid:1",
+          capacity: "30000",
+          local_balance: "28708",
+          remote_balance: "1292",
+          confirmations_until_active: 3,
+          confirmation_height: 901234
+        }
+      }
+    ]
+  });
+
+  assert.equal(pending.length, 1);
+  assert.deepEqual(pending[0], {
+    status: "pending_open",
+    pendingType: "opening",
+    peerPubkey: "03abc",
+    channelPoint: "txid:1",
+    capacitySats: 30000,
+    localSats: 28708,
+    remoteSats: 1292,
+    confirmationsUntilActive: 3,
+    confirmationHeight: 901234
+  });
 });
 
