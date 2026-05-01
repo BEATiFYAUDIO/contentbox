@@ -26953,23 +26953,21 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   ] = await Promise.all([
     timedProfileStep(
       "proofs",
-      maybeCachedProofs
-        ? Promise.resolve(cachedProofs)
-        : withSoftTimeoutKeepRunning(
-            () =>
-              prisma.proofRecord.findMany({
-                where: {
-                  userId: user.id,
-                  status: "verified",
-                  revokedAt: null
-                },
-                orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
-                select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
-              }),
-            proofsStepTimeoutMs,
-            cachedProofs,
-            (value) => setTimedCache(profilePublicProofsCache, user.id, value as any[])
-          )
+      withSoftTimeoutKeepRunning(
+        () =>
+          prisma.proofRecord.findMany({
+            where: {
+              userId: user.id,
+              status: "verified",
+              revokedAt: null
+            },
+            orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+            select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
+          }),
+        proofsStepTimeoutMs,
+        cachedProofs,
+        (value) => setTimedCache(profilePublicProofsCache, user.id, value as any[])
+      )
     ),
     timedProfileStep(
       "featured_content",
