@@ -16,6 +16,7 @@ import {
 } from "../lib/libraryEligibility";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
+type PrimaryTopic = "entertainment" | "music" | "news" | "gaming" | "sports" | "technology";
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
 const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
 const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
@@ -26,6 +27,14 @@ const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
   files: "Files"
 };
 const COVER_UPLOAD_TYPES = new Set<ContentType>(["song", "video", "book", "file", "remix", "mashup", "derivative"]);
+const PRIMARY_TOPIC_OPTIONS: Array<{ value: PrimaryTopic; label: string }> = [
+  { value: "entertainment", label: "Entertainment" },
+  { value: "music", label: "Music" },
+  { value: "news", label: "News" },
+  { value: "gaming", label: "Gaming" },
+  { value: "sports", label: "Sports" },
+  { value: "technology", label: "Technology" }
+];
 
 function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
   const v = String(raw || "").toLowerCase();
@@ -57,6 +66,7 @@ type ContentItem = {
   id: string;
   title: string;
   type: ContentType;
+  primaryTopic?: PrimaryTopic | null;
   status: "draft" | "published";
   archivedAt?: string | null;
   trashedAt?: string | null;
@@ -448,6 +458,7 @@ export default function ContentLibraryPage({
 
   const [title, setTitle] = React.useState("");
   const [type, setType] = React.useState<ContentType>("song");
+  const [primaryTopic, setPrimaryTopic] = React.useState<PrimaryTopic | "">("");
   const [creating, setCreating] = React.useState(false);
 
   const [upload, setUpload] = React.useState<UploadState>({ status: "idle" });
@@ -1832,7 +1843,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const created = await api<ContentItem>("/content", "POST", {
         title: nextTitle,
-        type
+        type,
+        primaryTopic: primaryTopic || null
       });
       if (import.meta.env.DEV) {
         console.debug("createContent:response", { createdId: created?.id, status: created?.status, type: created?.type });
@@ -1840,6 +1852,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
       setTitle("");
       setType("song");
+      setPrimaryTopic("");
 
       // Ensure we land back in the active authored/content view after creating
       setShowClearance(false);
@@ -2388,7 +2401,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             ) : null}
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-4">
             <div className="md:col-span-2">
               <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-title">
                 Title
@@ -2419,6 +2432,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 <option value="book">Book</option>
                 <option value="video">Video</option>
                 <option value="file">File</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-primary-topic">
+                Primary topic
+              </label>
+              <select
+                id="content-primary-topic"
+                name="primaryTopic"
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={primaryTopic}
+                onChange={(e) => setPrimaryTopic(e.target.value as PrimaryTopic | "")}
+              >
+                <option value="">None</option>
+                {PRIMARY_TOPIC_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </div>
           </div>

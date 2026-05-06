@@ -196,6 +196,7 @@ model ContentItem {
   ownerUserId   String
   title         String
   description   String?
+  primaryTopic  String?
   type          ContentType
   status        ContentStatus @default(draft)
   storefrontStatus StorefrontStatus @default(DISABLED)

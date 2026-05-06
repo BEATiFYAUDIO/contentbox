@@ -330,6 +330,35 @@ function buildPublicUrlFromOrigin(origin: unknown, routePath: unknown): string {
   return `${base}${p.startsWith("/") ? p : `/${p}`}`;
 }
 
+const ALLOWED_PRIMARY_TOPICS = [
+  "entertainment",
+  "music",
+  "news",
+  "gaming",
+  "sports",
+  "technology"
+] as const;
+
+type PrimaryTopic = (typeof ALLOWED_PRIMARY_TOPICS)[number];
+
+function normalizePrimaryTopic(value: unknown): PrimaryTopic | null {
+  const topic = asString(value || "").trim().toLowerCase();
+  if (!topic) return null;
+  return (ALLOWED_PRIMARY_TOPICS as readonly string[]).includes(topic) ? (topic as PrimaryTopic) : null;
+}
+
+function resolvePublicAccessMode(input: {
+  priceSats: bigint | null | undefined;
+  deliveryMode: string | null | undefined;
+  owned: boolean;
+}): "free_play" | "free_unlock" | "paid_unlock" | "owned" {
+  if (input.owned) return "owned";
+  const price = input.priceSats == null ? 0n : BigInt(input.priceSats);
+  if (price > 0n) return "paid_unlock";
+  const deliveryMode = asString(input.deliveryMode || "").trim().toLowerCase();
+  return deliveryMode === "stream_only" ? "free_play" : "free_unlock";
+}
+
 function normalizeKnownPublicRouteToOrigin(origin: unknown, rawUrl: unknown): string {
   const raw = asString(rawUrl || "").trim();
   if (!raw) return "";
@@ -11124,6 +11153,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
   appPublic.get("/buy/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/content/:id", handlePublicContent);
+  appPublic.get("/public/discoverable-content", { preHandler: optionalAuth }, handlePublicDiscoverableContent);
   appPublic.get("/public/content/:id/attribution", handlePublicAttribution);
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
@@ -22288,16 +22318,20 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
 // Create a new content item and initialize a repo for it
 app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
-  const body = (req.body ?? {}) as { title?: string; type?: string; description?: string | null };
+  const body = (req.body ?? {}) as { title?: string; type?: string; description?: string | null; primaryTopic?: string | null };
 
   const title = asString(body.title).trim();
   const type = asString(body.type).trim() || "file";
   const description = body.description ? asString(body.description).trim() : null;
+  const primaryTopic = normalizePrimaryTopic(body.primaryTopic);
   if (!title) return badRequest(reply, "title required");
+  if (body.primaryTopic != null && !primaryTopic) {
+    return badRequest(reply, `primaryTopic must be one of: ${ALLOWED_PRIMARY_TOPICS.join(", ")}`);
+  }
 
   // create DB row first
   const content = await prisma.contentItem.create({
-    data: { ownerUserId: userId, title, type: type as any, description }
+    data: { ownerUserId: userId, title, type: type as any, description, primaryTopic } as any
   });
 
   try {
@@ -22320,7 +22354,7 @@ app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
           action: "content.create",
           entityType: "ContentItem",
           entityId: content.id,
-          payloadJson: { title, type } as any
+          payloadJson: { title, type, primaryTopic } as any
         }
       });
       const manifest = await readManifest(repoPath);
@@ -22384,11 +22418,12 @@ app.post("/content/:id/new-version", { preHandler: requireAuth }, async (req: an
       previousVersionContentId: source.id,
       title: nextTitle,
       description: source.description || null,
+      primaryTopic: asString((source as any)?.primaryTopic || "").trim() || null,
       type: source.type as any,
       status: "draft" as any,
       priceSats: source.priceSats ?? null,
       deliveryMode: source.deliveryMode || null
-    }
+    } as any
   });
 
   try {
@@ -25375,9 +25410,15 @@ async function handlePublicContent(req: any, reply: any) {
     contentId: content.id,
     title: content.title,
     description: content.description || null,
+    primaryTopic: normalizePrimaryTopic((content as any).primaryTopic),
     storefrontStatus: content.storefrontStatus,
     tombstoned: gated.tombstoned,
     owned: gated.entitled,
+    accessMode: resolvePublicAccessMode({
+      priceSats: content.priceSats,
+      deliveryMode: (content as any).deliveryMode || null,
+      owned: Boolean(gated.entitled)
+    }),
     manifestSha256: manifest.sha256,
     priceSats: commerceAuthority.authority && content.priceSats != null ? content.priceSats.toString() : null,
     cover: normalizePreview((manifest.json as any)?.cover || null),
@@ -25385,7 +25426,128 @@ async function handlePublicContent(req: any, reply: any) {
   });
 }
 
+function decodeDiscoverableCursor(raw: unknown): { createdAt: Date; id: string } | null {
+  const value = asString(raw || "").trim();
+  if (!value) return null;
+  try {
+    const decoded = Buffer.from(value, "base64url").toString("utf8");
+    const parsed = JSON.parse(decoded || "{}");
+    const id = asString(parsed?.id || "").trim();
+    const createdAtRaw = asString(parsed?.createdAt || "").trim();
+    const createdAt = createdAtRaw ? new Date(createdAtRaw) : null;
+    if (!id || !createdAt || Number.isNaN(createdAt.getTime())) return null;
+    return { createdAt, id };
+  } catch {
+    return null;
+  }
+}
+
+function encodeDiscoverableCursor(input: { createdAt: Date | string; id: string }): string {
+  const payload = JSON.stringify({
+    createdAt: new Date(input.createdAt).toISOString(),
+    id: input.id
+  });
+  return Buffer.from(payload, "utf8").toString("base64url");
+}
+
+function resolveCreatorHandleForDiscoverable(owner: { displayName?: string | null; email?: string | null } | null | undefined): string | null {
+  const display = normalizePublicProfileHandle(owner?.displayName || "");
+  if (display) return display;
+  const email = normalizedEmailLocalPart(owner?.email || "");
+  return email || null;
+}
+
+async function handlePublicDiscoverableContent(req: any, reply: any) {
+  const query = (req.query ?? {}) as { topic?: string; limit?: string | number; cursor?: string };
+  const topic = normalizePrimaryTopic(query.topic);
+  if (query.topic != null && !topic) {
+    return badRequest(reply, `topic must be one of: ${ALLOWED_PRIMARY_TOPICS.join(", ")}`);
+  }
+
+  const requestedLimit = Number(query.limit ?? 24);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 50) : 24;
+  const cursor = decodeDiscoverableCursor(query.cursor);
+  const canonicalOrigin = resolveCanonicalPublicOrigin(req);
+
+  let buyerId: string | null = null;
+  try {
+    const session = await resolveBuyerSession(req, reply);
+    buyerId = asString(session?.buyer?.id || "").trim() || null;
+  } catch {
+    buyerId = null;
+  }
+
+  const rows = await prisma.contentItem.findMany({
+    where: {
+      status: "published" as any,
+      deletedAt: null,
+      storefrontStatus: "LISTED" as any,
+      ...(topic ? { primaryTopic: topic } : {}),
+      ...(cursor
+        ? {
+            OR: [
+              { createdAt: { lt: cursor.createdAt } as any },
+              { createdAt: cursor.createdAt as any, id: { lt: cursor.id } }
+            ]
+          }
+        : {})
+    } as any,
+    include: {
+      owner: { select: { displayName: true, email: true } }
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit + 1
+  });
+
+  const pageRows = rows.slice(0, limit);
+  const entitlementByContentId = new Map<string, boolean>();
+  if (buyerId && pageRows.length) {
+    const contentIds = pageRows.map((row) => row.id);
+    const entitlements = await prisma.entitlement.findMany({
+      where: { buyerId, contentId: { in: contentIds } },
+      select: { contentId: true }
+    });
+    entitlements.forEach((row) => entitlementByContentId.set(row.contentId, true));
+  }
+
+  const items = pageRows
+    .filter((row) => isSaleable(row as any) && !isArchivedPublished(row as any))
+    .map((row) => {
+      const owned = Boolean(entitlementByContentId.get(row.id));
+      const accessMode = resolvePublicAccessMode({
+        priceSats: row.priceSats,
+        deliveryMode: (row as any).deliveryMode || null,
+        owned
+      });
+      const priceSats = row.priceSats != null ? Number(row.priceSats) : 0;
+      return {
+        contentId: row.id,
+        title: row.title,
+        description: row.description || null,
+        creatorHandle: resolveCreatorHandleForDiscoverable((row as any).owner || null),
+        contentType: row.type,
+        primaryTopic: normalizePrimaryTopic((row as any).primaryTopic),
+        coverUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(row.id)}/cover`),
+        previewUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(row.id)}/preview-file`),
+        buyUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/buy/${encodeURIComponent(row.id)}`),
+        offerUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/buy/content/${encodeURIComponent(row.id)}/offer`),
+        priceSats,
+        accessMode,
+        publicOrigin: canonicalOrigin
+      };
+    });
+
+  const next = rows.length > limit ? rows[limit - 1] : null;
+  const nextCursor = next ? encodeDiscoverableCursor({ createdAt: next.createdAt, id: next.id }) : null;
+
+  return reply.send({
+    items,
+    cursor: nextCursor
+  });
+}
+
 app.get("/public/content/:id", handlePublicContent);
+app.get("/public/discoverable-content", { preHandler: optionalAuth }, handlePublicDiscoverableContent);
 app.get("/public/content/:id/attribution", handlePublicAttribution);
 
 const BEATIFY_PROOF_CACHE_VALID_TTL_MS = 5 * 60 * 1000;
@@ -31175,6 +31337,11 @@ async function handlePublicOffer(req: any, reply: any) {
     paymentMethod: resolvePaymentMethodFromIntent(latestEntitlement?.payment || null),
     invoiceProviderNodeId
   };
+  const accessMode = resolvePublicAccessMode({
+    priceSats: rawPriceSats,
+    deliveryMode: (content as any).deliveryMode || null,
+    owned: Boolean(gated.entitled)
+  });
 
   if (!allowDraftPreview) {
     if (rawPriceSats == null) {
@@ -31187,8 +31354,10 @@ async function handlePublicOffer(req: any, reply: any) {
     title: content.title,
     description: content.description || null,
     type: content.type,
+    primaryTopic: normalizePrimaryTopic((content as any).primaryTopic),
     manifestSha256: manifest?.sha256 || null,
     priceSats: priceSats != null ? priceSats.toString() : null,
+    accessMode,
     commerceAuthorityAvailable: paidCommerceActive,
     commerceAuthoritySource: authority.localAuthority ? "local_sovereign_node" : authority.providerAuthority ? "provider" : "none",
     commerceBlockers: authority.authority ? [] : authority.sovereignReadiness.blockers,
@@ -31197,6 +31366,9 @@ async function handlePublicOffer(req: any, reply: any) {
     previewObjectKey,
     coverObjectKey,
     coverUrl,
+    offerUrl: baseUrl ? `${baseUrl}/buy/content/${encodeURIComponent(content.id)}/offer` : null,
+    buyUrl: baseUrl ? `${baseUrl}/buy/${encodeURIComponent(content.id)}` : null,
+    publicOrigin: baseUrl || null,
     deliveryMode: (content as any).deliveryMode || null,
     tombstoned: gated.tombstoned,
     owned: gated.entitled,
@@ -34151,6 +34323,31 @@ app.patch("/content/:id/price", { preHandler: requireAuth }, async (req: any, re
     data: { priceSats: sats }
   });
   return reply.send({ ok: true, priceSats: updated.priceSats?.toString() ?? null });
+});
+
+app.patch("/content/:id/primary-topic", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).id || "").trim();
+  const body = (req.body ?? {}) as { primaryTopic?: string | null };
+  if (!contentId) return badRequest(reply, "contentId required");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+
+  const hasTopicField = Object.prototype.hasOwnProperty.call(body, "primaryTopic");
+  const normalized = normalizePrimaryTopic(body.primaryTopic);
+  if (hasTopicField && body.primaryTopic != null && !normalized) {
+    return badRequest(reply, `primaryTopic must be one of: ${ALLOWED_PRIMARY_TOPICS.join(", ")}`);
+  }
+  const primaryTopic = hasTopicField ? normalized : null;
+
+  const updated = await prisma.contentItem.update({
+    where: { id: contentId },
+    data: { primaryTopic } as any
+  });
+
+  return reply.send({ ok: true, primaryTopic: asString((updated as any)?.primaryTopic || "").trim() || null });
 });
 
 // Set delivery mode for content (Basic: streaming vs download)
