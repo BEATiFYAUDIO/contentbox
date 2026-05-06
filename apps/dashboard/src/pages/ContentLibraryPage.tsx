@@ -443,6 +443,7 @@ export default function ContentLibraryPage({
     capabilityReasons?.clearance ||
     "You can prepare this action, but a permanent named link must be online to perform it.";
   const networkPublishAllowed = capabilities?.publishToNetwork ?? capabilities?.publish ?? true;
+  const canPublishFromLibrary = isBasicTier ? true : networkPublishAllowed;
   const crossNodeAllowed = capabilities?.requestClearance ?? true;
   const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
   const derivativesAllowed = capabilities?.useDerivatives ?? canDerivatives;
@@ -1345,7 +1346,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         return;
       }
     }
-    if (!networkPublishAllowed) {
+    if (!canPublishFromLibrary) {
       setPublishMsg((m) => ({ ...m, [contentId]: networkPublishReason }));
       return;
     }
@@ -3013,7 +3014,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ? "Checking clearance status..."
                     : !allowPublish
                       ? "Already published"
-                      : !networkPublishAllowed
+                      : !canPublishFromLibrary
                         ? networkPublishReason
                         : "Publish this content";
 
@@ -3151,7 +3152,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 onClick={() => publishContent(it.id)}
                                 disabled={
                                   publishBusy[it.id] ||
-                                  !networkPublishAllowed ||
+                                  !canPublishFromLibrary ||
                                   !allowPublish ||
                                   derivativePublishBlocked ||
                                   (isBasicTier && isDerivativeType)
@@ -3218,7 +3219,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-xs text-amber-300">Archived</div>
                       )}
                     </div>
-                    {!networkPublishAllowed ? (
+                    {!canPublishFromLibrary ? (
                       <div className="w-full text-[11px] text-amber-300">
                         {networkPublishReason}{" "}
                         <button
@@ -3236,11 +3237,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
                       <div>
                         Network publish:{" "}
-                        <span className={networkPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
-                          {networkPublishAllowed ? "Ready" : "Not ready"}
+                        <span className={canPublishFromLibrary ? "text-emerald-300" : "text-amber-300"}>
+                          {canPublishFromLibrary ? "Ready" : "Not ready"}
                         </span>
                       </div>
-                      {!networkPublishAllowed ? (
+                      {!canPublishFromLibrary ? (
                         <div className="text-amber-300">{networkPublishReason}</div>
                       ) : null}
                       <div>
