@@ -1322,6 +1322,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   async function publishContent(contentId: string) {
     if (publishBusy[contentId]) return;
     const currentItem = items.find((it) => it.id === contentId);
+    const currentPriceSats = Number(currentItem?.priceSats ?? 0);
+    const requiresCommerceForPublish = Number.isFinite(currentPriceSats) && currentPriceSats > 0;
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(currentItem?.type || ""));
     const parentLink = parentLinkByContent[contentId];
     if (isDerivativeType) {
@@ -1335,7 +1337,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         return;
       }
     }
-    if (!canPublishFromLibrary) {
+    if (!canPublishFromLibrary && requiresCommerceForPublish) {
       setPublishMsg((m) => ({ ...m, [contentId]: networkPublishReason }));
       return;
     }
@@ -2954,6 +2956,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const currentPriceSats = Number(it.priceSats ?? 0);
               const commerceAuthorityAvailable = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
               const pricedButCommerceBlocked = Number.isFinite(currentPriceSats) && currentPriceSats > 0 && !commerceAuthorityAvailable;
+              const requiresCommerceForPublish = Number.isFinite(currentPriceSats) && currentPriceSats > 0;
+              const publishBlockedByCommerce = !canPublishFromLibrary && requiresCommerceForPublish;
               const paidUnlockEnabled =
                 Number.isFinite(currentPriceSats) &&
                 currentPriceSats > 0 &&
@@ -2981,7 +2985,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ? "Checking clearance status..."
                     : !allowPublish
                       ? "Already published"
-                      : !canPublishFromLibrary
+                      : publishBlockedByCommerce
                         ? networkPublishReason
                         : "Publish this content";
 
@@ -3119,7 +3123,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 onClick={() => publishContent(it.id)}
                                 disabled={
                                   publishBusy[it.id] ||
-                                  !canPublishFromLibrary ||
+                                  publishBlockedByCommerce ||
                                   !allowPublish ||
                                   derivativePublishBlocked ||
                                   (isBasicTier && isDerivativeType)
@@ -3186,7 +3190,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-xs text-amber-300">Archived</div>
                       )}
                     </div>
-                    {!canPublishFromLibrary ? (
+                    {publishBlockedByCommerce ? (
                       <div className="w-full text-[11px] text-amber-300">
                         {networkPublishReason}{" "}
                         <button
@@ -3204,11 +3208,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
                       <div>
                         Network publish:{" "}
-                        <span className={canPublishFromLibrary ? "text-emerald-300" : "text-amber-300"}>
-                          {canPublishFromLibrary ? "Ready" : "Not ready"}
+                        <span className={publishBlockedByCommerce ? "text-amber-300" : "text-emerald-300"}>
+                          {publishBlockedByCommerce ? "Not ready (priced unlock)" : "Ready"}
                         </span>
                       </div>
-                      {!canPublishFromLibrary ? (
+                      {publishBlockedByCommerce ? (
                         <div className="text-amber-300">{networkPublishReason}</div>
                       ) : null}
                       <div>
