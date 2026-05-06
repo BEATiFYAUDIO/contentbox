@@ -30,13 +30,63 @@ A connected provider can supply invoicing, receipts, and settlement for Sovereig
 - `apps/dashboard` – React dashboard/studio
 - `docs` – product, setup, routing, and testing docs
 
-## Start locally
+## Technical Beta Install (Recommended)
+
+Certifyd runs locally by default.
+
+Cloudflare Tunnel is optional and not required for local setup.
+
+Before installing Certifyd, beta testers must install:
+
+- Git
+- Node.js 20+ (includes npm)
+
+The installer scripts (`install.sh` / `install.ps1`) do not install Git or Node.
+
+### Windows (PowerShell)
+
+```powershell
+git --version
+node -v
+npm -v
+git clone https://github.com/BEATiFYAUDIO/contentbox.git
+cd contentbox
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+npm run dev:up
+start http://localhost:5173
+```
+
+### macOS / Linux
+
+```bash
+git --version
+node -v
+npm -v
+git clone https://github.com/BEATiFYAUDIO/contentbox.git
+cd contentbox
+chmod +x ./install.sh
+./install.sh
+npm run dev:up
+```
+
+Then open:
+
+- Dashboard: `http://localhost:5173`
+- API health: `http://localhost:4000/health`
+
+`npm run dev` is acceptable, but `npm run dev:up` is the preferred beta start command.
+
+## Manual fallback (secondary)
+
+If the recommended install path fails, run API and dashboard manually.
 
 API:
 
 ```bash
 cd apps/api
 npm install
+npm run prisma:generate
+npx prisma db push --schema prisma/schema.prisma
 npm run dev
 ```
 
@@ -50,8 +100,35 @@ npm run dev
 
 Open:
 
-- API: `http://127.0.0.1:4000/health`
-- Dashboard: `http://127.0.0.1:5173`
+- Dashboard: `http://localhost:5173`
+- API health: `http://localhost:4000/health`
+
+## Tester feedback
+
+When reporting install issues, include:
+
+- OS
+- step number where you got stuck
+- full error output
+- what you expected to happen
+
+## Troubleshooting
+
+- Node below 20:
+  - install Node.js 20+ and re-run install
+- Git not found:
+  - install Git and restart terminal
+- npm not found:
+  - reinstall Node.js 20+ and restart terminal
+- Windows PATH not refreshed:
+  - close/reopen PowerShell, re-run `node -v` and `npm -v`
+- Port `4000` or `5173` already in use:
+  - stop previous local processes, then run `npm run dev:up` again
+- macOS/Linux script permission issue:
+  - run `chmod +x ./install.sh` then `./install.sh`
+- PowerShell execution policy blocked:
+  - run with:
+    - `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`
 
 ## Canonical docs
 
