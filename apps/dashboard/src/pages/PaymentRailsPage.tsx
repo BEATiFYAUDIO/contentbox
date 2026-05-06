@@ -50,6 +50,8 @@ type LightningBalances = {
     confirmedSats: number;
     unconfirmedSats: number;
     totalSats: number;
+    pendingChannelCommitmentSats?: number;
+    pendingChannelCapacitySats?: number;
   };
   channels: {
     openCount: number;
@@ -70,10 +72,25 @@ type LightningChannelRow = {
   localBalanceSats?: number;
   remoteBalanceSats?: number;
   capacitySats?: number;
+  localSat?: number;
+  remoteSat?: number;
+  capacitySat?: number;
 };
 
 type LightningChannelsResponse = {
   channels?: LightningChannelRow[];
+  pendingChannels?: Array<{
+    status: "pending_open" | "pending_closing" | "pending_force_closing" | "waiting_close";
+    pendingType: "opening" | "closing" | "force_closing" | "waiting_close";
+    peerPubkey: string;
+    peerAlias?: string | null;
+    channelPoint: string;
+    capacitySats: number;
+    localSats: number;
+    remoteSats: number;
+    confirmationsUntilActive?: number | null;
+    confirmationHeight?: number | null;
+  }>;
 };
 
 type PeerSuggestion = {
@@ -126,6 +143,7 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadiness | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalances | null>(null);
   const [lightningChannels, setLightningChannels] = useState<LightningChannelRow[]>([]);
+  const [pendingChannels, setPendingChannels] = useState<NonNullable<LightningChannelsResponse["pendingChannels"]>>([]);
   const [peerSuggestions, setPeerSuggestions] = useState<PeerSuggestion[]>([]);
   const [peerSuggestionsBusy, setPeerSuggestionsBusy] = useState(false);
   const [peerSuggestionsNoticeText, setPeerSuggestionsNoticeText] = useState<string | null>(null);
@@ -200,6 +218,11 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
               ? channelsRes.value.channels
               : []
           );
+          setPendingChannels(
+            channelsRes.status === "fulfilled" && Array.isArray(channelsRes.value?.pendingChannels)
+              ? channelsRes.value.pendingChannels
+              : []
+          );
           if (peersRes.status === "fulfilled" && peersRes.value?.status === "ok" && Array.isArray(peersRes.value.peers)) {
             setPeerSuggestions(peersRes.value.peers);
             setPeerSuggestionsNoticeText(null);
@@ -218,6 +241,7 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
           setLightningReadiness(null);
           setLightningBalances(null);
           setLightningChannels([]);
+          setPendingChannels([]);
           setPeerSuggestions([]);
           setPeerSuggestionsNoticeText(null);
           setLightningError(null);
@@ -236,6 +260,7 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
 
   const visibleRails = rails.filter((r) => (r.type === "lnurl" ? SHOW_LNURL : true));
   const formatSats = (n: number | null | undefined) => `${Math.round(Number(n || 0)).toLocaleString()} sats`;
+  const pendingOpenChannels = pendingChannels.filter((row) => row.pendingType === "opening");
   const configured = Boolean(lightningAdmin?.configured || lightningReadiness?.configured || lightningReadiness?.nodeReachable);
   const reachable = Boolean(lightningReadiness?.nodeReachable || lightningAdmin?.runtime?.connected);
   const receiveReady = Boolean(lightningReadiness?.receiveReady);
@@ -428,6 +453,10 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
                 <div className="text-lg font-semibold text-neutral-100">{formatSats(lightningBalances?.wallet?.totalSats)}</div>
               </div>
               <div className="rounded border border-neutral-800 bg-neutral-950/40 px-3 py-3">
+                <div className="text-xs uppercase tracking-wide text-neutral-500">funds in pending channels</div>
+                <div className="text-lg font-semibold text-neutral-100">{formatSats(lightningBalances?.wallet?.pendingChannelCommitmentSats)}</div>
+              </div>
+              <div className="rounded border border-neutral-800 bg-neutral-950/40 px-3 py-3">
                 <div className="text-xs uppercase tracking-wide text-neutral-500">open channels</div>
                 <div className="text-lg font-semibold text-neutral-100">{Number(lightningBalances?.channels?.openCount || 0).toLocaleString()}</div>
               </div>
@@ -443,6 +472,11 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
             {lightningAdmin?.restUrl ? (
               <div className="mt-2 text-xs text-neutral-500">REST endpoint: {lightningAdmin.restUrl}</div>
             ) : null}
+            {Number(lightningBalances?.wallet?.pendingChannelCommitmentSats || 0) > 0 ? (
+              <div className="mt-2 text-xs text-amber-200">
+                Funds are locked in a pending channel until the funding transaction confirms.
+              </div>
+            ) : null}
             {lightningAdmin?.lastError ? (
               <div className="mt-2 text-xs text-amber-300">Last error: {lightningAdmin.lastError}</div>
             ) : null}
@@ -454,6 +488,34 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
       {lightningAllowed ? (
         <div className="grid gap-4 xl:grid-cols-5">
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-5 xl:col-span-2">
+            <div className="text-sm font-semibold">Pending Channels</div>
+            {pendingOpenChannels.length === 0 ? (
+              <div className="mt-2 text-xs text-neutral-500">No pending channels.</div>
+            ) : (
+              <div className="mt-3 space-y-3">
+                <div className="text-xs text-amber-200">
+                  Pending Channels: {pendingOpenChannels.length} • {formatSats(pendingOpenChannels.reduce((sum, row) => sum + Number(row.capacitySats || 0), 0))} pending
+                </div>
+                {pendingOpenChannels.slice(0, 8).map((ch, idx) => (
+                  <div key={`${ch.channelPoint}-${idx}`} className="rounded border border-amber-900/50 bg-amber-950/10 p-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-neutral-100 font-medium truncate">{ch.peerAlias || ch.peerPubkey || "Peer"}</div>
+                      <span className="rounded-full border border-amber-800/70 bg-amber-900/20 px-2 py-0.5 text-amber-300">pending_open</span>
+                    </div>
+                    <div className="mt-1 text-xs font-mono text-neutral-500 break-all">{ch.peerPubkey}</div>
+                    <div className="mt-1 text-xs font-mono text-neutral-500 break-all">{ch.channelPoint}</div>
+                    <div className="mt-2 text-xs text-neutral-400">
+                      Capacity: {formatSats(ch.capacitySats)} • Local: {formatSats(ch.localSats)} • Remote: {formatSats(ch.remoteSats)}
+                    </div>
+                    <div className="mt-1 text-xs text-amber-200">
+                      confirmations until active: {Number(ch.confirmationsUntilActive || 0).toLocaleString()}
+                      {ch.confirmationHeight ? ` • confirmation height: ${Number(ch.confirmationHeight).toLocaleString()}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="text-sm font-semibold">Open Channels</div>
             {lightningChannels.length === 0 ? (
               <div className="mt-2 text-xs text-neutral-500">No channel rows available.</div>
@@ -469,7 +531,7 @@ export default function PaymentRailsPage({ refreshSignal, onOpenLightningConfig 
                     </div>
                     {ch.remotePubkey ? <div className="mt-1 text-xs font-mono text-neutral-500 truncate">{ch.remotePubkey}</div> : null}
                     <div className="mt-2 text-xs text-neutral-400">
-                      Capacity: {formatSats(ch.capacitySats)} · Local: {formatSats(ch.localBalanceSats)} · Remote: {formatSats(ch.remoteBalanceSats)}
+                      Capacity: {formatSats(ch.capacitySats ?? ch.capacitySat)} • Local: {formatSats(ch.localBalanceSats ?? ch.localSat)} • Remote: {formatSats(ch.remoteBalanceSats ?? ch.remoteSat)}
                     </div>
                   </div>
                 ))}

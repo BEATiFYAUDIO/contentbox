@@ -85,12 +85,15 @@ export type LightningChannelsResponse = {
     initiator?: boolean | null;
   }>;
   pendingChannels?: Array<{
+    status: "pending_open" | "pending_closing" | "pending_force_closing" | "waiting_close";
     channelPoint: string;
     peerPubkey: string;
     peerAlias?: string | null;
     capacitySats: number;
     localSats: number;
     remoteSats: number;
+    confirmationsUntilActive?: number | null;
+    confirmationHeight?: number | null;
     active: boolean;
     pendingType: "opening" | "closing" | "force_closing" | "waiting_close";
   }>;
@@ -102,6 +105,8 @@ export type LightningBalancesResponse = {
     unconfirmedSats: number;
     totalSats: number;
     reservedAnchorSats: number | null;
+    pendingChannelCommitmentSats: number;
+    pendingChannelCapacitySats: number;
   };
   channels: {
     openCount: number;
@@ -187,6 +192,18 @@ export type LightningPeerSuggestion = {
   score: number;
   reachableNow: boolean;
   reason?: string;
+};
+
+export type LightningPendingOpenChannel = {
+  status: "pending_open";
+  pendingType: "opening";
+  peerPubkey: string;
+  channelPoint: string;
+  capacitySats: number;
+  localSats: number;
+  remoteSats: number;
+  confirmationsUntilActive: number;
+  confirmationHeight: number | null;
 };
 
 type GraphCandidate = {
@@ -1495,27 +1512,42 @@ export async function getLightningChannels(prisma: PrismaLike): Promise<Lightnin
     (Array.isArray((pendingRes as any)?.pending_force_closing_channels) ? (pendingRes as any).pending_force_closing_channels.length : 0) +
     (Array.isArray((pendingRes as any)?.waiting_close_channels) ? (pendingRes as any).waiting_close_channels.length : 0);
 
+  const pendingOpenMapped = mapPendingOpenChannelsFromLnd(pendingRes as any);
   const pendingOpen = Array.isArray((pendingRes as any)?.pending_open_channels) ? (pendingRes as any).pending_open_channels : [];
   const pendingClosing = Array.isArray((pendingRes as any)?.pending_closing_channels) ? (pendingRes as any).pending_closing_channels : [];
   const pendingForceClosing = Array.isArray((pendingRes as any)?.pending_force_closing_channels) ? (pendingRes as any).pending_force_closing_channels : [];
   const waitingClose = Array.isArray((pendingRes as any)?.waiting_close_channels) ? (pendingRes as any).waiting_close_channels : [];
   const pendingChannels: NonNullable<LightningChannelsResponse["pendingChannels"]> = [
-    ...pendingOpen.map((p: any) => ({ pendingType: "opening" as const, raw: p?.channel || p })),
+    ...pendingOpenMapped.map((p) => ({ pendingType: "opening" as const, mapped: p })),
     ...pendingClosing.map((p: any) => ({ pendingType: "closing" as const, raw: p?.channel || p })),
     ...pendingForceClosing.map((p: any) => ({ pendingType: "force_closing" as const, raw: p?.channel || p })),
     ...waitingClose.map((p: any) => ({ pendingType: "waiting_close" as const, raw: p?.channel || p }))
   ].map((x) => {
-    const ch = x.raw || {};
-    const peerPubkey = String(ch?.remote_node_pub || ch?.remote_pubkey || "").trim();
-    const channelPoint = String(ch?.channel_point || "");
+    const ch = (x as any).mapped || ((x as any).raw || {});
+    const peerPubkey = String(ch?.peerPubkey || ch?.remote_node_pub || ch?.remote_pubkey || "").trim();
+    const channelPoint = String(ch?.channelPoint || ch?.channel_point || "");
     const alias = aliasCache.get(peerPubkey.toLowerCase()) ?? null;
     return {
+      status:
+        x.pendingType === "opening"
+          ? "pending_open"
+          : x.pendingType === "closing"
+            ? "pending_closing"
+            : x.pendingType === "force_closing"
+              ? "pending_force_closing"
+              : "waiting_close",
       channelPoint,
       peerPubkey,
       peerAlias: alias,
-      capacitySats: numberField(ch?.capacity),
-      localSats: numberField(ch?.local_balance),
-      remoteSats: numberField(ch?.remote_balance),
+      capacitySats: numberField(ch?.capacitySats ?? ch?.capacity),
+      localSats: numberField(ch?.localSats ?? ch?.local_balance),
+      remoteSats: numberField(ch?.remoteSats ?? ch?.remote_balance),
+      confirmationsUntilActive:
+        x.pendingType === "opening"
+          ? numberField(ch?.confirmationsUntilActive ?? ch?.confirmations_until_active ?? ch?.confirmationsUntilActive)
+          : null,
+      confirmationHeight:
+        x.pendingType === "opening" ? numberField(ch?.confirmationHeight ?? ch?.confirmation_height ?? ch?.confirmationHeight) : null,
       active: false,
       pendingType: x.pendingType
     };
@@ -1539,6 +1571,15 @@ export async function getLightningBalances(prisma: PrismaLike): Promise<Lightnin
   const outboundSats = openChannels.reduce((sum: number, c: any) => sum + numberField(c?.local_balance), 0);
   const inboundSats = openChannels.reduce((sum: number, c: any) => sum + numberField(c?.remote_balance), 0);
   const pendingOpenCount = Array.isArray((pendingRes as any)?.pending_open_channels) ? (pendingRes as any).pending_open_channels.length : 0;
+  const pendingOpenRows = mapPendingOpenChannelsFromLnd(pendingRes as any);
+  const pendingChannelCommitmentSats = pendingOpenRows.reduce(
+    (sum: number, row: any) => sum + numberField((row as any)?.localSats),
+    0
+  );
+  const pendingChannelCapacitySats = pendingOpenRows.reduce(
+    (sum: number, row: any) => sum + numberField((row as any)?.capacitySats),
+    0
+  );
   const pendingCloseCount = (
     (Array.isArray((pendingRes as any)?.pending_closing_channels) ? (pendingRes as any).pending_closing_channels.length : 0) +
     (Array.isArray((pendingRes as any)?.pending_force_closing_channels) ? (pendingRes as any).pending_force_closing_channels.length : 0) +
@@ -1553,7 +1594,9 @@ export async function getLightningBalances(prisma: PrismaLike): Promise<Lightnin
       confirmedSats: numberField((wallet as any)?.confirmed_balance),
       unconfirmedSats: numberField((wallet as any)?.unconfirmed_balance),
       totalSats: numberField((wallet as any)?.total_balance),
-      reservedAnchorSats: reservedAnchorSats && reservedAnchorSats > 0 ? reservedAnchorSats : null
+      reservedAnchorSats: reservedAnchorSats && reservedAnchorSats > 0 ? reservedAnchorSats : null,
+      pendingChannelCommitmentSats,
+      pendingChannelCapacitySats
     },
     channels: {
       openCount: openChannels.length,
@@ -2037,6 +2080,29 @@ function normalizeInvoiceState(s: string | null | undefined): "SETTLED" | "OPEN"
   if (st === "ACCEPTED") return "ACCEPTED";
   if (st === "CANCELED" || st === "CANCELLED" || st === "EXPIRED") return "CANCELED";
   return "UNKNOWN";
+}
+
+export function mapPendingOpenChannelsFromLnd(pendingRes: any): LightningPendingOpenChannel[] {
+  const pendingOpenRows = Array.isArray((pendingRes as any)?.pending_open_channels)
+    ? (pendingRes as any).pending_open_channels
+    : [];
+  return pendingOpenRows.map((row: any) => {
+    const ch = row?.channel || row || {};
+    return {
+      status: "pending_open",
+      pendingType: "opening",
+      peerPubkey: String(ch?.remote_node_pub || ch?.remote_pubkey || "").trim(),
+      channelPoint: String(ch?.channel_point || "").trim(),
+      capacitySats: numberField(ch?.capacity),
+      localSats: numberField(ch?.local_balance),
+      remoteSats: numberField(ch?.remote_balance),
+      confirmationsUntilActive: numberField(ch?.confirmations_until_active ?? ch?.confirmationsUntilActive),
+      confirmationHeight: (() => {
+        const n = numberField(ch?.confirmation_height ?? ch?.confirmationHeight);
+        return n > 0 ? n : null;
+      })()
+    };
+  });
 }
 
 export async function ensureActiveInvoiceForIntent(
