@@ -351,12 +351,11 @@ function resolvePublicAccessMode(input: {
   priceSats: bigint | null | undefined;
   deliveryMode: string | null | undefined;
   owned: boolean;
-}): "free_play" | "free_unlock" | "paid_unlock" | "owned" {
+}): "unlocked" | "locked" | "owned" {
   if (input.owned) return "owned";
   const price = input.priceSats == null ? 0n : BigInt(input.priceSats);
-  if (price > 0n) return "paid_unlock";
-  const deliveryMode = asString(input.deliveryMode || "").trim().toLowerCase();
-  return deliveryMode === "stream_only" ? "free_play" : "free_unlock";
+  if (price > 0n) return "locked";
+  return "unlocked";
 }
 
 function normalizeKnownPublicRouteToOrigin(origin: unknown, rawUrl: unknown): string {
