@@ -576,6 +576,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [priceMsg, setPriceMsg] = React.useState<Record<string, string>>({});
   const [deliveryDraft, setDeliveryDraft] = React.useState<Record<string, string>>({});
   const [deliveryMsg, setDeliveryMsg] = React.useState<Record<string, string>>({});
+  const [primaryTopicDraft, setPrimaryTopicDraft] = React.useState<Record<string, string>>({});
+  const [primaryTopicMsg, setPrimaryTopicMsg] = React.useState<Record<string, string>>({});
   const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
@@ -829,12 +831,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setItems(mergedList);
       const next: Record<string, string> = {};
       const nextDelivery: Record<string, string> = {};
+      const nextPrimaryTopic: Record<string, string> = {};
       for (const it of list) {
         if (it.priceSats !== undefined && it.priceSats !== null) next[it.id] = String(it.priceSats);
         if (it.deliveryMode) nextDelivery[it.id] = String(it.deliveryMode);
+        if (it.primaryTopic) nextPrimaryTopic[it.id] = String(it.primaryTopic);
       }
       setPriceDraft(next);
       setDeliveryDraft(nextDelivery);
+      setPrimaryTopicDraft(nextPrimaryTopic);
       if (pendingOpenContentId && list.find((d) => d.id === pendingOpenContentId)) {
         setExpanded((m) => ({ ...m, [pendingOpenContentId]: true }));
         setPendingOpenContentId(null);
@@ -4322,6 +4327,61 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               Save delivery
                             </button>
                             {deliveryMsg[it.id] ? <div className="text-xs text-amber-300">{deliveryMsg[it.id]}</div> : null}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="text-xs text-neutral-300 font-medium">Discovery</div>
+                        <div className="mt-2 grid gap-3 md:grid-cols-3">
+                          <div className="md:col-span-1">
+                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`primaryTopic-${it.id}`}>
+                              Primary topic
+                            </label>
+                            <select
+                              id={`primaryTopic-${it.id}`}
+                              name={`primaryTopic-${it.id}`}
+                              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
+                              value={primaryTopicDraft[it.id] ?? ""}
+                              onChange={(e) =>
+                                setPrimaryTopicDraft((m) => ({
+                                  ...m,
+                                  [it.id]: e.target.value
+                                }))
+                              }
+                            >
+                              <option value="">None</option>
+                              {PRIMARY_TOPIC_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
+                            <div>Used by fan/discovery feeds. Optional.</div>
+                            <button
+                              type="button"
+                              className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                              disabled={!!busyAction[it.id]}
+                              onClick={async () => {
+                                const raw = (primaryTopicDraft[it.id] || "").trim();
+                                try {
+                                  setBusyAction((m) => ({ ...m, [it.id]: true }));
+                                  setPrimaryTopicMsg((m) => ({ ...m, [it.id]: "" }));
+                                  await api(`/content/${it.id}/primary-topic`, "PATCH", { primaryTopic: raw || null });
+                                  await refreshCurrentView();
+                                  setPrimaryTopicMsg((m) => ({ ...m, [it.id]: "Saved." }));
+                                } catch (e: any) {
+                                  setPrimaryTopicMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save primary topic." }));
+                                } finally {
+                                  setBusyAction((m) => ({ ...m, [it.id]: false }));
+                                }
+                              }}
+                            >
+                              Save topic
+                            </button>
+                            {primaryTopicMsg[it.id] ? <div className="text-xs text-amber-300">{primaryTopicMsg[it.id]}</div> : null}
                           </div>
                         </div>
                       </div>
