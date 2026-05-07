@@ -16,6 +16,7 @@ import {
 } from "../lib/libraryEligibility";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
+type PrimaryTopic = "entertainment" | "music" | "news" | "gaming" | "sports" | "technology";
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
 const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
 const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
@@ -26,6 +27,14 @@ const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
   files: "Files"
 };
 const COVER_UPLOAD_TYPES = new Set<ContentType>(["song", "video", "book", "file", "remix", "mashup", "derivative"]);
+const PRIMARY_TOPIC_OPTIONS: Array<{ value: PrimaryTopic; label: string }> = [
+  { value: "entertainment", label: "Entertainment" },
+  { value: "music", label: "Music" },
+  { value: "news", label: "News" },
+  { value: "gaming", label: "Gaming" },
+  { value: "sports", label: "Sports" },
+  { value: "technology", label: "Technology" }
+];
 
 function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
   const v = String(raw || "").toLowerCase();
@@ -57,6 +66,7 @@ type ContentItem = {
   id: string;
   title: string;
   type: ContentType;
+  primaryTopic?: PrimaryTopic | null;
   status: "draft" | "published";
   archivedAt?: string | null;
   trashedAt?: string | null;
@@ -449,6 +459,7 @@ export default function ContentLibraryPage({
 
   const [title, setTitle] = React.useState("");
   const [type, setType] = React.useState<ContentType>("song");
+  const [primaryTopic, setPrimaryTopic] = React.useState<PrimaryTopic | "">("");
   const [creating, setCreating] = React.useState(false);
 
   const [upload, setUpload] = React.useState<UploadState>({ status: "idle" });
@@ -565,6 +576,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [priceMsg, setPriceMsg] = React.useState<Record<string, string>>({});
   const [deliveryDraft, setDeliveryDraft] = React.useState<Record<string, string>>({});
   const [deliveryMsg, setDeliveryMsg] = React.useState<Record<string, string>>({});
+  const [primaryTopicDraft, setPrimaryTopicDraft] = React.useState<Record<string, string>>({});
+  const [primaryTopicMsg, setPrimaryTopicMsg] = React.useState<Record<string, string>>({});
   const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
@@ -818,12 +831,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setItems(mergedList);
       const next: Record<string, string> = {};
       const nextDelivery: Record<string, string> = {};
+      const nextPrimaryTopic: Record<string, string> = {};
       for (const it of list) {
         if (it.priceSats !== undefined && it.priceSats !== null) next[it.id] = String(it.priceSats);
         if (it.deliveryMode) nextDelivery[it.id] = String(it.deliveryMode);
+        if (it.primaryTopic) nextPrimaryTopic[it.id] = String(it.primaryTopic);
       }
       setPriceDraft(next);
       setDeliveryDraft(nextDelivery);
+      setPrimaryTopicDraft(nextPrimaryTopic);
       if (pendingOpenContentId && list.find((d) => d.id === pendingOpenContentId)) {
         setExpanded((m) => ({ ...m, [pendingOpenContentId]: true }));
         setPendingOpenContentId(null);
@@ -1322,8 +1338,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   async function publishContent(contentId: string) {
     if (publishBusy[contentId]) return;
     const currentItem = items.find((it) => it.id === contentId);
-    const currentPriceSats = Number(currentItem?.priceSats ?? 0);
-    const requiresCommerceForPublish = Number.isFinite(currentPriceSats) && currentPriceSats > 0;
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(currentItem?.type || ""));
     const parentLink = parentLinkByContent[contentId];
     if (isDerivativeType) {
@@ -1337,7 +1351,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         return;
       }
     }
-    if (!canPublishFromLibrary && requiresCommerceForPublish) {
+    if (!canPublishFromLibrary) {
       setPublishMsg((m) => ({ ...m, [contentId]: networkPublishReason }));
       return;
     }
@@ -1835,7 +1849,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const created = await api<ContentItem>("/content", "POST", {
         title: nextTitle,
-        type
+        type,
+        primaryTopic: primaryTopic || null
       });
       if (import.meta.env.DEV) {
         console.debug("createContent:response", { createdId: created?.id, status: created?.status, type: created?.type });
@@ -1843,6 +1858,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
       setTitle("");
       setType("song");
+      setPrimaryTopic("");
 
       // Ensure we land back in the active authored/content view after creating
       setShowClearance(false);
@@ -2391,7 +2407,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             ) : null}
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-4">
             <div className="md:col-span-2">
               <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-title">
                 Title
@@ -2422,6 +2438,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 <option value="book">Book</option>
                 <option value="video">Video</option>
                 <option value="file">File</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-primary-topic">
+                Primary topic
+              </label>
+              <select
+                id="content-primary-topic"
+                name="primaryTopic"
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={primaryTopic}
+                onChange={(e) => setPrimaryTopic(e.target.value as PrimaryTopic | "")}
+              >
+                <option value="">None</option>
+                {PRIMARY_TOPIC_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -2956,8 +2992,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const currentPriceSats = Number(it.priceSats ?? 0);
               const commerceAuthorityAvailable = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
               const pricedButCommerceBlocked = Number.isFinite(currentPriceSats) && currentPriceSats > 0 && !commerceAuthorityAvailable;
-              const requiresCommerceForPublish = Number.isFinite(currentPriceSats) && currentPriceSats > 0;
-              const publishBlockedByCommerce = !canPublishFromLibrary && requiresCommerceForPublish;
               const paidUnlockEnabled =
                 Number.isFinite(currentPriceSats) &&
                 currentPriceSats > 0 &&
@@ -2985,7 +3019,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ? "Checking clearance status..."
                     : !allowPublish
                       ? "Already published"
-                      : publishBlockedByCommerce
+                      : !canPublishFromLibrary
                         ? networkPublishReason
                         : "Publish this content";
 
@@ -3123,7 +3157,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 onClick={() => publishContent(it.id)}
                                 disabled={
                                   publishBusy[it.id] ||
-                                  publishBlockedByCommerce ||
+                                  !canPublishFromLibrary ||
                                   !allowPublish ||
                                   derivativePublishBlocked ||
                                   (isBasicTier && isDerivativeType)
@@ -3190,7 +3224,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-xs text-amber-300">Archived</div>
                       )}
                     </div>
-                    {publishBlockedByCommerce ? (
+                    {!canPublishFromLibrary ? (
                       <div className="w-full text-[11px] text-amber-300">
                         {networkPublishReason}{" "}
                         <button
@@ -3208,11 +3242,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
                       <div>
                         Network publish:{" "}
-                        <span className={publishBlockedByCommerce ? "text-amber-300" : "text-emerald-300"}>
-                          {publishBlockedByCommerce ? "Not ready (priced unlock)" : "Ready"}
+                        <span className={canPublishFromLibrary ? "text-emerald-300" : "text-amber-300"}>
+                          {canPublishFromLibrary ? "Ready" : "Not ready"}
                         </span>
                       </div>
-                      {publishBlockedByCommerce ? (
+                      {!canPublishFromLibrary ? (
                         <div className="text-amber-300">{networkPublishReason}</div>
                       ) : null}
                       <div>
@@ -4293,6 +4327,61 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               Save delivery
                             </button>
                             {deliveryMsg[it.id] ? <div className="text-xs text-amber-300">{deliveryMsg[it.id]}</div> : null}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="text-xs text-neutral-300 font-medium">Discovery</div>
+                        <div className="mt-2 grid gap-3 md:grid-cols-3">
+                          <div className="md:col-span-1">
+                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`primaryTopic-${it.id}`}>
+                              Primary topic
+                            </label>
+                            <select
+                              id={`primaryTopic-${it.id}`}
+                              name={`primaryTopic-${it.id}`}
+                              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
+                              value={primaryTopicDraft[it.id] ?? ""}
+                              onChange={(e) =>
+                                setPrimaryTopicDraft((m) => ({
+                                  ...m,
+                                  [it.id]: e.target.value
+                                }))
+                              }
+                            >
+                              <option value="">None</option>
+                              {PRIMARY_TOPIC_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
+                            <div>Used by fan/discovery feeds. Optional.</div>
+                            <button
+                              type="button"
+                              className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                              disabled={!!busyAction[it.id]}
+                              onClick={async () => {
+                                const raw = (primaryTopicDraft[it.id] || "").trim();
+                                try {
+                                  setBusyAction((m) => ({ ...m, [it.id]: true }));
+                                  setPrimaryTopicMsg((m) => ({ ...m, [it.id]: "" }));
+                                  await api(`/content/${it.id}/primary-topic`, "PATCH", { primaryTopic: raw || null });
+                                  await refreshCurrentView();
+                                  setPrimaryTopicMsg((m) => ({ ...m, [it.id]: "Saved." }));
+                                } catch (e: any) {
+                                  setPrimaryTopicMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save primary topic." }));
+                                } finally {
+                                  setBusyAction((m) => ({ ...m, [it.id]: false }));
+                                }
+                              }}
+                            >
+                              Save topic
+                            </button>
+                            {primaryTopicMsg[it.id] ? <div className="text-xs text-amber-300">{primaryTopicMsg[it.id]}</div> : null}
                           </div>
                         </div>
                       </div>

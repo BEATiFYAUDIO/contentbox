@@ -250,6 +250,7 @@ model ContentItem {
   previousVersionContentId String?
   title         String
   description   String?
+  primaryTopic  String?
   type          ContentType
   status        ContentStatus @default(draft)
   featureOnProfile Boolean    @default(false)
