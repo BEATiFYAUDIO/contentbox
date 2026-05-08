@@ -459,7 +459,6 @@ export default function ContentLibraryPage({
 
   const [title, setTitle] = React.useState("");
   const [type, setType] = React.useState<ContentType>("song");
-  const [primaryTopic, setPrimaryTopic] = React.useState<PrimaryTopic | "">("");
   const [creating, setCreating] = React.useState(false);
 
   const [upload, setUpload] = React.useState<UploadState>({ status: "idle" });
@@ -1849,8 +1848,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const created = await api<ContentItem>("/content", "POST", {
         title: nextTitle,
-        type,
-        primaryTopic: primaryTopic || null
+        type
       });
       if (import.meta.env.DEV) {
         console.debug("createContent:response", { createdId: created?.id, status: created?.status, type: created?.type });
@@ -1858,7 +1856,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
       setTitle("");
       setType("song");
-      setPrimaryTopic("");
 
       // Ensure we land back in the active authored/content view after creating
       setShowClearance(false);
@@ -2441,25 +2438,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               </select>
             </div>
 
-            <div>
-              <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-primary-topic">
-                Primary topic
-              </label>
-              <select
-                id="content-primary-topic"
-                name="primaryTopic"
-                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-                value={primaryTopic}
-                onChange={(e) => setPrimaryTopic(e.target.value as PrimaryTopic | "")}
-              >
-                <option value="">None</option>
-                {PRIMARY_TOPIC_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
