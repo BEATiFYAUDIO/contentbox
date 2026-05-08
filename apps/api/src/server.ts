@@ -30387,6 +30387,27 @@ async function handleBuyPage(req: any, reply: any) {
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
     const hidePay = already || !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
     const receiptView = deriveReceiptViewState(entitlement, owned);
+    const tipSupportBlock = (!isPaid && effectivePaymentState === "tip")
+      ? (sellerLightningAddress
+          ? "<div class=\\"rail\\" style=\\"margin-top:12px;\\">" +
+              "<div style=\\"font-weight:600;\\">Tip the creator</div>" +
+              (sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator: " + sellerDisplayName + "</div>" : "") +
+              (suggestedTipSats ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Suggested tip: " + suggestedTipSats + " sats</div>" : "") +
+              "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Pay to:</div>" +
+              "<div class=\\"code\\">" + sellerLightningAddress + "</div>" +
+              "<div style=\\"margin-top:8px;\\">" +
+                "<img alt=\\"Lightning QR\\" src=\\"" + qrUrl("lightning:" + sellerLightningAddress) + "\\" />" +
+              "</div>" +
+              "<div style=\\"margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;\\">" +
+                "<button class=\\"copy\\" data-copy=\\"" + sellerLightningAddress + "\\">Copy</button>" +
+              "</div>" +
+              "<div class=\\"muted\\" style=\\"margin-top:8px;font-size:12px;\\">Tips support the creator.</div>" +
+            "</div>"
+          : "<div class=\\"rail\\" style=\\"margin-top:12px; opacity:0.7;\\">" +
+              "<div style=\\"font-weight:600;\\">Tip the creator</div>" +
+              "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator hasn't enabled tips yet.</div>" +
+            "</div>")
+      : "";
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
@@ -30435,6 +30456,7 @@ async function handleBuyPage(req: any, reply: any) {
         \` : \`
           <div id="status" class="muted" style="margin-top:8px;\${hidePay ? "display:none;" : ""}"></div>
         \`}
+        \${tipSupportBlock}
         <div id="rails" class="rails-wrap"></div>
         \${isPaid ? \`</div>\` : ""}
         <div id="downloads" style="margin-top:16px;"></div>
