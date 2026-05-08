@@ -30367,7 +30367,12 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderOffer(offer, entitlement, owned){
     const already = Boolean(owned);
-    const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
+    const effectivePaymentState = entitlement?.paymentState || offer?.paymentAccessProof?.paymentState || null;
+    const price = effectivePaymentState === "tip"
+      ? "Tips enabled"
+      : offer.priceSats == null
+        ? "Free"
+        : offer.priceSats + " sats";
     const isPaid = Number(offer.priceSats || 0) > 0;
     const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
     const hasBuyer = Boolean(buyer && buyer.id);
