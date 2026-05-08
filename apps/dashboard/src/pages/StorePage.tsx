@@ -217,6 +217,44 @@ type ProviderExecutionChainReadiness = {
   message: string;
 };
 
+type ProviderContentPublishStatus = {
+  provider: {
+    configured: boolean;
+    providerNodeId: string | null;
+    providerUrl: string | null;
+  };
+  counts: {
+    total: number;
+    eligible: number;
+    current: number;
+    needsRepublish: number;
+    skipped: number;
+  };
+  items: Array<{
+    contentId: string;
+    title: string | null;
+    type: string | null;
+    status: string;
+    storefrontStatus: string | null;
+    priceSats: string | null;
+    manifestSha256: string | null;
+    latestProviderNodeId: string | null;
+    latestPublishedAt: string | null;
+    latestReceiptId: string | null;
+    eligible: boolean;
+    needsRepublish: boolean;
+    reason:
+      | "current"
+      | "provider_not_configured"
+      | "missing_publish_proof"
+      | "provider_changed"
+      | "manifest_changed"
+      | "draft"
+      | "deleted"
+      | "missing_manifest";
+  }>;
+};
+
 type ProviderExecuteTestResult = {
   configured: {
     providerUrl: string | null;
@@ -466,6 +504,11 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [providerOperationErr, setProviderOperationErr] = React.useState<string | null>(null);
   const [providerPermitReadiness, setProviderPermitReadiness] = React.useState<ProviderExecutionPermitReadiness | null>(null);
   const [providerExecutionReadiness, setProviderExecutionReadiness] = React.useState<ProviderExecutionChainReadiness | null>(null);
+  const [providerContentStatus, setProviderContentStatus] = React.useState<ProviderContentPublishStatus | null>(null);
+  const [providerContentLoading, setProviderContentLoading] = React.useState(false);
+  const [providerContentRepublishing, setProviderContentRepublishing] = React.useState(false);
+  const [providerContentMsg, setProviderContentMsg] = React.useState<string | null>(null);
+  const [providerContentErr, setProviderContentErr] = React.useState<string | null>(null);
   const [providerExecuteTest, setProviderExecuteTest] = React.useState<ProviderExecuteTestResult | null>(null);
   const [providerExecuteTestLoading, setProviderExecuteTestLoading] = React.useState(false);
   const [providerExecuteTestErr, setProviderExecuteTestErr] = React.useState<string | null>(null);
@@ -650,6 +693,45 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       .catch(() => {
         if (!active) return;
         setProviderExecutionReadiness(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function refreshProviderContentStatus() {
+    setProviderContentLoading(true);
+    try {
+      const status = await api<ProviderContentPublishStatus>("/api/network/provider/content-publish-status", "GET");
+      setProviderContentStatus(status || null);
+      setProviderContentErr(null);
+      return status || null;
+    } catch (e: any) {
+      setProviderContentStatus(null);
+      setProviderContentErr(e?.message || "Unable to check provider content publish status.");
+      return null;
+    } finally {
+      setProviderContentLoading(false);
+    }
+  }
+
+  React.useEffect(() => {
+    let active = true;
+    setProviderContentLoading(true);
+    api<ProviderContentPublishStatus>("/api/network/provider/content-publish-status", "GET")
+      .then((d) => {
+        if (!active) return;
+        setProviderContentStatus(d || null);
+        setProviderContentErr(null);
+      })
+      .catch((e: any) => {
+        if (!active) return;
+        setProviderContentStatus(null);
+        setProviderContentErr(e?.message || "Unable to check provider content publish status.");
+      })
+      .finally(() => {
+        if (!active) return;
+        setProviderContentLoading(false);
       });
     return () => {
       active = false;
@@ -1308,6 +1390,39 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     }
   }
 
+  async function republishProviderContent() {
+    const status = providerContentStatus || (await refreshProviderContentStatus());
+    const targets = (status?.items || []).filter((item) => item.needsRepublish);
+    if (!targets.length) {
+      setProviderContentMsg("All eligible content is current for this provider.");
+      setProviderContentErr(null);
+      return;
+    }
+    setProviderContentRepublishing(true);
+    setProviderContentMsg(`Re-publishing 0/${targets.length} items...`);
+    setProviderContentErr(null);
+    let completed = 0;
+    const failures: string[] = [];
+    for (const item of targets) {
+      try {
+        await api<any>(`/api/content/${encodeURIComponent(item.contentId)}/publish`, "POST", {});
+        completed += 1;
+        setProviderContentMsg(`Re-publishing ${completed}/${targets.length} items...`);
+      } catch (e: any) {
+        failures.push(`${item.title || item.contentId}: ${e?.message || "Publish failed."}`);
+      }
+    }
+    await refreshProviderContentStatus();
+    await refreshPublishReadiness();
+    if (failures.length) {
+      setProviderContentErr(failures.slice(0, 3).join(" | "));
+      setProviderContentMsg(`${completed}/${targets.length} items re-published.`);
+    } else {
+      setProviderContentMsg(`${completed} item${completed === 1 ? "" : "s"} re-published to the current provider.`);
+    }
+    setProviderContentRepublishing(false);
+  }
+
   function onOpen() {
     setMsg(null);
     const buyUrl = extractBuyUrl(input);
@@ -1641,6 +1756,10 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             ? "Provider configured. Request provider execution permit to continue."
             : networkSummary?.paymentCapability?.providerBackedCommerceMessage ||
               "Provider configured, but delegated invoice support is not active yet.";
+  const providerContentNeedsRepublish = providerContentStatus?.counts?.needsRepublish || 0;
+  const providerContentEligible = providerContentStatus?.counts?.eligible || 0;
+  const providerContentCurrent = providerContentStatus?.counts?.current || 0;
+  const providerContentRowsNeedingRepublish = (providerContentStatus?.items || []).filter((item) => item.needsRepublish);
   React.useEffect(() => {
     if (guidedSetupBusy || !userNetworkStatus) return;
     if (userNetworkStatus.status === "ready") {
@@ -2269,6 +2388,58 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               </button>
               {profileActivationMsg ? <div className="text-xs text-emerald-300">{profileActivationMsg}</div> : null}
               {profileActivationErr ? <div className="text-xs text-rose-300">{profileActivationErr}</div> : null}
+            </div>
+          </div>
+          <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Content Sync</div>
+            <div className="mt-1 text-xs text-neutral-200">
+              {providerContentLoading
+                ? "Checking content publish state..."
+                : providerContentNeedsRepublish > 0
+                  ? `${providerContentNeedsRepublish} item${providerContentNeedsRepublish === 1 ? "" : "s"} need re-publish for the current provider.`
+                  : providerContentStatus
+                    ? "Eligible content is current for this provider."
+                    : "Content publish state is unavailable."}
+            </div>
+            <div className="mt-2 grid gap-1 text-xs text-neutral-400">
+              <div>Provider node: <span className="text-neutral-300 break-all">{providerContentStatus?.provider?.providerNodeId || providerConfig?.providerNodeId || "—"}</span></div>
+              <div>Eligible content: <span className="text-neutral-300">{providerContentEligible}</span></div>
+              <div>Current content: <span className="text-neutral-300">{providerContentCurrent}</span></div>
+              <div>Needs sync: <span className={providerContentNeedsRepublish > 0 ? "text-amber-300" : "text-neutral-300"}>{providerContentNeedsRepublish}</span></div>
+            </div>
+            {providerContentRowsNeedingRepublish.length ? (
+              <div className="mt-2 max-h-28 overflow-auto rounded-lg border border-neutral-800 bg-neutral-950/80 px-2 py-1">
+                {providerContentRowsNeedingRepublish.slice(0, 6).map((item) => (
+                  <div key={item.contentId} className="flex items-center justify-between gap-3 py-1 text-xs">
+                    <span className="truncate text-neutral-300">{item.title || item.contentId}</span>
+                    <span className="shrink-0 text-neutral-500">{item.reason.replace(/_/g, " ")}</span>
+                  </div>
+                ))}
+                {providerContentRowsNeedingRepublish.length > 6 ? (
+                  <div className="py-1 text-xs text-neutral-500">
+                    +{providerContentRowsNeedingRepublish.length - 6} more
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => void refreshProviderContentStatus()}
+                disabled={providerContentLoading || providerContentRepublishing}
+                className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
+              >
+                {providerContentLoading ? "Checking..." : "Check content"}
+              </button>
+              <button
+                onClick={republishProviderContent}
+                disabled={providerConfigLocked || providerContentRepublishing || providerContentNeedsRepublish < 1}
+                className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
+                title={providerContentNeedsRepublish < 1 ? "No provider-stale content found." : undefined}
+              >
+                {providerContentRepublishing ? "Re-publishing..." : "Re-publish content to provider"}
+              </button>
+              {providerContentMsg ? <div className="text-xs text-emerald-300">{providerContentMsg}</div> : null}
+              {providerContentErr ? <div className="text-xs text-rose-300">{providerContentErr}</div> : null}
             </div>
           </div>
           <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">

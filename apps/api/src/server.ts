@@ -17902,6 +17902,11 @@ app.get("/api/receipts/:id", { preHandler: requireAuth }, async (req: any, reply
   return reply.send(receipt);
 });
 
+app.get("/api/network/provider/content-publish-status", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  return reply.send(await buildProviderContentPublishStatus(userId));
+});
+
 app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const providerTarget = getNetworkProviderConfig();
   const verification = getProviderVerificationStatus(providerTarget);
@@ -31245,6 +31250,105 @@ function findLatestContentPublishProofForContent(contentId: string, manifestHash
     };
   }
   return null;
+}
+
+type ProviderContentPublishStatusItem = {
+  contentId: string;
+  title: string | null;
+  type: string | null;
+  status: string;
+  storefrontStatus: string | null;
+  priceSats: string | null;
+  manifestSha256: string | null;
+  latestProviderNodeId: string | null;
+  latestPublishedAt: string | null;
+  latestReceiptId: string | null;
+  eligible: boolean;
+  needsRepublish: boolean;
+  reason:
+    | "current"
+    | "provider_not_configured"
+    | "missing_publish_proof"
+    | "provider_changed"
+    | "manifest_changed"
+    | "draft"
+    | "deleted"
+    | "missing_manifest";
+};
+
+async function buildProviderContentPublishStatus(userId: string) {
+  const providerCfg = getNetworkProviderConfig();
+  const configuredProviderNodeId = asString(providerCfg.providerNodeId || "").trim() || null;
+  const items = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: {
+      id: true,
+      title: true,
+      type: true,
+      status: true,
+      storefrontStatus: true,
+      priceSats: true,
+      deletedAt: true,
+      manifest: { select: { sha256: true } }
+    },
+    orderBy: { createdAt: "asc" }
+  });
+
+  const rows: ProviderContentPublishStatusItem[] = items.map((content: any) => {
+    const manifestSha256 = asString(content?.manifest?.sha256 || "").trim() || null;
+    const proof = manifestSha256 ? findLatestContentPublishProofForContent(content.id, manifestSha256) : null;
+    const latestProviderNodeId = asString(proof?.providerNodeId || "").trim() || null;
+    const latestManifestHash = asString(proof?.manifestHash || "").trim() || null;
+    const deleted = Boolean(content.deletedAt);
+    const published = String(content.status || "").trim() === "published";
+    const eligible = !deleted && published && Boolean(manifestSha256);
+    let reason: ProviderContentPublishStatusItem["reason"] = "current";
+    if (deleted) reason = "deleted";
+    else if (!published) reason = "draft";
+    else if (!manifestSha256) reason = "missing_manifest";
+    else if (!configuredProviderNodeId) reason = "provider_not_configured";
+    else if (!proof) reason = "missing_publish_proof";
+    else if (latestProviderNodeId !== configuredProviderNodeId) reason = "provider_changed";
+    else if (latestManifestHash && latestManifestHash !== manifestSha256) reason = "manifest_changed";
+
+    return {
+      contentId: content.id,
+      title: content.title || null,
+      type: content.type || null,
+      status: String(content.status || ""),
+      storefrontStatus: content.storefrontStatus || null,
+      priceSats: content.priceSats != null ? BigInt(content.priceSats as any).toString() : null,
+      manifestSha256,
+      latestProviderNodeId,
+      latestPublishedAt: proof?.publishedAt || null,
+      latestReceiptId: proof?.receiptId || null,
+      eligible,
+      needsRepublish: Boolean(eligible && configuredProviderNodeId && reason !== "current"),
+      reason
+    };
+  });
+
+  const counts = rows.reduce(
+    (acc, row) => {
+      acc.total += 1;
+      if (row.eligible) acc.eligible += 1;
+      if (row.needsRepublish) acc.needsRepublish += 1;
+      if (!row.eligible) acc.skipped += 1;
+      if (row.reason === "current") acc.current += 1;
+      return acc;
+    },
+    { total: 0, eligible: 0, current: 0, needsRepublish: 0, skipped: 0 }
+  );
+
+  return {
+    provider: {
+      configured: Boolean(configuredProviderNodeId && providerCfg.providerUrl),
+      providerNodeId: configuredProviderNodeId,
+      providerUrl: providerCfg.providerUrl || null
+    },
+    counts,
+    items: rows
+  };
 }
 
 type PublicPaymentAccessProof = {
