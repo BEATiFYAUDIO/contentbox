@@ -92,6 +92,16 @@ type LightningBalancesSnapshot = {
   };
 };
 
+type FanNetworkTestResult = {
+  ok: boolean;
+  checkedAt: string;
+  endpoint: string;
+  itemCount: number;
+  jsonValid: boolean;
+  reachable: boolean;
+  message: string;
+};
+
 const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
 const STORAGE_PUBLIC_BUY_ORIGIN = "contentbox.publicBuyOrigin";
 const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
@@ -215,6 +225,10 @@ export default function ConfigPage({
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadinessSnapshot | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
   const [lightningWalletError, setLightningWalletError] = useState<string | null>(null);
+  const [fanTestBusy, setFanTestBusy] = useState(false);
+  const [fanTestResult, setFanTestResult] = useState<FanNetworkTestResult | null>(null);
+  const [fanTestError, setFanTestError] = useState<string | null>(null);
+  const [fanSubmitMsg, setFanSubmitMsg] = useState<string | null>(null);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -222,6 +236,113 @@ export default function ConfigPage({
   const apiMismatch = Boolean(uiHost && apiHost && uiHost !== apiHost);
   const overrideMismatch = Boolean(overrideActive && overrideHost && overrideHost !== apiHost);
   const canForceLocal = Boolean(uiHost && (uiHost === "localhost" || uiHost === "127.0.0.1"));
+  const detectedPublicOrigin = normalizeOrigin(
+    String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || publicOrigin || "").trim()
+  );
+  const fanDiscoverableEndpoint = detectedPublicOrigin
+    ? `${detectedPublicOrigin}/public/discoverable-content`
+    : "";
+
+  async function testFanNetworkReadiness() {
+    setFanTestBusy(true);
+    setFanTestError(null);
+    setFanSubmitMsg(null);
+    try {
+      if (!detectedPublicOrigin) {
+        setFanTestResult(null);
+        setFanTestError("No public origin detected.");
+        return;
+      }
+      const endpoint = `${detectedPublicOrigin}/public/discoverable-content?limit=5`;
+      const checkedAt = new Date().toISOString();
+      const res = await fetch(endpoint, {
+        method: "GET",
+        headers: { Accept: "application/json" }
+      });
+      const text = await res.text();
+      let parsed: any = null;
+      let jsonValid = false;
+      try {
+        parsed = text ? JSON.parse(text) : null;
+        jsonValid = true;
+      } catch {
+        jsonValid = false;
+      }
+      const itemCount = Array.isArray(parsed?.items) ? parsed.items.length : 0;
+      const ok = Boolean(res.ok && jsonValid);
+      setFanTestResult({
+        ok,
+        checkedAt,
+        endpoint,
+        itemCount,
+        jsonValid,
+        reachable: Boolean(res.ok),
+        message: ok
+          ? `Ready${itemCount > 0 ? ` (${itemCount} item${itemCount === 1 ? "" : "s"})` : " (0 items found)"}`
+          : `Failed (HTTP ${res.status})`
+      });
+      if (!ok) {
+        setFanTestError(
+          !res.ok
+            ? `Endpoint returned HTTP ${res.status}.`
+            : "Endpoint response is not valid JSON."
+        );
+      }
+    } catch (e: any) {
+      setFanTestResult({
+        ok: false,
+        checkedAt: new Date().toISOString(),
+        endpoint: fanDiscoverableEndpoint,
+        itemCount: 0,
+        jsonValid: false,
+        reachable: false,
+        message: "Unreachable"
+      });
+      setFanTestError(e?.message || String(e));
+    } finally {
+      setFanTestBusy(false);
+    }
+  }
+
+  async function submitToFanNetwork() {
+    setFanSubmitMsg(null);
+    const checkedAt = fanTestResult?.checkedAt || new Date().toISOString();
+    const itemCount = fanTestResult?.itemCount ?? 0;
+    const testSummary = fanTestResult
+      ? fanTestResult.ok
+        ? "pass"
+        : "fail"
+      : "not_run";
+    const issueTitle = `Join Fan Network: ${detectedPublicOrigin || "unknown-origin"}`;
+    const issueBody = [
+      `publicOrigin: ${detectedPublicOrigin || "unknown"}`,
+      `discoverableEndpoint: ${fanDiscoverableEndpoint || "unknown"}`,
+      `testResult: ${testSummary}`,
+      `itemCount: ${itemCount}`,
+      "",
+      "operatorNote:",
+      "<add any notes here>",
+      "",
+      `timestamp: ${checkedAt}`
+    ].join("\n");
+    const baseIssueUrl = "https://github.com/BEATiFYAUDIO/certifyd-fan-pwa/issues/new";
+    const fullUrl = `${baseIssueUrl}?title=${encodeURIComponent(issueTitle)}&body=${encodeURIComponent(issueBody)}`;
+
+    if (fullUrl.length <= 1900) {
+      window.open(fullUrl, "_blank", "noopener,noreferrer");
+      setFanSubmitMsg("Opened prefilled GitHub issue.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(issueBody);
+      const fallbackUrl = `${baseIssueUrl}?title=${encodeURIComponent(issueTitle)}`;
+      window.open(fallbackUrl, "_blank", "noopener,noreferrer");
+      setFanSubmitMsg("Issue template copied to clipboard. Paste into the GitHub issue.");
+    } catch {
+      setFanSubmitMsg("Could not copy issue template. Please copy details manually.");
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -1744,6 +1865,55 @@ export default function ConfigPage({
         )}
       </div>
 
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Join Fan Network</div>
+        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+          This does not move your content or payments. It only submits your public Creator node for discovery in Certifyd Fan.
+        </div>
+        <div style={{ display: "grid", gap: 6, fontSize: 13, marginBottom: 10 }}>
+          <div><b>Public origin</b>: {detectedPublicOrigin || "—"}</div>
+          <div><b>Discoverable endpoint</b>: {fanDiscoverableEndpoint || "—"}</div>
+          <div><b>Checklist</b>:</div>
+          <div style={{ paddingLeft: 10 }}>
+            <div>{detectedPublicOrigin ? "✅" : "❌"} Public origin detected</div>
+            <div>{fanTestResult?.reachable ? "✅" : fanTestResult ? "❌" : "•"} Discoverable endpoint reachable</div>
+            <div>{fanTestResult?.jsonValid ? "✅" : fanTestResult ? "❌" : "•"} Endpoint returns valid JSON</div>
+            <div>
+              {fanTestResult
+                ? fanTestResult.itemCount > 0
+                  ? "✅"
+                  : "⚠️"
+                : "•"}{" "}
+              At least one discoverable item ({fanTestResult ? fanTestResult.itemCount : 0})
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+          <button
+            onClick={testFanNetworkReadiness}
+            style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+            disabled={fanTestBusy}
+          >
+            {fanTestBusy ? "Testing…" : "Test fan network readiness"}
+          </button>
+          <button
+            onClick={submitToFanNetwork}
+            style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+            disabled={!detectedPublicOrigin}
+          >
+            Submit to Fan Network
+          </button>
+        </div>
+        {fanTestResult ? (
+          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>
+            Last test: {fanTestResult.ok ? "PASS" : "FAIL"} • {fanTestResult.itemCount} item(s) •{" "}
+            {new Date(fanTestResult.checkedAt).toLocaleString()}
+          </div>
+        ) : null}
+        {fanTestError ? <div style={{ color: "#ffb4b4", marginBottom: 6 }}>{fanTestError}</div> : null}
+        {fanSubmitMsg ? <div style={{ color: "#c4f5d5" }}>{fanSubmitMsg}</div> : null}
+      </div>
+
       {showAdvancedInfraPanels ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -1952,4 +2122,3 @@ export default function ConfigPage({
     </div>
   );
 }
-
