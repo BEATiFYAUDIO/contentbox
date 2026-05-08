@@ -133,6 +133,7 @@ When reporting install issues, include:
 ## Canonical docs
 
 - Setup: `docs/QUICKSTART.md`
+- Local SQLite upgrades (legacy nodes): `docs/UPGRADING_LOCAL_NODE.md`
 - Mode and routing env alignment: `docs/dev-env-alignment.md`
 - Public origin rules: `docs/public-origin.md`
 - Smoke testing: `docs/TESTING.md`, `docs/qa-smoke.md`
