@@ -1846,13 +1846,59 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               { key: "local-node-id", label: "Local Node ID", value: nodeIdentity?.nodeId || "—" },
               { key: "local-pubkey", label: "Local Public Key", value: nodeIdentity?.nodePubKey || "—" },
               { key: "profile-id", label: "Profile ID", value: nodeIdentity?.profileId || "—" },
-              { key: "provider-url", label: "Provider URL", value: providerConfig?.providerUrl || "—" },
-              { key: "provider-node-id", label: "Configured Provider Node ID", value: providerConfig?.providerNodeId || "—" },
-              { key: "provider-pubkey", label: "Configured Provider Public Key", value: providerConfig?.providerPubKey || "—" },
-              { key: "observed-provider-node-id", label: "Observed Provider Node ID", value: providerVerification?.observed?.nodeId || "—" },
-              { key: "observed-provider-pubkey", label: "Observed Provider Public Key", value: providerVerification?.observed?.nodePubKey || "—" }
+              { key: "canonical-public-url", label: "Canonical Public URL", value: summaryCanonicalCommerceUrl || "—" },
+              { key: "local-node-endpoint", label: "Local Node Endpoint URL", value: summaryLocalNodeEndpoint || "—" },
+              {
+                key: "provider-url",
+                label: "Provider URL",
+                value:
+                  providerConfig?.providerUrl ||
+                  (participationModeFromSummary === "sovereign_node" || participationModeFromSummary === "sovereign_creator"
+                    ? "Not required in Sovereign mode"
+                    : "—"),
+              },
+              {
+                key: "provider-node-id",
+                label: "Configured Provider Node ID",
+                value:
+                  providerConfig?.providerNodeId ||
+                  (participationModeFromSummary === "sovereign_node" || participationModeFromSummary === "sovereign_creator"
+                    ? "Not required in Sovereign mode"
+                    : "—"),
+              },
+              {
+                key: "provider-pubkey",
+                label: "Configured Provider Public Key",
+                value:
+                  providerConfig?.providerPubKey ||
+                  (participationModeFromSummary === "sovereign_node" || participationModeFromSummary === "sovereign_creator"
+                    ? "Not required in Sovereign mode"
+                    : "—"),
+              },
+              {
+                key: "observed-provider-node-id",
+                label: "Observed Provider Node ID",
+                value:
+                  providerVerification?.observed?.nodeId ||
+                  (participationModeFromSummary === "sovereign_node" || participationModeFromSummary === "sovereign_creator"
+                    ? "Not required in Sovereign mode"
+                    : "—"),
+              },
+              {
+                key: "observed-provider-pubkey",
+                label: "Observed Provider Public Key",
+                value:
+                  providerVerification?.observed?.nodePubKey ||
+                  (participationModeFromSummary === "sovereign_node" || participationModeFromSummary === "sovereign_creator"
+                    ? "Not required in Sovereign mode"
+                    : "—"),
+              }
             ].map((row) => {
-              const copyable = Boolean(row.value && row.value !== "—");
+              const copyable = Boolean(
+                row.value &&
+                  row.value !== "—" &&
+                  row.value !== "Not required in Sovereign mode"
+              );
               return (
                 <div
                   key={row.key}
