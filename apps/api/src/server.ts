@@ -25368,6 +25368,7 @@ app.post("/public/interactions", handlePublicAudienceInteraction);
 
 // Public storefront content metadata (no auth)
 async function handlePublicContent(req: any, reply: any) {
+  applyFanReadCors(reply);
   const contentId = asString((req.params as any).id);
   const gated = await getPublicOfferGate(contentId, req, reply);
   if (!gated.content) {
@@ -25456,7 +25457,14 @@ function resolveCreatorHandleForDiscoverable(owner: { displayName?: string | nul
   return email || null;
 }
 
+function applyFanReadCors(reply: any) {
+  reply.header("Access-Control-Allow-Origin", "*");
+  reply.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+  reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
 async function handlePublicDiscoverableContent(req: any, reply: any) {
+  applyFanReadCors(reply);
   const query = (req.query ?? {}) as { topic?: string; limit?: string | number; cursor?: string };
   const topic = normalizePrimaryTopic(query.topic);
   if (query.topic != null && !topic) {
@@ -31204,6 +31212,7 @@ function resolvePaymentMethodFromIntent(intent: any): string | null {
 }
 
 async function handlePublicOffer(req: any, reply: any) {
+  applyFanReadCors(reply);
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
