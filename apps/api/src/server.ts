@@ -379,6 +379,28 @@ function normalizeKnownPublicRouteToOrigin(origin: unknown, rawUrl: unknown): st
   return "";
 }
 
+function resolveCreatorAvatarUrlForPublicPayload(rawAvatar: unknown, publicOrigin: unknown): string | null {
+  const raw = asString(rawAvatar || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("/")) {
+    const absolute = buildPublicUrlFromOrigin(publicOrigin, raw);
+    return absolute || null;
+  }
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      if (parsed.pathname.startsWith("/public/avatars/")) {
+        const normalized = buildPublicUrlFromOrigin(publicOrigin, `${parsed.pathname}${parsed.search || ""}`);
+        return normalized || raw;
+      }
+      return raw;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 type RangeRequest =
   | { kind: "ok"; start: number; end: number }
   | { kind: "invalid" }
@@ -25394,6 +25416,11 @@ async function handlePublicContent(req: any, reply: any) {
   // Audience signal: public content-open surface (best-effort, deduped, non-blocking).
   void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   const commerceAuthority = await resolveCommerceAuthorityForUser(content.ownerUserId);
+  const owner = await prisma.user.findUnique({
+    where: { id: content.ownerUserId },
+    select: { displayName: true, email: true, avatarUrl: true }
+  });
+  const canonicalOrigin = resolveCanonicalPublicOrigin(req);
 
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
@@ -25411,6 +25438,8 @@ async function handlePublicContent(req: any, reply: any) {
     title: content.title,
     description: content.description || null,
     primaryTopic: normalizePrimaryTopic((content as any).primaryTopic),
+    creatorHandle: resolveCreatorHandleForDiscoverable(owner || null),
+    creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload(owner?.avatarUrl || null, canonicalOrigin),
     storefrontStatus: content.storefrontStatus,
     tombstoned: gated.tombstoned,
     owned: gated.entitled,
@@ -25500,7 +25529,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         : {})
     } as any,
     include: {
-      owner: { select: { displayName: true, email: true } }
+      owner: { select: { displayName: true, email: true, avatarUrl: true } }
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit + 1
@@ -25532,6 +25561,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         title: row.title,
         description: row.description || null,
         creatorHandle: resolveCreatorHandleForDiscoverable((row as any).owner || null),
+        creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload((row as any).owner?.avatarUrl || null, canonicalOrigin),
         contentType: row.type,
         primaryTopic: normalizePrimaryTopic((row as any).primaryTopic),
         coverUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(row.id)}/cover`),
@@ -31357,12 +31387,20 @@ async function handlePublicOffer(req: any, reply: any) {
     }
   }
 
+  const owner = await prisma.user.findUnique({
+    where: { id: content.ownerUserId },
+    select: { displayName: true, email: true, avatarUrl: true }
+  });
+  const canonicalOrigin = resolveCanonicalPublicOrigin(req);
+
   return reply.send({
     contentId: content.id,
     title: content.title,
     description: content.description || null,
     type: content.type,
     primaryTopic: normalizePrimaryTopic((content as any).primaryTopic),
+    creatorHandle: resolveCreatorHandleForDiscoverable(owner || null),
+    creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload(owner?.avatarUrl || null, canonicalOrigin),
     manifestSha256: manifest?.sha256 || null,
     priceSats: priceSats != null ? priceSats.toString() : null,
     accessMode,
