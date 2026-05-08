@@ -828,17 +828,32 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       if (!isCurrent()) return;
       setParticipationByContentId(nextParticipationByContentId);
       setItems(mergedList);
-      const next: Record<string, string> = {};
-      const nextDelivery: Record<string, string> = {};
-      const nextPrimaryTopic: Record<string, string> = {};
-      for (const it of list) {
-        if (it.priceSats !== undefined && it.priceSats !== null) next[it.id] = String(it.priceSats);
-        if (it.deliveryMode) nextDelivery[it.id] = String(it.deliveryMode);
-        if (it.primaryTopic) nextPrimaryTopic[it.id] = String(it.primaryTopic);
-      }
-      setPriceDraft(next);
-      setDeliveryDraft(nextDelivery);
-      setPrimaryTopicDraft(nextPrimaryTopic);
+      setPriceDraft((prev) => {
+        const next: Record<string, string> = { ...prev };
+        for (const it of list) {
+          if (next[it.id] !== undefined) continue;
+          if (it.priceSats !== undefined && it.priceSats !== null) {
+            next[it.id] = String(it.priceSats);
+          }
+        }
+        return next;
+      });
+      setDeliveryDraft((prev) => {
+        const next: Record<string, string> = { ...prev };
+        for (const it of list) {
+          if (next[it.id] !== undefined) continue;
+          if (it.deliveryMode) next[it.id] = String(it.deliveryMode);
+        }
+        return next;
+      });
+      setPrimaryTopicDraft((prev) => {
+        const next: Record<string, string> = { ...prev };
+        for (const it of list) {
+          if (next[it.id] !== undefined) continue;
+          if (it.primaryTopic) next[it.id] = String(it.primaryTopic);
+        }
+        return next;
+      });
       if (pendingOpenContentId && list.find((d) => d.id === pendingOpenContentId)) {
         setExpanded((m) => ({ ...m, [pendingOpenContentId]: true }));
         setPendingOpenContentId(null);
