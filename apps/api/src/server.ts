@@ -2776,6 +2776,11 @@ function resolveDelegatedBlueprintDestination(input: {
   const participantRef = asString(input.participantRef || "").trim();
   const splitParticipantId = asString(input.splitParticipantId || "").trim();
   const participantUserId = asString(input.participantUserId || "").trim();
+  const snapshot = getLockedSnapshotBySplitParticipantId(splitParticipantId);
+  const snapshotRemoteIdentity = parseRemoteIdentityRef(snapshot?.identityRef || null);
+  const snapshotRemoteUserId = asString(snapshotRemoteIdentity.userId || "").trim();
+  const snapshotEmail = normalizeEmail(asString(snapshot?.participantEmail || "").trim()) || null;
+  const refUserId = parseUserIdFromParticipantRef(participantRef);
   const match =
     blueprint.participants.find((row) => participantRef && String(row.participantRef || "").trim() === participantRef) ||
     blueprint.participants.find(
@@ -2784,6 +2789,17 @@ function resolveDelegatedBlueprintDestination(input: {
     blueprint.participants.find(
       (row) => participantUserId && String(row.participantUserId || "").trim() === participantUserId
     ) ||
+    blueprint.participants.find(
+      (row) => refUserId && String(row.participantUserId || "").trim() === refUserId
+    ) ||
+    blueprint.participants.find(
+      (row) => snapshotRemoteUserId && String(row.participantUserId || "").trim() === snapshotRemoteUserId
+    ) ||
+    blueprint.participants.find((row) => {
+      if (!snapshotEmail) return false;
+      const rowEmail = normalizeEmail(asString(row.participantEmail || "").trim());
+      return Boolean(rowEmail && rowEmail === snapshotEmail);
+    }) ||
     null;
   if (!match) return null;
   const destinationType = parseParticipantDestinationType(match.destinationType || null);
@@ -2903,6 +2919,7 @@ async function resolveParticipantPayoutReadinessForAllocation(
   allocationCtx?: {
     splitParticipantId?: string | null;
     participantRef?: string | null;
+    allocationSource?: string | null;
   }
 ): Promise<ParticipantPayoutReadiness> {
   const policy = normalizeProviderFallbackPolicy((intent as any).payoutPolicy, (intent as any).allowProviderFallback);
@@ -3031,6 +3048,24 @@ async function resolveParticipantPayoutReadinessForAllocation(
       destinationSource: delegatedBlueprintDestination.destinationSource,
       destinationFingerprint: delegatedBlueprintDestination.destinationFingerprint,
       destinationResolvedAt: delegatedBlueprintDestination.destinationResolvedAt,
+      blockedReason: null
+    };
+  }
+
+  const splitParticipantPinned =
+    Boolean(asString(allocationCtx?.splitParticipantId || "").trim()) ||
+    String(allocationCtx?.allocationSource || "").trim().toLowerCase() === "split_locked" ||
+    String(allocationCtx?.participantRef || "").trim().startsWith("split_participant:");
+
+  if (splitParticipantPinned) {
+    return {
+      status: "pending",
+      readinessReason: "SPLIT_PARTICIPANT_DESTINATION_MISSING",
+      destinationType: null,
+      destinationSummary: null,
+      destinationSource: null,
+      destinationFingerprint: null,
+      destinationResolvedAt: null,
       blockedReason: null
     };
   }
@@ -4407,7 +4442,8 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
         allocation.participantUserId || null,
         {
           splitParticipantId: allocation.splitParticipantId || null,
-          participantRef: executionParticipantRef
+          participantRef: executionParticipantRef,
+          allocationSource: (allocation as any)?.allocationSource || null
         }
       );
       const canBypassInviteGate =
