@@ -418,10 +418,18 @@ const discoveryStorefrontUpdateRate = new Map<
   string,
   { windowStartedAt: number; count: number; lastToggleAt: number; throttledUntil: number }
 >();
+const discoveryOriginUpdateRate = new Map<
+  string,
+  { windowStartedAt: number; count: number; lastUpdateAt: number; throttledUntil: number }
+>();
 const DISCOVERY_STORE_TOGGLE_WINDOW_MS = 60 * 1000;
 const DISCOVERY_STORE_TOGGLE_MAX_PER_WINDOW = 6;
 const DISCOVERY_STORE_TOGGLE_MIN_INTERVAL_MS = 5000;
 const DISCOVERY_STORE_TOGGLE_THROTTLE_MS = 60 * 1000;
+const DISCOVERY_ORIGIN_UPDATE_WINDOW_MS = 2 * 60 * 1000;
+const DISCOVERY_ORIGIN_UPDATE_MAX_PER_WINDOW = 6;
+const DISCOVERY_ORIGIN_UPDATE_MIN_INTERVAL_MS = 5000;
+const DISCOVERY_ORIGIN_UPDATE_THROTTLE_MS = 2 * 60 * 1000;
 
 function enforceDiscoveryStorefrontRateLimit(input: {
   userId: string;
@@ -456,6 +464,54 @@ function enforceDiscoveryStorefrontRateLimit(input: {
   }
   discoveryStorefrontUpdateRate.set(key, row);
   return { ok: true };
+}
+
+function enforceDiscoveryOriginUpdateRateLimit(input: {
+  userId: string;
+}): { ok: true } | { ok: false; retryAfterMs: number } {
+  const key = `discovery-origin:${input.userId}`;
+  const now = Date.now();
+  const row = discoveryOriginUpdateRate.get(key) || {
+    windowStartedAt: now,
+    count: 0,
+    lastUpdateAt: 0,
+    throttledUntil: 0
+  };
+  if (row.throttledUntil > now) {
+    return { ok: false, retryAfterMs: Math.max(1000, row.throttledUntil - now) };
+  }
+  if (row.lastUpdateAt > 0 && now - row.lastUpdateAt < DISCOVERY_ORIGIN_UPDATE_MIN_INTERVAL_MS) {
+    row.throttledUntil = now + DISCOVERY_ORIGIN_UPDATE_THROTTLE_MS;
+    discoveryOriginUpdateRate.set(key, row);
+    return { ok: false, retryAfterMs: DISCOVERY_ORIGIN_UPDATE_THROTTLE_MS };
+  }
+  if (now - row.windowStartedAt > DISCOVERY_ORIGIN_UPDATE_WINDOW_MS) {
+    row.windowStartedAt = now;
+    row.count = 0;
+  }
+  row.count += 1;
+  row.lastUpdateAt = now;
+  if (row.count > DISCOVERY_ORIGIN_UPDATE_MAX_PER_WINDOW) {
+    row.throttledUntil = now + DISCOVERY_ORIGIN_UPDATE_THROTTLE_MS;
+    discoveryOriginUpdateRate.set(key, row);
+    return { ok: false, retryAfterMs: DISCOVERY_ORIGIN_UPDATE_THROTTLE_MS };
+  }
+  discoveryOriginUpdateRate.set(key, row);
+  return { ok: true };
+}
+
+function isPrivateLanHostForDiscovery(hostname: string): boolean {
+  const host = String(hostname || "").trim().toLowerCase();
+  if (!host) return true;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+  if (host.endsWith(".local")) return true;
+  if (host.startsWith("10.") || host.startsWith("192.168.")) return true;
+  const m = host.match(/^172\.(\d+)\./);
+  if (m) {
+    const n = Number(m[1]);
+    if (n >= 16 && n <= 31) return true;
+  }
+  return false;
 }
 
 async function probeDiscoveryOriginHealth(origin: string): Promise<{ ok: boolean; detail?: string | null }> {
@@ -23659,6 +23715,85 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth] }, async (r
   });
 
   return reply.send({ ok: true, storefrontStatus: updated.storefrontStatus });
+});
+
+app.patch("/api/discovery/public-origin", { preHandler: [requireAuth] }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const rateCheck = enforceDiscoveryOriginUpdateRateLimit({ userId });
+  if (!rateCheck.ok) {
+    return reply.code(429).send({
+      code: "DISCOVERY_ORIGIN_UPDATE_RATE_LIMITED",
+      message: "Discovery updates are temporarily limited. Please wait and try again.",
+      retryAfterMs: rateCheck.retryAfterMs
+    });
+  }
+
+  const body = (req.body ?? {}) as { publicOrigin?: string };
+  const incomingRaw = asString(body.publicOrigin || "").trim();
+  if (!incomingRaw) return badRequest(reply, "publicOrigin is required");
+
+  const normalized = normalizePublicOriginBase(incomingRaw);
+  if (!normalized) {
+    return badRequest(reply, "publicOrigin must be a valid https URL");
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    return badRequest(reply, "publicOrigin must be a valid https URL");
+  }
+  if (parsed.protocol !== "https:") {
+    return badRequest(reply, "publicOrigin must be https");
+  }
+  if (isPrivateLanHostForDiscovery(parsed.hostname)) {
+    return reply.code(409).send({
+      code: "DISCOVERY_PUBLIC_ORIGIN_NOT_SHAREABLE",
+      message: "publicOrigin must be a shareable public host (not localhost/private LAN)."
+    });
+  }
+
+  setPublicOriginConfig({
+    publicOrigin: normalized,
+    publicBuyOrigin: normalized
+  });
+
+  discoveryOriginHealthCache.delete(normalized);
+  const healthEntry = await getDiscoveryOriginHealthCached(normalized);
+  const health = healthEntry.state === "cooldown" ? "failed" : healthEntry.state;
+  const healthOk = health === "healthy";
+  const originTrust = deriveDiscoveryOriginTrust(normalized);
+  const discoveryStatus: DiscoveryStatus = healthOk ? "live" : "relegated";
+
+  const owned = await prisma.contentItem.findMany({
+    where: {
+      ownerUserId: userId,
+      deletedAt: null,
+      status: "published" as any,
+      storefrontStatus: "LISTED" as any
+    },
+    select: { id: true, priceSats: true }
+  });
+  const listedCount = owned.length;
+  const freeListedCount = owned.filter((row) => {
+    const price = row.priceSats == null ? 0n : BigInt(row.priceSats);
+    return price <= 0n;
+  }).length;
+
+  return reply.send({
+    ok: true,
+    publicOrigin: normalized,
+    originTrust,
+    originHealth: health,
+    discoveryStatus,
+    healthCheckedAt: new Date(healthEntry.checkedAt).toISOString(),
+    healthDetail: healthEntry.detail || null,
+    listedCount,
+    freeListedCount,
+    message: healthOk
+      ? "Discovery reconnected. Free listed content can appear live."
+      : "Discovery offline: public link unreachable."
+  });
 });
 
 app.get("/api/content/:id/derivative-authorization", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {

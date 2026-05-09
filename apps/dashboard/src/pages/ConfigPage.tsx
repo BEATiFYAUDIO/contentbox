@@ -229,6 +229,9 @@ export default function ConfigPage({
   const [fanTestResult, setFanTestResult] = useState<FanNetworkTestResult | null>(null);
   const [fanTestError, setFanTestError] = useState<string | null>(null);
   const [fanSubmitMsg, setFanSubmitMsg] = useState<string | null>(null);
+  const [reconnectOriginInput, setReconnectOriginInput] = useState<string>("");
+  const [reconnectBusy, setReconnectBusy] = useState(false);
+  const [reconnectMsg, setReconnectMsg] = useState<string | null>(null);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -242,6 +245,8 @@ export default function ConfigPage({
   const fanDiscoverableEndpoint = detectedPublicOrigin
     ? `${detectedPublicOrigin}/public/discoverable-content`
     : "";
+  const showReconnectDiscovery =
+    (modeInfo?.nodeMode === "basic") || !detectedPublicOrigin || isTemporaryPublicOrigin(detectedPublicOrigin);
 
   async function testFanNetworkReadiness() {
     setFanTestBusy(true);
@@ -341,6 +346,40 @@ export default function ConfigPage({
       setFanSubmitMsg("Issue template copied to clipboard. Paste into the GitHub issue.");
     } catch {
       setFanSubmitMsg("Could not copy issue template. Please copy details manually.");
+    }
+  }
+
+  async function reconnectDiscoveryOrigin() {
+    if (!token) return;
+    setReconnectMsg(null);
+    const normalized = normalizeOrigin(reconnectOriginInput);
+    if (!normalized) {
+      setReconnectMsg("Enter a valid public https URL.");
+      return;
+    }
+    setReconnectBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/api/discovery/public-origin`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ publicOrigin: normalized })
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message = String(json?.message || json?.error || "Failed to reconnect Discovery.");
+        setReconnectMsg(message);
+        return;
+      }
+      setReconnectMsg(String(json?.message || "Discovery origin updated."));
+      await refreshPublicStatus({ silent: true, discover: true });
+      setReconnectOriginInput(String(json?.publicOrigin || normalized));
+    } catch (e: any) {
+      setReconnectMsg(e?.message || "Failed to reconnect Discovery.");
+    } finally {
+      setReconnectBusy(false);
     }
   }
 
@@ -1133,6 +1172,12 @@ export default function ConfigPage({
     }
   }, [namedTunnelOnline, publicStatus?.canonicalOrigin, publicStatus?.publicOrigin, tunnelDomain]);
 
+  useEffect(() => {
+    if (reconnectOriginInput.trim()) return;
+    if (!detectedPublicOrigin) return;
+    setReconnectOriginInput(detectedPublicOrigin);
+  }, [detectedPublicOrigin, reconnectOriginInput]);
+
   return (
     <div style={{ padding: 16, maxWidth: 980 }}>
       <h2 style={{ margin: "8px 0 12px" }}>Config</h2>
@@ -1888,6 +1933,34 @@ export default function ConfigPage({
             </div>
           </div>
         </div>
+        {showReconnectDiscovery ? (
+          <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+              Temporary tunnel changed? Paste your new public link to reconnect Discovery.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+              <input
+                value={reconnectOriginInput}
+                onChange={(e) => setReconnectOriginInput(e.target.value)}
+                placeholder="https://your-name.trycloudflare.com"
+                className={inputClass}
+                style={{ minWidth: 320, flex: 1 }}
+              />
+              <button
+                onClick={reconnectDiscoveryOrigin}
+                style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+                disabled={reconnectBusy || !reconnectOriginInput.trim()}
+              >
+                {reconnectBusy ? "Reconnecting…" : "Reconnect Discovery"}
+              </button>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+              Free content can appear on Discovery while your public link is online. Temporary tunnels may go offline and
+              temporarily remove your content from Discovery.
+            </div>
+            {reconnectMsg ? <div style={{ marginTop: 8, color: reconnectMsg.includes("updated") ? "#c4f5d5" : "#ffb4b4" }}>{reconnectMsg}</div> : null}
+          </div>
+        ) : null}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
           <button
             onClick={testFanNetworkReadiness}
