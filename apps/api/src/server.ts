@@ -358,6 +358,27 @@ function resolvePublicAccessMode(input: {
   return "unlocked";
 }
 
+type DiscoveryStatus = "live" | "relegated" | "unpublished" | "unavailable";
+
+function resolveDiscoveryAppOrigin(): string {
+  const configured = normalizePublicOriginBase(process.env.DISCOVERY_APP_ORIGIN || "");
+  if (configured) return configured;
+  return "https://fan.certifyd.me";
+}
+
+function buildDiscoveryUrl(input: {
+  discoveryOrigin: string;
+  contentId: string;
+  publicOrigin: string | null;
+}): string | null {
+  const discoveryOrigin = normalizePublicOriginBase(input.discoveryOrigin);
+  const contentId = asString(input.contentId || "").trim();
+  if (!discoveryOrigin || !contentId) return null;
+  const base = `${discoveryOrigin}/watch/${encodeURIComponent(contentId)}`;
+  if (!input.publicOrigin) return base;
+  return `${base}?origin=${encodeURIComponent(input.publicOrigin)}`;
+}
+
 function normalizeKnownPublicRouteToOrigin(origin: unknown, rawUrl: unknown): string {
   const raw = asString(rawUrl || "").trim();
   if (!raw) return "";
@@ -22201,6 +22222,9 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     if (!contentId) continue;
     manifestByContentId.set(contentId, (row as any)?.json || null);
   }
+  const discoveryAppOrigin = resolveDiscoveryAppOrigin();
+  const publicStatusForDiscovery = getPublicStatusCached();
+  const nodeModeForDiscovery = getNodeModeStatus().nodeMode;
 
   return unique.map((i: any) => {
     const description = asString(i?.description || "").trim() || null;
@@ -22212,6 +22236,9 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const preferredPublicOrigin = explicitRemoteOrigin || localOrigin;
     const canonicalPublicOrigin = preferredPublicOrigin ? preferredPublicOrigin.replace(/\/+$/, "") : null;
     const contentId = asString(i?.id || "").trim();
+    const contentStatus = asString(i?.status || "").trim().toLowerCase();
+    const storefrontStatus = asString(i?.storefrontStatus || "").trim().toUpperCase();
+    const priceSatsNumeric = i?.priceSats != null ? Number(i.priceSats) : 0;
     const manifestJson = manifestByContentId.get(contentId) || null;
     const manifestCoverAsset = getCoverAssetFromManifest(manifestJson);
     const manifestArtworkAsset = getManifestAssetPath(manifestJson, ["artwork", "poster", "thumbnail", "thumb"]);
@@ -22334,6 +22361,28 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       if (emittedUpstreamRoyaltyWork) fallback.add("derivatives");
       return Array.from(fallback);
     })();
+    const isPublishedForDiscovery = contentStatus === "published";
+    const isListedForDiscovery = storefrontStatus === "LISTED";
+    const isLocalDiscoveryRow = !explicitRemoteOrigin;
+    const paidRequiresCommerce = nodeModeForDiscovery === "basic" && priceSatsNumeric > 0;
+    const localOriginReachable =
+      Boolean(canonicalPublicOrigin) && publicStatusForDiscovery.status === "online";
+    const discoveryStatus: DiscoveryStatus = (() => {
+      if (!isPublishedForDiscovery || !isListedForDiscovery) return "unpublished";
+      if (paidRequiresCommerce) return "relegated";
+      if (isLocalDiscoveryRow && !localOriginReachable) {
+        return canonicalPublicOrigin ? "relegated" : "unavailable";
+      }
+      return "live";
+    })();
+    const isDiscoveryPublished = discoveryStatus === "live";
+    const discoveryUrl = isDiscoveryPublished
+      ? buildDiscoveryUrl({
+          discoveryOrigin: discoveryAppOrigin,
+          contentId,
+          publicOrigin: canonicalPublicOrigin
+        })
+      : null;
     const { description: _description, ...rest } = i;
     return {
       ...rest,
@@ -22374,7 +22423,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       isDerivativeWork: emittedDerivativeWork,
       isActionableShadow: emittedActionableShadow,
       libraryScopes: emittedLibraryScopes,
-      isParentOfDerivative: parentOfDerivativeIds.has(contentId)
+      isParentOfDerivative: parentOfDerivativeIds.has(contentId),
+      isDiscoveryPublished,
+      discoveryStatus,
+      discoveryUrl
     };
   });
 });
@@ -23401,6 +23453,18 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requireFeat
           return reply.code(409).send({
             code: "DERIVATIVE_NOT_APPROVED",
             message: "Derivative must be approved by upstream owners before being listed publicly."
+          });
+        }
+      }
+    }
+    if (status === "LISTED") {
+      const priceSats = content.priceSats != null ? Number(content.priceSats) : 0;
+      if (priceSats > 0) {
+        const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
+        if (!authority.authority) {
+          return reply.code(409).send({
+            code: "DISCOVERY_PAID_REQUIRES_COMMERCE",
+            message: "Paid discovery listing requires commerce-capable posture. List as free or enable commerce."
           });
         }
       }
@@ -25547,6 +25611,8 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 50) : 24;
   const cursor = decodeDiscoverableCursor(query.cursor);
   const canonicalOrigin = resolveCanonicalPublicOrigin(req);
+  const publicStatus = getPublicStatusCached();
+  const nodeMode = getNodeModeStatus().nodeMode;
 
   let buyerId: string | null = null;
   try {
@@ -25554,6 +25620,13 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
     buyerId = asString(session?.buyer?.id || "").trim() || null;
   } catch {
     buyerId = null;
+  }
+
+  // Discovery rails should never emit stale/broken cards when local origin posture
+  // is offline. Local publication state remains unchanged; only discovery visibility
+  // is suppressed until reachability is restored.
+  if (!canonicalOrigin || publicStatus.status !== "online") {
+    return reply.send({ items: [], cursor: null });
   }
 
   const rows = await prisma.contentItem.findMany({
@@ -25591,6 +25664,13 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
 
   const items = pageRows
     .filter((row) => isSaleable(row as any) && !isArchivedPublished(row as any))
+    .filter((row) => {
+      const priceSats = row.priceSats != null ? Number(row.priceSats) : 0;
+      // Basic posture can publish free discovery content, but paid discovery
+      // content requires commerce-capable posture.
+      if (nodeMode === "basic" && priceSats > 0) return false;
+      return true;
+    })
     .map((row) => {
       const owned = Boolean(entitlementByContentId.get(row.id));
       const accessMode = resolvePublicAccessMode({
@@ -25613,7 +25693,13 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         offerUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/buy/content/${encodeURIComponent(row.id)}/offer`),
         priceSats,
         accessMode,
-        publicOrigin: canonicalOrigin
+        publicOrigin: canonicalOrigin,
+        discoveryStatus: "live" as DiscoveryStatus,
+        discoveryUrl: buildDiscoveryUrl({
+          discoveryOrigin: resolveDiscoveryAppOrigin(),
+          contentId: row.id,
+          publicOrigin: canonicalOrigin
+        })
       };
     });
 

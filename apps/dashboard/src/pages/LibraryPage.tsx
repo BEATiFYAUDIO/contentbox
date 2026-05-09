@@ -65,6 +65,9 @@ type LibraryItem = {
   isDerivativeWork?: boolean;
   isActionableShadow?: boolean;
   isParentOfDerivative?: boolean;
+  isDiscoveryPublished?: boolean;
+  discoveryStatus?: "live" | "relegated" | "unpublished" | "unavailable" | null;
+  discoveryUrl?: string | null;
   manifest?: { sha256?: string | null } | null;
   featureOnProfile?: boolean;
   _count?: { files: number };
@@ -1907,6 +1910,9 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 sm:p-5">
         <div className="text-lg font-semibold">Library</div>
         <div className="text-sm text-neutral-400 mt-1">Private creator library: owned, purchased, and preview-access content.</div>
+        <div className="text-xs text-neutral-500 mt-2">
+          Free content can appear on Discovery while your public link is online. If your tunnel goes offline, content is temporarily removed from Discovery until you reconnect.
+        </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <div className="text-xs text-neutral-500">Type</div>
           {LIBRARY_TYPE_FILTERS.map((value) => {
@@ -2263,6 +2269,16 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             ? "border-amber-600/40 bg-amber-500/10 text-amber-200"
                             : "border-neutral-700 bg-neutral-700/20 text-neutral-300";
                     const showRightsBadge = derivativeParentOnly || rightsSummary.ownershipKind === "derivative";
+                    const discoveryStatus = String(it.discoveryStatus || "").trim().toLowerCase();
+                    const discoveryStatusLabel =
+                      discoveryStatus === "live"
+                        ? "Live on Discovery"
+                        : discoveryStatus === "relegated"
+                          ? "Relegated: node unreachable"
+                          : discoveryStatus === "unavailable"
+                            ? "Discovery offline"
+                            : null;
+                    const hasDiscoveryBadge = Boolean(it.isDiscoveryPublished) && discoveryStatus === "live";
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
                         {hasMediaCard ? (
@@ -2329,6 +2345,11 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${access.cls}`}>
                               {access.label}
                             </span>
+                            {hasDiscoveryBadge ? (
+                              <span className="inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium border-amber-600/40 bg-amber-500/10 text-amber-200">
+                                Live on Discovery
+                              </span>
+                            ) : null}
                             {showRightsBadge ? (
                               <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${rightsBadgeClass}`}>
                                 {rightsBadgeLabel}
@@ -2373,6 +2394,11 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                           <div className="mt-1 text-[11px] text-neutral-300">
                             Readiness: {readinessLabel(rightsSummary.commercialReadiness)}
                           </div>
+                          {discoveryStatusLabel ? (
+                            <div className="mt-1 text-[11px] text-neutral-400">
+                              Discovery: {discoveryStatusLabel}
+                            </div>
+                          ) : null}
                           {rightsSummary.ownershipKind === "derivative" && rightsSummary.derivative ? (
                             <div className="mt-1 space-y-1 text-[11px] text-neutral-400">
                               <div>
@@ -2420,6 +2446,16 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             </button>
                           </div>
                           <div className="mt-2 flex items-center gap-2">
+                            {hasDiscoveryBadge && it.discoveryUrl ? (
+                              <a
+                                className="text-xs rounded border border-amber-700/40 px-2 py-1 text-amber-200 hover:bg-amber-500/10"
+                                href={it.discoveryUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                View on Discovery →
+                              </a>
+                            ) : null}
                             {hasPublicPage ? (
                               <a
                                 className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
