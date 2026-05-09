@@ -448,6 +448,7 @@ export default function ContentLibraryPage({
   const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
   const derivativesAllowed = capabilities?.useDerivatives ?? canDerivatives;
   const discoveryPublishAllowed = capabilities?.publishToDiscovery ?? capabilities?.publicShare ?? canPublicShare;
+  const discoveryFreeListingAllowed = isBasicTier || discoveryPublishAllowed;
   const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
@@ -1775,7 +1776,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   }
 
   async function updateStorefrontStatus(contentId: string, storefrontStatus: "DISABLED" | "UNLISTED" | "LISTED") {
-    if (storefrontStatus !== "DISABLED" && !discoveryPublishAllowed) {
+    if (storefrontStatus !== "DISABLED" && !discoveryFreeListingAllowed) {
       setError(discoveryPublishReason);
       return;
     }
@@ -1790,6 +1791,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     } catch (e: any) {
       if (e?.message && String(e.message).includes("public_discovery_not_allowed")) {
         setError(discoveryPublishReason);
+      } else if (e?.message && String(e.message).includes("DISCOVERY_PAID_REQUIRES_COMMERCE")) {
+        setError("Paid Discovery listing requires commerce-capable posture. Keep this content free (0 sats) to list in Discovery as Basic.");
       } else {
         setError(e?.message || "Failed to update network visibility");
       }
@@ -3244,12 +3247,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       ) : null}
                       <div>
                         Public discovery:{" "}
-                        <span className={discoveryPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
-                          {discoveryPublishAllowed ? "Ready" : "Not ready"}
+                        <span className={discoveryFreeListingAllowed ? "text-emerald-300" : "text-amber-300"}>
+                          {discoveryFreeListingAllowed ? "Ready (free content)" : "Not ready"}
                         </span>
                       </div>
-                      {!discoveryPublishAllowed ? (
+                      {!discoveryFreeListingAllowed ? (
                         <div className="text-amber-300">{discoveryPublishReason}</div>
+                      ) : isBasicTier ? (
+                        <div className="text-neutral-500">Basic mode: free content can be discoverable; paid listings require commerce.</div>
                       ) : null}
                     </div>
                   </div>

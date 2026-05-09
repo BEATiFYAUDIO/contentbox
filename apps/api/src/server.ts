@@ -23407,7 +23407,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
 });
 
 // Update storefront status (owner only)
-app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requireFeature("public_discovery")] }, async (req: any, reply) => {
+app.patch("/api/content/:id/storefront", { preHandler: [requireAuth] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const body = (req.body ?? {}) as { storefrontStatus?: string };
@@ -23425,6 +23425,29 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requireFeat
   }
 
   if (status !== "DISABLED") {
+    const ctx = getCapabilityContextCached();
+    const modeStatus = getNodeModeStatus();
+    const isBasicMode = modeStatus.nodeMode === "basic";
+    const priceSats = content.priceSats != null ? Number(content.priceSats) : 0;
+    if (!isBasicMode && !canPublicShare(ctx)) {
+      const reason = capabilityReason(ctx, "public_share", {
+        namedMode: ctx.publicStatus.mode,
+        namedStatus: ctx.publicStatus.status
+      });
+      return reply.code(403).send({
+        error: "FEATURE_LOCKED",
+        code: "public_discovery_not_allowed",
+        reason,
+        feature: "public_discovery",
+        message: reason
+      });
+    }
+    if (isBasicMode && status === "LISTED" && priceSats > 0) {
+      return reply.code(409).send({
+        code: "DISCOVERY_PAID_REQUIRES_COMMERCE",
+        message: "Basic creators can list free content on Discovery. Paid discovery listing requires commerce-capable posture."
+      });
+    }
     if (!content.manifestId || content.status !== "published") {
       return reply.code(409).send({ code: "CONTENT_NOT_PUBLISHED", message: "Content must be published before listing." });
     }
