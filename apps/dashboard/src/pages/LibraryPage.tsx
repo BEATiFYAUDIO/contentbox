@@ -68,6 +68,8 @@ type LibraryItem = {
   isDiscoveryPublished?: boolean;
   discoveryStatus?: "live" | "relegated" | "unpublished" | "unavailable" | null;
   discoveryUrl?: string | null;
+  originTrust?: "stable" | "ephemeral" | "provider" | null;
+  originHealth?: "healthy" | "failed" | "cooldown" | "unknown" | null;
   manifest?: { sha256?: string | null } | null;
   featureOnProfile?: boolean;
   _count?: { files: number };
@@ -2274,7 +2276,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       discoveryStatus === "live"
                         ? "Live on Discovery"
                         : discoveryStatus === "relegated"
-                          ? "Relegated: node unreachable"
+                          ? "Discovery offline: public link unreachable."
                           : discoveryStatus === "unavailable"
                             ? "Discovery offline"
                             : null;
@@ -2397,6 +2399,11 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                           {discoveryStatusLabel ? (
                             <div className="mt-1 text-[11px] text-neutral-400">
                               Discovery: {discoveryStatusLabel}
+                            </div>
+                          ) : null}
+                          {String(it.originTrust || "").toLowerCase() === "ephemeral" ? (
+                            <div className="mt-1 text-[11px] text-neutral-500">
+                              Free content can appear on Discovery while your public link is online. Temporary tunnels may go offline and temporarily remove your content from Discovery.
                             </div>
                           ) : null}
                           {rightsSummary.ownershipKind === "derivative" && rightsSummary.derivative ? (

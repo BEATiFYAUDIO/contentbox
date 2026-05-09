@@ -359,6 +359,8 @@ function resolvePublicAccessMode(input: {
 }
 
 type DiscoveryStatus = "live" | "relegated" | "unpublished" | "unavailable";
+type DiscoveryOriginTrust = "stable" | "ephemeral" | "provider";
+type DiscoveryOriginHealth = "healthy" | "failed" | "cooldown" | "unknown";
 
 function resolveDiscoveryAppOrigin(): string {
   const configured = normalizePublicOriginBase(process.env.DISCOVERY_APP_ORIGIN || "");
@@ -377,6 +379,145 @@ function buildDiscoveryUrl(input: {
   const base = `${discoveryOrigin}/watch/${encodeURIComponent(contentId)}`;
   if (!input.publicOrigin) return base;
   return `${base}?origin=${encodeURIComponent(input.publicOrigin)}`;
+}
+
+function isEphemeralPublicOrigin(origin: string): boolean {
+  const normalized = normalizePublicOriginBase(origin);
+  if (!normalized) return false;
+  try {
+    const host = new URL(normalized).hostname.toLowerCase();
+    return host.endsWith(".trycloudflare.com");
+  } catch {
+    return false;
+  }
+}
+
+function deriveDiscoveryOriginTrust(origin: string | null): DiscoveryOriginTrust {
+  if (!origin) return "ephemeral";
+  if (isEphemeralPublicOrigin(origin)) return "ephemeral";
+  const cfg = getNetworkProviderConfig();
+  const providerUrl = normalizePublicOriginBase(asString(cfg?.providerUrl || "").trim());
+  if (providerUrl && normalizePublicOriginBase(origin) === providerUrl) return "provider";
+  return "stable";
+}
+
+type DiscoveryOriginHealthCacheEntry = {
+  state: DiscoveryOriginHealth;
+  checkedAt: number;
+  expiresAt: number;
+  failureCount: number;
+  cooldownUntil: number;
+  detail?: string | null;
+};
+const discoveryOriginHealthCache = new Map<string, DiscoveryOriginHealthCacheEntry>();
+const DISCOVERY_HEALTH_OK_TTL_MS = 5 * 60 * 1000;
+const DISCOVERY_HEALTH_FAIL_BASE_TTL_MS = 10 * 60 * 1000;
+const DISCOVERY_HEALTH_MAX_COOLDOWN_MS = 60 * 60 * 1000;
+const DISCOVERY_HEALTH_TIMEOUT_MS = 2500;
+const discoveryStorefrontUpdateRate = new Map<
+  string,
+  { windowStartedAt: number; count: number; lastToggleAt: number; throttledUntil: number }
+>();
+const DISCOVERY_STORE_TOGGLE_WINDOW_MS = 60 * 1000;
+const DISCOVERY_STORE_TOGGLE_MAX_PER_WINDOW = 6;
+const DISCOVERY_STORE_TOGGLE_MIN_INTERVAL_MS = 5000;
+const DISCOVERY_STORE_TOGGLE_THROTTLE_MS = 60 * 1000;
+
+function enforceDiscoveryStorefrontRateLimit(input: {
+  userId: string;
+  contentId: string;
+}): { ok: true } | { ok: false; retryAfterMs: number } {
+  const key = `${input.userId}:${input.contentId}`;
+  const now = Date.now();
+  const row = discoveryStorefrontUpdateRate.get(key) || {
+    windowStartedAt: now,
+    count: 0,
+    lastToggleAt: 0,
+    throttledUntil: 0
+  };
+  if (row.throttledUntil > now) {
+    return { ok: false, retryAfterMs: Math.max(1000, row.throttledUntil - now) };
+  }
+  if (row.lastToggleAt > 0 && now - row.lastToggleAt < DISCOVERY_STORE_TOGGLE_MIN_INTERVAL_MS) {
+    row.throttledUntil = now + DISCOVERY_STORE_TOGGLE_THROTTLE_MS;
+    discoveryStorefrontUpdateRate.set(key, row);
+    return { ok: false, retryAfterMs: DISCOVERY_STORE_TOGGLE_THROTTLE_MS };
+  }
+  if (now - row.windowStartedAt > DISCOVERY_STORE_TOGGLE_WINDOW_MS) {
+    row.windowStartedAt = now;
+    row.count = 0;
+  }
+  row.count += 1;
+  row.lastToggleAt = now;
+  if (row.count > DISCOVERY_STORE_TOGGLE_MAX_PER_WINDOW) {
+    row.throttledUntil = now + DISCOVERY_STORE_TOGGLE_THROTTLE_MS;
+    discoveryStorefrontUpdateRate.set(key, row);
+    return { ok: false, retryAfterMs: DISCOVERY_STORE_TOGGLE_THROTTLE_MS };
+  }
+  discoveryStorefrontUpdateRate.set(key, row);
+  return { ok: true };
+}
+
+async function probeDiscoveryOriginHealth(origin: string): Promise<{ ok: boolean; detail?: string | null }> {
+  const normalized = normalizePublicOriginBase(origin);
+  if (!normalized) return { ok: false, detail: "origin_missing" };
+  const localOrigin = normalizePublicOriginBase(getPublicStatusCached().canonicalOrigin || "");
+  if (localOrigin && localOrigin === normalized) {
+    const state = getPublicStatusCached();
+    return { ok: state.status === "online", detail: state.status === "online" ? "online" : "offline" };
+  }
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), DISCOVERY_HEALTH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${normalized}/public/ping`, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: ctl.signal
+    } as any);
+    return { ok: res.ok, detail: `http_${res.status}` };
+  } catch (e: any) {
+    return { ok: false, detail: asString(e?.name || e?.message || "fetch_error") || "fetch_error" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getDiscoveryOriginHealthCached(origin: string): Promise<DiscoveryOriginHealthCacheEntry> {
+  const normalized = normalizePublicOriginBase(origin);
+  const now = Date.now();
+  const existing = discoveryOriginHealthCache.get(normalized);
+  if (existing) {
+    if (existing.cooldownUntil > now) {
+      return { ...existing, state: "cooldown" };
+    }
+    if (existing.expiresAt > now) return existing;
+  }
+  const probe = await probeDiscoveryOriginHealth(normalized);
+  if (probe.ok) {
+    const next: DiscoveryOriginHealthCacheEntry = {
+      state: "healthy",
+      checkedAt: now,
+      expiresAt: now + DISCOVERY_HEALTH_OK_TTL_MS,
+      failureCount: 0,
+      cooldownUntil: 0,
+      detail: probe.detail || null
+    };
+    discoveryOriginHealthCache.set(normalized, next);
+    return next;
+  }
+  const failureCount = (existing?.failureCount || 0) + 1;
+  const backoffMultiplier = Math.max(1, Math.pow(2, Math.max(0, failureCount - 1)));
+  const cooldownMs = Math.min(DISCOVERY_HEALTH_MAX_COOLDOWN_MS, DISCOVERY_HEALTH_FAIL_BASE_TTL_MS * backoffMultiplier);
+  const next: DiscoveryOriginHealthCacheEntry = {
+    state: "failed",
+    checkedAt: now,
+    expiresAt: now + DISCOVERY_HEALTH_FAIL_BASE_TTL_MS,
+    failureCount,
+    cooldownUntil: now + cooldownMs,
+    detail: probe.detail || null
+  };
+  discoveryOriginHealthCache.set(normalized, next);
+  return next;
 }
 
 function normalizeKnownPublicRouteToOrigin(origin: unknown, rawUrl: unknown): string {
@@ -22226,7 +22367,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const publicStatusForDiscovery = getPublicStatusCached();
   const nodeModeForDiscovery = getNodeModeStatus().nodeMode;
 
-  return unique.map((i: any) => {
+  return await Promise.all(unique.map(async (i: any) => {
     const description = asString(i?.description || "").trim() || null;
     const explicitRemoteOrigin = pickShareableOrigin(
       asString(i?.remoteOrigin || "").trim() || null,
@@ -22367,9 +22508,17 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const paidRequiresCommerce = nodeModeForDiscovery === "basic" && priceSatsNumeric > 0;
     const localOriginReachable =
       Boolean(canonicalPublicOrigin) && publicStatusForDiscovery.status === "online";
+    const originTrust = deriveDiscoveryOriginTrust(canonicalPublicOrigin || null);
+    const originHealthRecord = canonicalPublicOrigin
+      ? await getDiscoveryOriginHealthCached(canonicalPublicOrigin)
+      : null;
+    const originHealth = originHealthRecord?.state || "unknown";
     const discoveryStatus: DiscoveryStatus = (() => {
       if (!isPublishedForDiscovery || !isListedForDiscovery) return "unpublished";
       if (paidRequiresCommerce) return "relegated";
+      if (originHealth !== "healthy") {
+        return originHealth === "cooldown" ? "relegated" : "unavailable";
+      }
       if (isLocalDiscoveryRow && !localOriginReachable) {
         return canonicalPublicOrigin ? "relegated" : "unavailable";
       }
@@ -22426,9 +22575,11 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       isParentOfDerivative: parentOfDerivativeIds.has(contentId),
       isDiscoveryPublished,
       discoveryStatus,
-      discoveryUrl
+      discoveryUrl,
+      originTrust,
+      originHealth
     };
-  });
+  }));
 });
 
 // Create a new content item and initialize a repo for it
@@ -23411,6 +23562,14 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth] }, async (r
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const body = (req.body ?? {}) as { storefrontStatus?: string };
+  const rateCheck = enforceDiscoveryStorefrontRateLimit({ userId, contentId });
+  if (!rateCheck.ok) {
+    return reply.code(429).send({
+      code: "DISCOVERY_UPDATE_RATE_LIMITED",
+      message: "Discovery updates are temporarily limited. Please wait and try again.",
+      retryAfterMs: rateCheck.retryAfterMs
+    });
+  }
 
   const status = asString(body.storefrontStatus || "").trim().toUpperCase();
   if (!["DISABLED", "UNLISTED", "LISTED"].includes(status)) {
@@ -25636,6 +25795,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
   const canonicalOrigin = resolveCanonicalPublicOrigin(req);
   const publicStatus = getPublicStatusCached();
   const nodeMode = getNodeModeStatus().nodeMode;
+  const originTrust = deriveDiscoveryOriginTrust(canonicalOrigin || null);
 
   let buyerId: string | null = null;
   try {
@@ -25649,6 +25809,10 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
   // is offline. Local publication state remains unchanged; only discovery visibility
   // is suppressed until reachability is restored.
   if (!canonicalOrigin || publicStatus.status !== "online") {
+    return reply.send({ items: [], cursor: null });
+  }
+  const originHealth = await getDiscoveryOriginHealthCached(canonicalOrigin);
+  if (originHealth.state !== "healthy") {
     return reply.send({ items: [], cursor: null });
   }
 
@@ -25722,9 +25886,22 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
           discoveryOrigin: resolveDiscoveryAppOrigin(),
           contentId: row.id,
           publicOrigin: canonicalOrigin
-        })
+        }),
+        originTrust,
+        originHealth: originHealth.state
       };
     });
+  const trustWeight = (v: DiscoveryOriginTrust): number => {
+    if (v === "provider") return 3;
+    if (v === "stable") return 2;
+    return 1;
+  };
+  items.sort((a: any, b: any) => {
+    const tw = trustWeight(asString(a?.originTrust || "ephemeral") as DiscoveryOriginTrust);
+    const uw = trustWeight(asString(b?.originTrust || "ephemeral") as DiscoveryOriginTrust);
+    if (tw !== uw) return uw - tw;
+    return 0;
+  });
 
   const next = rows.length > limit ? rows[limit - 1] : null;
   const nextCursor = next ? encodeDiscoverableCursor({ createdAt: next.createdAt, id: next.id }) : null;
