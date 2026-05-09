@@ -25866,18 +25866,23 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         owned
       });
       const priceSats = row.priceSats != null ? Number(row.priceSats) : 0;
+      const creatorHandle = resolveCreatorHandleForDiscoverable((row as any).owner || null);
+      const coverUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(row.id)}/cover`);
+      const previewUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(row.id)}/preview-file`);
+      const buyUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/buy/${encodeURIComponent(row.id)}`);
+      const offerUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/buy/content/${encodeURIComponent(row.id)}/offer`);
       return {
         contentId: row.id,
         title: row.title,
         description: row.description || null,
-        creatorHandle: resolveCreatorHandleForDiscoverable((row as any).owner || null),
+        creatorHandle,
         creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload((row as any).owner?.avatarUrl || null, canonicalOrigin),
         contentType: row.type,
         primaryTopic: normalizePrimaryTopic((row as any).primaryTopic),
-        coverUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(row.id)}/cover`),
-        previewUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(row.id)}/preview-file`),
-        buyUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/buy/${encodeURIComponent(row.id)}`),
-        offerUrl: buildPublicUrlFromOrigin(canonicalOrigin, `/buy/content/${encodeURIComponent(row.id)}/offer`),
+        coverUrl,
+        previewUrl,
+        buyUrl,
+        offerUrl,
         priceSats,
         accessMode,
         publicOrigin: canonicalOrigin,
@@ -25890,6 +25895,21 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         originTrust,
         originHealth: originHealth.state
       };
+    })
+    .filter((item) => {
+      const contentId = asString(item?.contentId || "").trim();
+      const title = asString(item?.title || "").trim();
+      const creatorHandle = asString(item?.creatorHandle || "").trim();
+      const buyUrl = asString(item?.buyUrl || "").trim();
+      const discoveryStatus = asString(item?.discoveryStatus || "").trim().toLowerCase();
+      const originHealth = asString(item?.originHealth || "").trim().toLowerCase();
+      const coverUrl = asString(item?.coverUrl || "").trim();
+      const previewUrl = asString(item?.previewUrl || "").trim();
+      if (!contentId || !title || !creatorHandle || !buyUrl) return false;
+      if (discoveryStatus !== "live") return false;
+      if (originHealth !== "healthy") return false;
+      if (!coverUrl && !previewUrl) return false;
+      return true;
     });
   const trustWeight = (v: DiscoveryOriginTrust): number => {
     if (v === "provider") return 3;
