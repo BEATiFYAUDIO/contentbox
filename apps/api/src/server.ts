@@ -30709,14 +30709,18 @@ async function handleBuyPage(req: any, reply: any) {
           const nextIntent = await refreshLightningInvoiceFromIntent();
           const nextBolt11 = String(nextIntent?.paymentOptions?.lightning?.bolt11 || "").trim();
           if (!nextBolt11) {
-            if (statusEl) statusEl.textContent = "Unable to refresh invoice right now.";
-            return;
+            throw new Error("missing_invoice");
           }
           renderRails(nextIntent);
           startReceiptPolling(60_000, 2_000);
           window.location.assign("lightning:" + nextBolt11);
         } catch (err) {
-          if (statusEl) statusEl.textContent = String(err?.message || "Unable to refresh invoice right now.");
+          if (statusEl) statusEl.textContent = "Generating new invoice...";
+          try {
+            await startPurchase(currentOffer, { forceNew: true });
+          } catch (fallbackErr) {
+            if (statusEl) statusEl.textContent = String(fallbackErr?.message || "Unable to generate invoice right now.");
+          }
         }
       });
     }
@@ -30724,17 +30728,12 @@ async function handleBuyPage(req: any, reply: any) {
     if (refreshInvoiceBtn) {
       refreshInvoiceBtn.addEventListener("click", async () => {
         const statusEl = document.getElementById("status");
-        if (statusEl) statusEl.textContent = "Refreshing invoice...";
+        if (statusEl) statusEl.textContent = "Generating new invoice...";
         try {
-          const nextIntent = await refreshLightningInvoiceFromIntent();
-          if (!nextIntent?.paymentOptions?.lightning?.bolt11) {
-            if (statusEl) statusEl.textContent = "Invoice is currently unavailable.";
-            return;
-          }
-          renderRails(nextIntent);
-          if (statusEl) statusEl.textContent = "Invoice refreshed.";
+          await startPurchase(currentOffer, { forceNew: true });
+          return;
         } catch (err) {
-          if (statusEl) statusEl.textContent = String(err?.message || "Unable to refresh invoice right now.");
+          if (statusEl) statusEl.textContent = String(err?.message || "Unable to generate invoice right now.");
         }
       });
     }
@@ -30874,7 +30873,7 @@ async function handleBuyPage(req: any, reply: any) {
     } catch {}
   }
 
-  async function startPurchase(offer){
+  async function startPurchase(offer, opts){
     if (!buyer || !buyer.id) {
       try {
         const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
@@ -30926,7 +30925,15 @@ async function handleBuyPage(req: any, reply: any) {
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     let intent = null;
     try {
-      intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+      intent = await fetchJson("/buy/payments/intents", {
+        method:"POST",
+        body:{
+          contentId,
+          manifestSha256: offer.manifestSha256,
+          amountSats: amount,
+          forceNew: Boolean(opts?.forceNew)
+        }
+      });
     } catch (e) {
       const code = String(e?.code || "").trim();
       const msg = String(e?.message || "").trim();
@@ -31650,6 +31657,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     contentId?: string;
     manifestSha256?: string;
     amountSats?: any;
+    forceNew?: boolean;
   };
 
   const contentId = asString(body.contentId || "").trim();
@@ -31685,6 +31693,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   try {
     const amountSatsInput = parseSats(body.amountSats);
+    const forceNewIntent = Boolean(body.forceNew);
     const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
     if (!content) return notFound(reply, "Content not found");
     const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
@@ -31779,7 +31788,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       }
     }
 
-    if (buyerScopeHash) {
+    if (buyerScopeHash && !forceNewIntent) {
       const existingPending = await prisma.paymentIntent.findFirst({
         where: {
           contentId,
