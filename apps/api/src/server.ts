@@ -29589,6 +29589,8 @@ async function handleBuyPage(req: any, reply: any) {
   let buyer = null;
   let alreadyOwned = false;
   let livePaymentProof = null;
+  let activePaymentIntentId = null;
+  let lastPaymentIntentPayload = null;
   const edgeUrlCache = new Map();
   let attributionData = null;
   const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -30182,6 +30184,45 @@ async function handleBuyPage(req: any, reply: any) {
     return data;
   }
 
+  function parseMs(v){
+    const s = String(v || "").trim();
+    if (!s) return null;
+    const n = Date.parse(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function invoiceExpired(expiresAt){
+    const ms = parseMs(expiresAt);
+    if (!ms) return false;
+    return ms <= Date.now();
+  }
+
+  async function refreshLightningInvoiceFromIntent(){
+    if (!activePaymentIntentId) return null;
+    const token = String(receiptToken || "").trim();
+    const q = token ? ("?receiptToken=" + qs(token)) : "";
+    const refreshed = await fetchJson("/api/payments/intents/" + encodeURIComponent(activePaymentIntentId) + q);
+    const bolt11 = String(refreshed?.lightning?.bolt11 || "").trim();
+    if (!bolt11) return null;
+    const base = lastPaymentIntentPayload || {};
+    const merged = {
+      ...base,
+      paymentIntentId: String(refreshed?.id || activePaymentIntentId),
+      amountSats: refreshed?.amountSats != null ? Number(refreshed.amountSats) : base.amountSats,
+      paymentOptions: {
+        lightning: {
+          available: true,
+          bolt11,
+          expiresAt: refreshed?.lightning?.expiresAt || null,
+          reason: null
+        },
+        onchain: base?.paymentOptions?.onchain || { available: false, reason: "TEMPORARILY_UNAVAILABLE" }
+      }
+    };
+    lastPaymentIntentPayload = merged;
+    return merged;
+  }
+
   async function fetchBuyerMe(){
     try {
       const res = await fetchJson("/api/buyer/me");
@@ -30588,6 +30629,8 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   function renderRails(intent){
+    lastPaymentIntentPayload = intent || lastPaymentIntentPayload;
+    activePaymentIntentId = String(intent?.paymentIntentId || intent?.id || activePaymentIntentId || "").trim() || null;
     const rails = document.getElementById("rails");
     const lightning = intent.paymentOptions?.lightning || {};
     const onchain = intent.paymentOptions?.onchain || {};
@@ -30613,6 +30656,7 @@ async function handleBuyPage(req: any, reply: any) {
             <div class="code">\${lightning.bolt11}</div>
             <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
               <a id="openWalletBtn" class="btn" href="\${hasLightningInvoice ? ("lightning:" + lightningInvoice) : "#"}" \${hasLightningInvoice ? "" : "aria-disabled=\\"true\\" style=\\"pointer-events:none;opacity:0.6;\\""}>\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</a>
+              <button id="refreshInvoiceBtn" class="btn outline small" type="button">\${hasLightningInvoice ? "Refresh invoice" : "Generate invoice"}</button>
               <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
             </div>
             <div class="muted" style="margin-top:6px;">If your wallet doesn't open, scan the QR or copy the invoice.</div>
@@ -30650,9 +30694,46 @@ async function handleBuyPage(req: any, reply: any) {
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
     const openWalletBtn = document.getElementById("openWalletBtn");
     if (openWalletBtn) {
-      openWalletBtn.addEventListener("click", () => {
+      openWalletBtn.addEventListener("click", async (e) => {
         if (!hasLightningInvoice) return;
-        startReceiptPolling(60_000, 2_000);
+        e.preventDefault();
+        const statusEl = document.getElementById("status");
+        if (statusEl) {
+          statusEl.textContent = invoiceExpired(lightning.expiresAt)
+            ? "Refreshing expired invoice..."
+            : "Checking current invoice...";
+        }
+        try {
+          const nextIntent = await refreshLightningInvoiceFromIntent();
+          const nextBolt11 = String(nextIntent?.paymentOptions?.lightning?.bolt11 || "").trim();
+          if (!nextBolt11) {
+            if (statusEl) statusEl.textContent = "Unable to refresh invoice right now.";
+            return;
+          }
+          renderRails(nextIntent);
+          startReceiptPolling(60_000, 2_000);
+          window.location.assign("lightning:" + nextBolt11);
+        } catch (err) {
+          if (statusEl) statusEl.textContent = String(err?.message || "Unable to refresh invoice right now.");
+        }
+      });
+    }
+    const refreshInvoiceBtn = document.getElementById("refreshInvoiceBtn");
+    if (refreshInvoiceBtn) {
+      refreshInvoiceBtn.addEventListener("click", async () => {
+        const statusEl = document.getElementById("status");
+        if (statusEl) statusEl.textContent = "Refreshing invoice...";
+        try {
+          const nextIntent = await refreshLightningInvoiceFromIntent();
+          if (!nextIntent?.paymentOptions?.lightning?.bolt11) {
+            if (statusEl) statusEl.textContent = "Invoice is currently unavailable.";
+            return;
+          }
+          renderRails(nextIntent);
+          if (statusEl) statusEl.textContent = "Invoice refreshed.";
+        } catch (err) {
+          if (statusEl) statusEl.textContent = String(err?.message || "Unable to refresh invoice right now.");
+        }
       });
     }
   }
@@ -30867,6 +30948,7 @@ async function handleBuyPage(req: any, reply: any) {
       return;
     }
     receiptToken = intent.receiptToken;
+    activePaymentIntentId = String(intent?.paymentIntentId || intent?.id || "").trim() || null;
     renderRails(intent);
     startReceiptPolling(60_000, 2_000);
   }
