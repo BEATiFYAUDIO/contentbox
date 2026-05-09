@@ -6519,6 +6519,7 @@ async function requestDelegatedProviderPaymentIntent(input: {
 }): Promise<{
   paymentIntentId: string;
   bolt11: string;
+  expiresAt: string | null;
   providerInvoiceRef: string | null;
   providerFeeSats: string | null;
   providerInvoicingFeeSats: string | null;
@@ -6623,6 +6624,7 @@ async function requestDelegatedProviderPaymentIntent(input: {
     return {
       paymentIntentId,
       bolt11,
+      expiresAt: String(json?.expiresAt || "").trim() || null,
       providerInvoiceRef: String(json?.providerInvoiceRef || "").trim() || null,
       providerFeeSats: String(json?.providerFeeSats || "").trim() || null,
       providerInvoicingFeeSats: String(json?.providerInvoicingFeeSats || "").trim() || null,
@@ -32048,7 +32050,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
           lightning = {
             bolt11: delegated.bolt11,
             providerId: `providerpi:${delegated.paymentIntentId}`,
-            expiresAt: null
+            expiresAt: delegated.expiresAt || null
           };
           delegatedProviderInvoiceRef = String(delegated.providerInvoiceRef || "").trim() || null;
           lightningReason = null;
@@ -40686,7 +40688,8 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
         if (ageMs < 2 * 60 * 1000) return intent;
       }
     } else if (hasExisting) {
-      if (!existingInvoiceExpired) return intent;
+      const delegatedWithoutExpiry = intent.providerId?.startsWith("providerpi:") && !intent.lightningExpiresAt;
+      if (!existingInvoiceExpired && !delegatedWithoutExpiry) return intent;
     }
 
     const content = await prisma.contentItem.findUnique({
@@ -40780,7 +40783,7 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
             data: {
               bolt11: delegated.bolt11,
               providerId: delegatedProviderId,
-              lightningExpiresAt: null,
+              lightningExpiresAt: delegated.expiresAt ? new Date(delegated.expiresAt) : null,
               receiptToken: intent.receiptToken || crypto.randomBytes(24).toString("hex"),
               receiptTokenExpiresAt: nextExpiry
             }
