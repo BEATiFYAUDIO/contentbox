@@ -40661,17 +40661,24 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
 
     const memo = `Contentbox ${intent.subjectId.slice(0, 8)} ${String(intent.manifestSha256 || "").slice(0, 8)}`;
     const hasExisting = Boolean(intent.bolt11 && intent.providerId);
+    const nowMs = Date.now();
+    const invoiceExpiryMs = intent.lightningExpiresAt ? new Date(intent.lightningExpiresAt).getTime() : 0;
+    const existingInvoiceExpired = invoiceExpiryMs > 0 && invoiceExpiryMs <= nowMs;
 
     if (hasExisting && intent.providerId?.startsWith("lnd:")) {
       try {
         const chk = await checkLightningInvoice(prisma as any, intent.providerId);
         const st = normalizeRemoteInvoiceState((chk as any)?.state);
         if (chk.paid || st === "SETTLED") return intent;
-        if (st === "OPEN" || st === "ACCEPTED") return intent;
+        if ((st === "OPEN" || st === "ACCEPTED") && !existingInvoiceExpired) return intent;
         if (st === "CANCELED") {
           // rotate below
         } else {
-          return intent;
+          if (existingInvoiceExpired) {
+            // local expiry is authoritative for customer UX; rotate below.
+          } else {
+            return intent;
+          }
         }
       } catch {
         const createdAtMs = intent.createdAt ? new Date(intent.createdAt).getTime() : 0;
@@ -40679,7 +40686,7 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
         if (ageMs < 2 * 60 * 1000) return intent;
       }
     } else if (hasExisting) {
-      return intent;
+      if (!existingInvoiceExpired) return intent;
     }
 
     const content = await prisma.contentItem.findUnique({
