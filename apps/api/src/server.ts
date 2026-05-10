@@ -34351,6 +34351,12 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  if (!content.deletedAt) {
+    return reply.code(409).send({
+      code: "CONTENT_NOT_IN_TRASH",
+      error: "Move content to Trash before permanently deleting."
+    });
+  }
   if (isPublished(content)) {
     return reply.code(409).send({
       code: "PUBLISHED_DELETE_BLOCKED",
