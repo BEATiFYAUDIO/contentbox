@@ -28882,66 +28882,36 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#17130e; border:1px solid #3d3528; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #9a6a2d 0%, #c59b54 52%, #8b6f3f 100%); transition:width .2s ease; }
-    body.iframe-embedded .profile-header-grid {
-      grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(260px, var(--profile-signal-col));
-      grid-template-areas:"brand identity signal";
-      align-items:center;
-      gap:var(--profile-gap-y) var(--profile-gap-x);
-      margin-top:14px;
-    }
     body.iframe-embedded { padding:10px; }
     body.iframe-embedded .card {
       width:100%;
-      max-width:none;
+      max-width:1120px;
+      margin:0 auto;
       padding:14px 16px;
     }
     body.iframe-embedded .brand-row { margin-bottom:0; }
-    body.iframe-embedded .brand-rail {
-      grid-area:brand;
-      justify-content:flex-start;
-      align-self:center;
-      padding:0;
-      align-items:center;
+    body.iframe-embedded .profile-header-grid {
+      --profile-brand-col: 94px;
+      --profile-logo-size: 78px;
+      --profile-avatar-size: 92px;
+      --profile-id-gap: 12px;
+      --profile-gap-x: 12px;
+      --profile-signal-col: 296px;
     }
-    body.iframe-embedded .identity-rail {
-      grid-area:identity;
-      flex-direction:row;
-      align-items:center;
-      gap:12px;
-      margin-left:0;
-      margin-top:0;
-    }
-    body.iframe-embedded .signal-rail {
-      grid-area:signal;
-      width:100%;
-      padding:10px 12px;
-    }
-    body.iframe-embedded .hero-meta {
-      width:100%;
-      min-width:0;
-      display:flex;
-      flex-direction:column;
-      align-items:flex-start;
-      text-align:left;
-    }
-    body.iframe-embedded .hero-handle { text-align:left; }
-    body.iframe-embedded .hero-meta .line { text-align:left; }
-    body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
-    body.iframe-embedded .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); }
-    body.iframe-embedded .brand-logo-image { width:var(--profile-logo-size); }
-    body.iframe-embedded .hero-name { font-size:27px; line-height:1.08; }
-    body.iframe-embedded .hero-handle { font-size:14px; margin-top:5px; }
-    @media (max-width: 820px) {
+    body.iframe-embedded .identity-rail { margin-left:0; }
+    @media (min-width: 901px) {
       body.iframe-embedded .profile-header-grid {
-        grid-template-columns:112px minmax(0, 1fr);
-        grid-template-areas:
-          "brand identity"
-          "signal signal";
+        --profile-brand-col: 132px;
+        --profile-logo-size: 120px;
+        --profile-avatar-size: 94px;
+        --profile-gap-x: 14px;
+        --profile-id-gap: 12px;
+        --profile-signal-col: 348px;
+        grid-template-columns: var(--profile-brand-col) minmax(360px, 460px) minmax(320px, var(--profile-signal-col));
+        justify-content: space-between;
       }
-      body.iframe-embedded .brand-logo-image { width:72px; }
-      body.iframe-embedded .avatar { width:92px; height:92px; }
-      body.iframe-embedded .hero-name { font-size:27px; }
-      body.iframe-embedded .hero-handle { font-size:16px; }
+      body.iframe-embedded .identity-rail { margin-left: 34px; }
+      body.iframe-embedded .signal-rail { margin-left: 8px; }
     }
     @media (min-width: 640px) {
       .featured-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
@@ -29022,38 +28992,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .proof-group-title { font-size:12px; }
     }
     @media (max-width: 640px) {
+      body.iframe-embedded .card { padding:12px; }
       body.iframe-embedded .profile-header-grid {
-        grid-template-columns:64px minmax(0, 1fr);
-        grid-template-areas:
-          "brand identity"
-          "signal";
-        gap:8px 10px;
+        --profile-brand-col: 66px;
+        --profile-logo-size: 54px;
+        --profile-avatar-size: 62px;
+        --profile-id-gap: 8px;
+        --profile-gap-x: 8px;
       }
-      body.iframe-embedded .brand-rail {
-        justify-content:flex-start;
-        align-self:flex-start;
-        padding-left:0;
-        padding-top:4px;
-      }
-      body.iframe-embedded .identity-rail {
-        gap:10px;
-        margin-left:0;
-        width:100%;
-        align-items:flex-start;
-      }
-      body.iframe-embedded .hero-meta { min-width:0; flex:1; }
-      body.iframe-embedded .brand-logo-image { width:58px; }
-      body.iframe-embedded .avatar { width:60px; height:60px; }
-      body.iframe-embedded .hero-name {
-        font-size:clamp(18px, 5.2vw, 20px);
-        line-height:1.06;
-        white-space:normal;
-        overflow:visible;
-        text-overflow:clip;
-      }
-      body.iframe-embedded .hero-handle { font-size:13px; }
-      body.iframe-embedded .hero-bio { font-size:13px; line-height:1.3; }
-      body.iframe-embedded .signal-rail { padding:10px 12px; }
+      body.iframe-embedded .identity-rail { margin-left:0; }
+      body.iframe-embedded .hero-name { font-size:17px; line-height:1.1; }
+      body.iframe-embedded .hero-handle { font-size:12px; }
+      body.iframe-embedded .hero-bio { font-size:12px; line-height:1.25; }
+      body.iframe-embedded .signal-rail { padding:8px 10px; }
+      body.iframe-embedded .signal-chip { font-size:10px; padding:1px 7px; }
     }
   </style>
 </head>
