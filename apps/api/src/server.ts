@@ -31154,6 +31154,12 @@ async function handleBuyPage(req: any, reply: any) {
     const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator: " + sellerDisplayName + "</div>" : "";
+    const basicTrustChips = [
+      "<span class=\\"trust-chip trust-chip--teal\\">Creator verified</span>",
+      "<span class=\\"trust-chip trust-chip--green\\">Free access</span>",
+      (sellerLightningAddress ? "<span class=\\"trust-chip trust-chip--gold\\">Tips enabled</span>" : ""),
+      (mediaSrc ? "<span class=\\"trust-chip trust-chip--violet\\">Public preview</span>" : "")
+    ].filter(Boolean).join("");
     const tipBlock = sellerLightningAddress
       ? "<div class=\\"rail\\" style=\\"margin-top:10px;\\">" +
           "<div style=\\"font-weight:600;\\">Tip the creator</div>" +
@@ -31177,12 +31183,7 @@ async function handleBuyPage(req: any, reply: any) {
       "<div>" +
         "<h1 class=\\"hero-title\\">" + (offer.title || "Content") + "</h1>" +
         "<p class=\\"hero-sub\\">" + (offer.description || "") + "</p>" +
-        "<div class=\\"trust-strip\\">" +
-          "<span class=\\"trust-chip trust-chip--teal\\">Creator verified</span>" +
-          "<span class=\\"trust-chip trust-chip--green\\">Open access</span>" +
-          "<span class=\\"trust-chip trust-chip--violet\\">Receipt protected</span>" +
-          "<span class=\\"trust-chip trust-chip--gold\\">Attribution enforced</span>" +
-        "</div>" +
+        "<div class=\\"trust-strip\\">" + basicTrustChips + "</div>" +
         "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
         (isAudio
           ? (coverSrc
@@ -31255,16 +31256,24 @@ async function handleBuyPage(req: any, reply: any) {
               "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator hasn't enabled tips yet.</div>" +
             "</div>")
       : "";
+    const trustChips = isPaid
+      ? [
+          '<span class="trust-chip trust-chip--teal">Creator verified</span>',
+          '<span class="trust-chip trust-chip--green">Instant unlock</span>',
+          '<span class="trust-chip trust-chip--violet">Receipt protected</span>',
+          '<span class="trust-chip trust-chip--gold">Attribution enforced</span>'
+        ].join("")
+      : [
+          '<span class="trust-chip trust-chip--teal">Creator verified</span>',
+          '<span class="trust-chip trust-chip--green">Free access</span>',
+          (effectivePaymentState === "tip" && sellerLightningAddress ? '<span class="trust-chip trust-chip--gold">Tips enabled</span>' : ""),
+          (mediaSrc ? '<span class="trust-chip trust-chip--violet">Public preview</span>' : "")
+        ].filter(Boolean).join("");
     app.innerHTML = \`
       <div>
         <h1 class="hero-title">\${offer.title || "Content"}</h1>
         <p class="hero-sub">\${offer.description || ""}</p>
-        <div class="trust-strip">
-          <span class="trust-chip trust-chip--teal">Creator verified</span>
-          <span class="trust-chip trust-chip--green">Instant unlock</span>
-          <span class="trust-chip trust-chip--violet">Receipt protected</span>
-          <span class="trust-chip trust-chip--gold">Attribution enforced</span>
-        </div>
+        <div class="trust-strip">\${trustChips}</div>
         <section id="cb-attribution" style="display:none"></section>
         \${isAudio && (!receiptView.show || receiptView.showPlayer) ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
         \${mediaSrc && canStream && (!receiptView.show || receiptView.showPlayer) ? \`
