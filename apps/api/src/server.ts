@@ -28883,10 +28883,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#17130e; border:1px solid #3d3528; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #9a6a2d 0%, #c59b54 52%, #8b6f3f 100%); transition:width .2s ease; }
     body.iframe-embedded .profile-header-grid {
-      grid-template-columns:108px minmax(220px, 1.1fr) minmax(240px, 1fr);
+      grid-template-columns:124px minmax(240px, 1.05fr) minmax(240px, 1fr);
       grid-template-areas:"brand identity signal";
       align-items:center;
-      gap:10px 18px;
+      gap:10px 16px;
       margin-top:4px;
     }
     body.iframe-embedded { padding:10px; }
@@ -28927,21 +28927,21 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body.iframe-embedded .hero-handle { text-align:left; }
     body.iframe-embedded .hero-meta .line { text-align:left; }
     body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
-    body.iframe-embedded .avatar { width:96px; height:96px; }
-    body.iframe-embedded .brand-logo-image { width:82px; }
-    body.iframe-embedded .hero-name { font-size:30px; line-height:1.04; }
-    body.iframe-embedded .hero-handle { font-size:16px; margin-top:5px; }
+    body.iframe-embedded .avatar { width:88px; height:88px; }
+    body.iframe-embedded .brand-logo-image { width:92px; }
+    body.iframe-embedded .hero-name { font-size:24px; line-height:1.08; }
+    body.iframe-embedded .hero-handle { font-size:14px; margin-top:5px; }
     @media (max-width: 820px) {
       body.iframe-embedded .profile-header-grid {
-        grid-template-columns:112px minmax(0, 1fr);
+        grid-template-columns:98px minmax(0, 1fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
       }
-      body.iframe-embedded .brand-logo-image { width:72px; }
-      body.iframe-embedded .avatar { width:92px; height:92px; }
-      body.iframe-embedded .hero-name { font-size:27px; }
-      body.iframe-embedded .hero-handle { font-size:16px; }
+      body.iframe-embedded .brand-logo-image { width:76px; }
+      body.iframe-embedded .avatar { width:78px; height:78px; }
+      body.iframe-embedded .hero-name { font-size:22px; }
+      body.iframe-embedded .hero-handle { font-size:13px; }
     }
     @media (min-width: 640px) {
       .featured-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
