@@ -28720,8 +28720,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:0; }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; flex:1 1 auto; }
-    .hero-name { font-weight:700; font-size:30px; line-height:1.06; letter-spacing:-0.015em; }
-    .hero-handle { margin-top:6px; font-size:15px; color:#b5ad9f; }
+    .hero-name { font-weight:650; font-size:27px; line-height:1.08; letter-spacing:-0.01em; }
+    .hero-handle { margin-top:5px; font-size:14px; color:#b5ad9f; }
     .hero-bio { max-width:56ch; }
     .signal-rail { border:1px solid #3a3327; border-radius:12px; background:#14110c; padding:12px; }
     .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
@@ -28840,7 +28840,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-topline { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
     .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:#c9bda9; background:#1b1813; border:1px solid #423a2e; border-radius:999px; padding:2px 7px; }
     .featured-verified { font-size:10px; color:#d4c093; background:#1f1810; border:1px solid #4c3d28; border-radius:999px; padding:2px 7px; }
-    .posture-pill { font-size:11px; border-radius:999px; padding:3px 10px; border:1px solid transparent; letter-spacing:0.01em; }
+    .posture-pill { font-size:10px; border-radius:999px; padding:2px 9px; border:1px solid transparent; letter-spacing:0.01em; }
     .posture-pill--basic { color:#fcd7b5; background:#2a1a0f; border-color:#6f4a2a; }
     .posture-pill--creator { color:#e5e7eb; background:#2a2f39; border-color:#7a818f; }
     .posture-pill--node { color:#fef3c7; background:#2c230d; border-color:#b18a2e; }
@@ -28977,7 +28977,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .brand-rail { grid-area:brand; padding-top:0; padding-left:0; }
       .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
       .signal-rail { grid-area:signal; width:100%; }
-      .hero-name { font-size:22px; line-height:1.12; }
+      .hero-name { font-size:20px; line-height:1.12; }
       .signal-rail { width:100%; }
     }
     @media (max-width: 700px) {
@@ -29014,8 +29014,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
-      .hero-name { font-size:22px; line-height:1.08; }
-      .hero-handle { font-size:13px; }
+      .hero-name { font-size:19px; line-height:1.1; }
+      .hero-handle { font-size:12px; }
       .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
       .signal-compact-meter { height:4px; }
       .signal-compact-meta { margin-top:4px; }
