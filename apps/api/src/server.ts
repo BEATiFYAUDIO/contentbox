@@ -27794,6 +27794,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
+  const safeProfileUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}`);
   const safeBrandLogoSrc = resolveProfileLogoPath()
     ? escHtml("/logo.png?v=20260413b")
     : "";
@@ -28673,17 +28674,21 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       --profile-signal-col: 320px;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
-    .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:
+      radial-gradient(1100px 540px at 14% -8%, rgba(76, 58, 28, 0.15), transparent 62%),
+      radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.14), transparent 64%),
+      #040506;
+      color:#eee; padding:24px; }
+    .card { width:min(940px, 100%); margin:0 auto; background:linear-gradient(180deg, #0a0b0d 0%, #07080a 100%); border:1px solid #202227; border-radius:18px; padding:24px; overflow:hidden; box-shadow:0 30px 90px rgba(0,0,0,0.46); }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     .brand-logo-image { display:block; width:var(--profile-logo-size); height:auto; object-fit:contain; }
     .brand-mark {
       width:22px;
       height:22px;
       border-radius:999px;
-      border:1px solid #2e3b4d;
-      background:linear-gradient(180deg, #152132 0%, #0f1724 100%);
-      color:#b8dbff;
+      border:1px solid #4b3a22;
+      background:linear-gradient(180deg, #2b2215 0%, #16120b 100%);
+      color:#d8be84;
       display:inline-flex;
       align-items:center;
       justify-content:center;
@@ -28692,7 +28697,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       line-height:1;
       text-transform:lowercase;
     }
-    .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#a5b7ca; }
+    .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#b6ae9e; }
     .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; display:none; }
     .muted { color:#9aa0a6; font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
@@ -28701,8 +28706,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
     a { color:#9bdcff; text-decoration:none; }
     a:hover { text-decoration:underline; }
-    .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
-    .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
+    .section { margin-top:20px; border:1px solid #262526; border-radius:14px; background:#0b0b0d; padding:16px; }
+    .section h3 { margin:0; font-size:18px; letter-spacing:-0.01em; }
+    .section-sub { margin-top:6px; color:#a7a094; font-size:13px; }
     .profile-header-grid {
       display:grid;
       grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(260px, var(--profile-signal-col));
@@ -28714,9 +28720,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:0; }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; flex:1 1 auto; }
-    .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
-    .hero-handle { margin-top:4px; }
-    .signal-rail { border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:12px; }
+    .hero-name { font-weight:750; font-size:34px; line-height:1.02; letter-spacing:-0.02em; }
+    .hero-handle { margin-top:6px; font-size:15px; color:#b5ad9f; }
+    .hero-bio { max-width:56ch; }
+    .signal-rail { border:1px solid #3a3327; border-radius:12px; background:#14110c; padding:12px; }
     .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
     .signal-compact-score { margin-top:6px; font-size:16px; }
     .signal-compact-meter { margin-top:6px; height:6px; }
@@ -28725,12 +28732,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-chip {
       display:inline-flex;
       align-items:center;
-      border:1px solid #2c3440;
+      border:1px solid #4a4032;
       border-radius:999px;
       padding:2px 8px;
       font-size:11px;
-      color:#b7c2d0;
-      background:#131922;
+      color:#d0c5b2;
+      background:#1a1610;
       line-height:1.25;
     }
     .meta-grid { display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px; }
@@ -28761,7 +28768,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .details-toggle[open] > summary::after { content:"Hide"; }
     .stack-tight { margin-top:10px; }
     .proof-group { margin-top:12px; }
-    .proof-group-title { color:#bcc5d2; font-size:13px; font-weight:600; letter-spacing:0.01em; margin-bottom:6px; }
+    .proof-group-title { color:#cfbf9d; font-size:13px; font-weight:600; letter-spacing:0.01em; margin-bottom:6px; }
     .proof-group .line { margin-top:6px; line-height:1.35; }
     .proof-badge {
       display:inline-flex;
@@ -28771,9 +28778,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       justify-content:center;
       border-radius:999px;
       margin-right:6px;
-      border:1px solid #2b3240;
-      background:#111827;
-      color:#e5e7eb;
+      border:1px solid #3f3a2e;
+      background:#171411;
+      color:#ddd5c7;
       vertical-align:middle;
       overflow:hidden;
       flex:none;
@@ -28784,27 +28791,29 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       display:block;
       fill:currentColor;
     }
-    .proof-badge--github { background:#0f172a; border-color:#334155; color:#cbd5e1; }
-    .proof-badge--youtube { background:#2a0b0b; border-color:#7f1d1d; color:#fecaca; }
-    .proof-badge--tiktok { background:#0b1220; border-color:#1d4ed8; color:#bfdbfe; }
-    .proof-badge--reddit { background:#28160b; border-color:#9a3412; color:#fed7aa; }
-    .proof-badge--rumble { background:#111f10; border-color:#3f6212; color:#d9f99d; }
-    .proof-badge--substack { background:#29160f; border-color:#9a3412; color:#fdba74; }
-    .proof-badge--x { background:#0a0a0a; border-color:#374151; color:#f3f4f6; }
-    .proof-badge--instagram { background:#2b1022; border-color:#831843; color:#fbcfe8; }
+    .proof-badge--github { background:#181613; border-color:#454034; color:#d6ceb9; }
+    .proof-badge--youtube { background:#1c1411; border-color:#5c3c2d; color:#dec9b8; }
+    .proof-badge--tiktok { background:#171413; border-color:#4b4334; color:#d7cebd; }
+    .proof-badge--reddit { background:#1d1712; border-color:#614430; color:#dfc8b1; }
+    .proof-badge--rumble { background:#171611; border-color:#4d432f; color:#d8ccb4; }
+    .proof-badge--substack { background:#1d1712; border-color:#614430; color:#e0c4a6; }
+    .proof-badge--x { background:#121110; border-color:#3f3d3a; color:#ddd8cf; }
+    .proof-badge--instagram { background:#191315; border-color:#52403f; color:#ddc8c9; }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:12px; }
     .featured-item {
-      border:1px solid #252525;
+      border:1px solid #2f2b27;
       border-radius:12px;
-      background:#111215;
+      background:#11100d;
       overflow:hidden;
       display:flex;
       flex-direction:column;
       min-width:0;
+      transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease;
     }
+    .featured-item:hover { transform:translateY(-2px); border-color:#4b4030; box-shadow:0 12px 24px rgba(0,0,0,0.26); }
     .featured-media {
-      border-bottom:1px solid #20242a;
-      background:#0f1115;
+      border-bottom:1px solid #27221d;
+      background:#0f0e0c;
       overflow:hidden;
       aspect-ratio:16 / 9;
       width:100%;
@@ -28813,14 +28822,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       align-items:center;
       justify-content:center;
     }
-    .featured-meta { padding:8px 10px 10px; min-width:0; }
+    .featured-meta { padding:10px 12px 12px; min-width:0; }
     .featured-image { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, #121419 0%, #0f1013 100%); }
     .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:#0d0f13; display:flex; align-items:center; justify-content:center; }
     .featured-video-thumb { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-video-preview { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
     .featured-video-fallback { position:absolute; inset:0; min-height:0; z-index:2; }
-    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:rgba(9,12,18,0.72); border:1px solid rgba(154,206,255,0.35); color:#d7ecff; font-size:12px; line-height:1; z-index:3; }
+    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:rgba(16,13,9,0.78); border:1px solid rgba(198,155,74,0.45); color:#dfc78e; font-size:12px; line-height:1; z-index:3; }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
     .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid #252525; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
@@ -28829,15 +28838,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-audio { width:100%; }
     .featured-fallback { font-size:10px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
     .featured-topline { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
-    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:#b9c2cf; background:#1a2028; border:1px solid #303948; border-radius:999px; padding:2px 7px; }
-    .featured-verified { font-size:10px; color:#7dd3fc; background:#10212e; border:1px solid #284557; border-radius:999px; padding:2px 7px; }
+    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:#c9bda9; background:#1b1813; border:1px solid #423a2e; border-radius:999px; padding:2px 7px; }
+    .featured-verified { font-size:10px; color:#d4c093; background:#1f1810; border:1px solid #4c3d28; border-radius:999px; padding:2px 7px; }
     .posture-pill { font-size:11px; border-radius:999px; padding:3px 10px; border:1px solid transparent; letter-spacing:0.01em; }
     .posture-pill--basic { color:#fcd7b5; background:#2a1a0f; border-color:#6f4a2a; }
     .posture-pill--creator { color:#e5e7eb; background:#2a2f39; border-color:#7a818f; }
     .posture-pill--node { color:#fef3c7; background:#2c230d; border-color:#b18a2e; }
     .featured-title {
       font-weight:650;
-      font-size:14px;
+      font-size:15px;
       line-height:1.28;
       display:-webkit-box;
       -webkit-line-clamp:2;
@@ -28846,8 +28855,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     .featured-support {
       margin-top:4px;
-      font-size:11px;
-      color:#97a1af;
+      font-size:12px;
+      color:#a5b0c0;
       line-height:1.3;
       display:-webkit-box;
       -webkit-line-clamp:2;
@@ -28860,10 +28869,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       align-items:center;
       font-weight:600;
       font-size:12px;
-      color:#8ecbff;
+      color:#cfb071;
     }
-    .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
-    .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
+    .empty-state {
+      margin-top:12px;
+      border:1px dashed #45403a;
+      border-radius:12px;
+      padding:14px;
+      color:#b7afa1;
+      background:#12100d;
+      font-size:13px;
+      line-height:1.45;
+    }
+    .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#17130e; border:1px solid #3d3528; overflow:hidden; }
+    .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #9a6a2d 0%, #c59b54 52%, #8b6f3f 100%); transition:width .2s ease; }
     body.iframe-embedded .profile-header-grid {
       grid-template-columns:108px minmax(220px, 1.1fr) minmax(240px, 1fr);
       grid-template-areas:"brand identity signal";
@@ -28995,7 +29014,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
-      .hero-name { font-size:20px; line-height:1.08; }
+      .hero-name { font-size:26px; line-height:1.04; }
       .hero-handle { font-size:13px; }
       .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
       .signal-compact-meter { height:4px; }
@@ -29118,6 +29137,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 
     <section class="section">
       <h3>Verification</h3>
+      <div class="section-sub">Identity and presence signals tied to this creator profile.</div>
       <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
       <div class="proof-group">
         <div class="proof-group-title">Domains</div>
@@ -29137,19 +29157,25 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       featuredContentHtml
         ? `<section class="section">
     <h3>Certifyd Works</h3>
-    <div class="line muted">Verified works published or claimed by this creator.</div>
+    <div class="section-sub">Verified works published or claimed by this creator.</div>
     <div class="line featured-grid">${featuredContentHtml}</div>
   </section>`
-        : ""
+        : `<section class="section">
+    <h3>Certifyd Works</h3>
+    <div class="empty-state">No published works are featured yet. New releases will appear here when the creator features content.</div>
+  </section>`
     }
     ${
       highlightedParticipationsHtml
         ? `<section class="section">
     <h3>Collaborations</h3>
-    <div class="line muted">Profile-highlighted split participation credits and approved derivative collaborations.</div>
+    <div class="section-sub">Split participation credits and approved derivative collaborations.</div>
     <div class="line featured-grid">${highlightedParticipationsHtml}</div>
   </section>`
-        : ""
+        : `<section class="section">
+    <h3>Collaborations</h3>
+    <div class="empty-state">No collaboration credits are highlighted yet.</div>
+  </section>`
     }
     <section class="section">
       <details class="details-toggle">
@@ -29966,75 +29992,338 @@ async function handleBuyPage(req: any, reply: any) {
   <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
   <title>Buy</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:#0b0b0b; color:#f4f4f5; }
-    .wrap { max-width: 880px; margin: 0 auto; padding: 24px; }
-    .card { background:#111; border:1px solid #222; border-radius:16px; padding:20px; }
-    .muted { color:#a1a1aa; font-size:14px; }
-    .row { display:flex; gap:16px; flex-wrap:wrap; }
-    .rail { flex:1 1 280px; border:1px solid #222; border-radius:12px; padding:12px; background:#0f0f10; }
-    .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; background:#fff; color:#0b0b0b; border:none; border-radius:12px; padding:11px 16px; font-weight:600; cursor:pointer; text-decoration:none; }
-    .btn.primary { background:linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); box-shadow:0 6px 20px rgba(15, 23, 42, 0.25); }
-    .btn.outline { background:#0f0f10; color:#f8fafc; border:1px solid #2a2a2a; }
-    .btn.full { width:100%; }
-    .btn.small { padding:6px 10px; font-size:13px; border-radius:10px; }
-    .btn:disabled { opacity:0.6; cursor:not-allowed; }
-    .input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #333; background:#0b0b0b; color:#fff; }
-    .field { margin-top:10px; }
-    .step { margin-top:14px; padding:12px; border:1px solid #222; border-radius:12px; background:#0f0f10; }
-    .step h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
-    .proof-card { margin-top:12px; padding:12px; border:1px solid #1f3d2f; border-radius:12px; background:#0c1912; }
-    .proof-title { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#86efac; font-weight:700; }
-    .proof-grid { margin-top:8px; display:grid; gap:6px; font-size:12px; color:#cbd5e1; }
-    .proof-label { color:#9ca3af; }
-    .access-card { margin-top:10px; padding:12px; border:1px solid #2b3340; border-radius:12px; background:#10151d; }
-    .access-title { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#93c5fd; font-weight:700; }
-    .access-grid { margin-top:8px; display:grid; gap:6px; font-size:12px; color:#d4d4d8; }
-    .access-label { color:#9ca3af; }
-    .proof-drawer { margin-top:16px; border:1px solid #2b2d33; border-radius:12px; background:linear-gradient(180deg, #111318 0%, #0d0f13 100%); overflow:hidden; }
-    .proof-drawer > summary { list-style:none; cursor:pointer; padding:12px 14px; display:flex; align-items:center; justify-content:space-between; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#c7d2fe; font-weight:700; border-bottom:1px solid transparent; }
-    .proof-drawer > summary::-webkit-details-marker { display:none; }
-    .proof-drawer[open] > summary { border-bottom-color:#252a36; }
-    .proof-drawer-badge { font-size:11px; color:#a1a1aa; text-transform:none; letter-spacing:0; font-weight:500; }
-    .proof-drawer-body { padding:2px 12px 12px; }
-    .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; word-break:break-all; }
-    .copy { font-size:12px; border:1px solid #333; background:#151515; color:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; }
-    .section-title { margin-top:12px; font-size:16px; font-weight:600; }
-    .download-row { margin-top:10px; }
-    .preview { margin-top:14px; }
-    .preview img, .preview video, .preview audio { width:100%; max-width:820px; border-radius:12px; border:1px solid #222; background:#0b0b0b; }
-    .song-cover { margin-top:14px; max-width:420px; aspect-ratio:1/1; border-radius:12px; border:1px solid #222; overflow:hidden; background:#0f0f10; }
-    .song-cover img { width:100%; height:100%; object-fit:cover; display:block; }
-    .song-cover.placeholder { display:flex; align-items:center; justify-content:center; color:#71717a; font-size:12px; }
-    a { color:#93c5fd; }
-    .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
-    .cb-heart { margin-left:4px; font-weight:700; }
-    .cb-heart--grey { color:#cbd5e1; }
-    .cb-heart--gold { color:#fbbf24; }
-    .purchase-card { margin-top:14px; padding:14px; border:1px solid #2a2a2a; border-radius:14px; background:linear-gradient(180deg, #111316 0%, #0f1012 100%); }
-    .purchase-card--unlocked { border-color:#14532d; background:linear-gradient(180deg, #0f1d14 0%, #0b150f 100%); }
-    .purchase-kicker { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
-    .purchase-price { margin-top:6px; font-size:30px; font-weight:800; letter-spacing:-0.02em; line-height:1.1; }
-    .purchase-sub { margin-top:4px; color:#a1a1aa; font-size:13px; }
-    .rails-wrap { margin-top:12px; }
-    .receipt-row { margin-top:10px; padding-top:10px; border-top:1px solid #222; }
-    .library-return-wrap { margin-top:10px; text-align:left; }
-    .library-return { text-decoration:none; }
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      color: #f5f7fa;
+      background:
+        radial-gradient(1100px 520px at 100% -10%, rgba(30, 42, 64, 0.16), transparent 56%),
+        radial-gradient(900px 460px at -8% 20%, rgba(214, 169, 86, 0.10), transparent 50%),
+        linear-gradient(180deg, #040506 0%, #050608 44%, #030405 100%);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 28px 20px 36px;
+    }
+    .card {
+      position: relative;
+      border: 1px solid rgba(95, 96, 104, 0.28);
+      background: linear-gradient(180deg, rgba(10, 12, 15, 0.92), rgba(7, 9, 12, 0.95));
+      backdrop-filter: blur(6px);
+      border-radius: 18px;
+      padding: 22px;
+      box-shadow:
+        0 34px 70px rgba(3, 5, 10, 0.6),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(500px 180px at 12% 0%, rgba(196, 153, 74, 0.10), transparent 68%),
+        radial-gradient(460px 200px at 88% 0%, rgba(37, 49, 72, 0.14), transparent 72%);
+    }
+    #app { position: relative; z-index: 1; }
+    .muted { color: #a6afbe; font-size: 14px; }
+    .row { display: flex; gap: 18px; flex-wrap: wrap; }
+    .rail {
+      flex: 1 1 280px;
+      border: 1px solid rgba(95, 96, 104, 0.24);
+      border-radius: 14px;
+      padding: 14px;
+      background: linear-gradient(180deg, rgba(12, 14, 18, 0.92), rgba(8, 10, 14, 0.92));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-radius: 12px;
+      padding: 11px 16px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn.primary {
+      border: 1px solid rgba(250, 204, 21, 0.48);
+      color: #0b1220;
+      background: linear-gradient(135deg, #f6d673 0%, #fbbf24 58%, #f59e0b 100%);
+      box-shadow: 0 10px 26px rgba(245, 158, 11, 0.28);
+    }
+    .btn.outline {
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      color: #e9eef7;
+      background: rgba(12, 16, 24, 0.9);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    .btn.full { width: 100%; }
+    .btn.small { padding: 7px 11px; font-size: 12.5px; border-radius: 10px; }
+    .btn:disabled {
+      opacity: 0.62;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 11px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(5, 7, 11, 0.88);
+      color: #f8fafc;
+      outline: none;
+      transition: border-color 140ms ease, box-shadow 140ms ease;
+    }
+    .input:focus {
+      border-color: rgba(198, 155, 74, 0.55);
+      box-shadow: 0 0 0 3px rgba(198, 155, 74, 0.16);
+    }
+    .field { margin-top: 10px; }
+    .step {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 13px;
+      background: linear-gradient(180deg, rgba(14, 18, 28, 0.9), rgba(10, 13, 20, 0.9));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    .step h3 {
+      margin: 0 0 7px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #98a2b3;
+    }
+    .proof-card {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid rgba(178, 140, 74, 0.45);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(29, 23, 14, 0.9), rgba(20, 15, 10, 0.95));
+    }
+    .proof-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: #dec48d;
+      font-weight: 700;
+    }
+    .proof-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: #d1d9e6; }
+    .proof-label { color: #97a0af; }
+    .access-card {
+      margin-top: 10px;
+      padding: 12px;
+      border: 1px solid rgba(125, 211, 252, 0.3);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(13, 21, 35, 0.92), rgba(10, 18, 30, 0.96));
+    }
+    .access-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: #93c5fd;
+      font-weight: 700;
+    }
+    .access-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: #d8dee9; }
+    .access-label { color: #9ca7b6; }
+    .proof-drawer {
+      margin-top: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(14, 18, 28, 0.92), rgba(11, 14, 21, 0.96));
+      overflow: hidden;
+    }
+    .proof-drawer > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: #d0d8e7;
+      font-weight: 700;
+      border-bottom: 1px solid transparent;
+    }
+    .proof-drawer > summary::-webkit-details-marker { display: none; }
+    .proof-drawer[open] > summary { border-bottom-color: rgba(255, 255, 255, 0.1); }
+    .proof-drawer-badge { font-size: 11px; color: #9ca7b6; text-transform: none; letter-spacing: 0; font-weight: 500; }
+    .proof-drawer-body { padding: 2px 12px 12px; }
+    .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      word-break: break-all;
+      color: #dbe6f5;
+    }
+    .copy {
+      font-size: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.17);
+      background: rgba(13, 17, 26, 0.92);
+      color: #eef4ff;
+      padding: 6px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .copy:hover { border-color: rgba(125, 211, 252, 0.5); }
+    .section-title {
+      margin-top: 14px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      color: #f4f7fb;
+    }
+    .download-row { margin-top: 10px; }
+    .preview { margin-top: 14px; }
+    .preview img, .preview video, .preview audio {
+      width: 100%;
+      max-width: 860px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      background: #080b10;
+      box-shadow: 0 16px 34px rgba(2, 4, 8, 0.45);
+    }
+    .song-cover {
+      margin-top: 14px;
+      max-width: 420px;
+      aspect-ratio: 1 / 1;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      overflow: hidden;
+      background: #0f1219;
+      box-shadow: 0 16px 34px rgba(2, 4, 8, 0.45);
+    }
+    .song-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .song-cover.placeholder { display: flex; align-items: center; justify-content: center; color: #798293; font-size: 12px; }
+    a { color: #d4b26a; }
+    .footer {
+      margin-top: 22px;
+      font-size: 12px;
+      color: #9da8b8;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 10px;
+    }
+    .cb-heart { margin-left: 4px; font-weight: 700; }
+    .cb-heart--grey { color: #b6bdc8; }
+    .cb-heart--gold { color: #d4b26a; }
+    .purchase-card {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(102, 116, 138, 0.34);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(17, 20, 27, 0.96), rgba(10, 12, 18, 0.98));
+      box-shadow:
+        0 20px 36px rgba(1, 3, 8, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    .purchase-card--unlocked {
+      border-color: rgba(196, 153, 74, 0.45);
+      background: linear-gradient(180deg, rgba(37, 29, 16, 0.92), rgba(23, 18, 10, 0.96));
+    }
+    .purchase-kicker {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: #8f99a9;
+    }
+    .purchase-price {
+      margin-top: 6px;
+      font-size: 31px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.08;
+      color: #f9fafb;
+      text-wrap: balance;
+    }
+    .purchase-sub { margin-top: 4px; color: #a9b3c2; font-size: 13px; }
+    .rails-wrap { margin-top: 12px; }
+    .receipt-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.11); }
+    .library-return-wrap { margin-top: 10px; text-align: left; }
+    .library-return { text-decoration: none; }
+    .hero-title {
+      font-size: clamp(28px, 4vw, 38px);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      text-wrap: balance;
+      margin: 0 0 8px;
+      color: #f2f2ef;
+    }
+    .hero-sub {
+      margin: 0;
+      color: #a89e89;
+      font-size: 15px;
+      line-height: 1.55;
+      text-wrap: pretty;
+      max-width: 76ch;
+    }
+    .trust-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      margin-bottom: 4px;
+    }
+    .trust-chip {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #d5cec0;
+      border: 1px solid rgba(89, 100, 118, 0.38);
+      background: rgba(13, 18, 26, 0.9);
+      border-radius: 999px;
+      padding: 6px 10px;
+      white-space: nowrap;
+    }
+    .trust-chip--gold {
+      border-color: rgba(196, 153, 74, 0.55);
+      color: #e5c98f;
+      background: rgba(68, 47, 20, 0.34);
+    }
+    .trust-chip--teal {
+      border-color: rgba(96, 113, 139, 0.44);
+      color: #c8d2e2;
+      background: rgba(21, 30, 43, 0.46);
+    }
+    .trust-chip--green {
+      border-color: rgba(111, 97, 70, 0.48);
+      color: #d8c9a9;
+      background: rgba(43, 35, 20, 0.4);
+    }
+    .trust-chip--violet {
+      border-color: rgba(79, 76, 108, 0.44);
+      color: #c9c3d8;
+      background: rgba(27, 24, 41, 0.44);
+    }
     @media (max-width: 640px) {
-      .wrap { padding: 16px; }
-      .card { padding: 16px; }
+      .wrap { padding: 14px; }
+      .card { padding: 14px; border-radius: 14px; }
       .purchase-card { padding: 12px; }
-      .purchase-price { font-size:26px; }
-      .btn { width:100%; }
+      .purchase-price { font-size: 26px; }
+      .btn { width: 100%; }
       .library-return {
-        display:inline-flex !important;
-        width:auto !important;
-        min-width:0;
-        padding:10px 14px;
-        border-radius:10px;
+        display: inline-flex !important;
+        width: auto !important;
+        min-width: 0;
+        padding: 10px 14px;
+        border-radius: 10px;
       }
-      .row { gap:12px; }
-      .rail { padding:10px; }
+      .row { gap: 12px; }
+      .rail { padding: 10px; border-radius: 12px; }
+      .preview img, .preview video, .preview audio { border-radius: 12px; }
     }
   </style>
 </head>
@@ -30830,14 +31119,37 @@ async function handleBuyPage(req: any, reply: any) {
     return mode === "download_only" || mode === "stream_and_download";
   }
 
+  function inferPreviewKind(offer, src){
+    const mime = String(offer?.primaryFileMime || "").toLowerCase();
+    const path = String(src || "").toLowerCase();
+    if (offer?.type === "video" || mime.startsWith("video/") || /\\.(mp4|webm|mov|m4v)(\\?|#|$)/.test(path)) return "video";
+    if (offer?.type === "song" || mime.startsWith("audio/") || /\\.(mp3|wav|m4a|ogg|flac)(\\?|#|$)/.test(path)) return "audio";
+    if (mime.startsWith("image/") || /\\.(png|jpe?g|webp|gif|avif)(\\?|#|$)/.test(path)) return "image";
+    return "file";
+  }
+
+  function resolveRenderablePreview(offer, primarySrc, alternateSrc){
+    const first = String(primarySrc || "").trim();
+    const second = String(alternateSrc || "").trim();
+    const firstKind = first ? inferPreviewKind(offer, first) : "file";
+    if (first && firstKind !== "file") return { src: first, kind: firstKind };
+    const secondKind = second ? inferPreviewKind(offer, second) : "file";
+    if (second && secondKind !== "file") return { src: second, kind: secondKind };
+    if (first) return { src: first, kind: firstKind };
+    if (second) return { src: second, kind: secondKind };
+    return { src: "", kind: "file" };
+  }
+
   function renderBasicOffer(offer){
     const mime = String(offer.primaryFileMime || "");
-    const isVideo = offer.type === "video" || mime.startsWith("video/");
-    const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
-    const mediaSrc = (isVideo || isAudio)
-      ? (previewFallbackUrl(offer) || basicPrimaryUrl(offer))
-      : (basicPrimaryUrl(offer) || previewFallbackUrl(offer));
-    const coverSrc = isAudio ? offerCoverUrl(offer) : null;
+    const preferredPreview = previewFallbackUrl(offer);
+    const primaryPreview = basicPrimaryUrl(offer);
+    const resolvedPreview = resolveRenderablePreview(offer, preferredPreview, primaryPreview);
+    const mediaSrc = resolvedPreview.src || preferredPreview || primaryPreview || "";
+    const previewKind = resolvedPreview.kind;
+    const isVideo = previewKind === "video";
+    const isAudio = previewKind === "audio";
+    const coverSrc = (offer.type === "song" || isAudio) ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
@@ -30863,8 +31175,14 @@ async function handleBuyPage(req: any, reply: any) {
         "</div>";
     app.innerHTML =
       "<div>" +
-        "<div style=\\"font-size:22px;font-weight:700;\\">" + (offer.title || "Content") + "</div>" +
-        "<div class=\\"muted\\">" + (offer.description || "") + "</div>" +
+        "<h1 class=\\"hero-title\\">" + (offer.title || "Content") + "</h1>" +
+        "<p class=\\"hero-sub\\">" + (offer.description || "") + "</p>" +
+        "<div class=\\"trust-strip\\">" +
+          "<span class=\\"trust-chip trust-chip--teal\\">Creator verified</span>" +
+          "<span class=\\"trust-chip trust-chip--green\\">Open access</span>" +
+          "<span class=\\"trust-chip trust-chip--violet\\">Receipt protected</span>" +
+          "<span class=\\"trust-chip trust-chip--gold\\">Attribution enforced</span>" +
+        "</div>" +
         "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
         (isAudio
           ? (coverSrc
@@ -30875,7 +31193,8 @@ async function handleBuyPage(req: any, reply: any) {
           ? "<div class=\\"preview\\">" +
               (isVideo ? "<video id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></video>" : "") +
               (isAudio ? "<audio id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></audio>" : "") +
-              (!isVideo && !isAudio ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
+              (!isVideo && !isAudio && previewKind === "image" ? "<img id=\\"player\\" src=\\"" + mediaSrc + "\\" alt=\\"Preview image\\" loading=\\"lazy\\" referrerpolicy=\\"no-referrer\\" />" : "") +
+              (!isVideo && !isAudio && previewKind === "file" ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
             "</div>"
           : "") +
         "<div class=\\"section-title\\">Free access</div>" +
@@ -30902,11 +31221,14 @@ async function handleBuyPage(req: any, reply: any) {
     const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
     const hasBuyer = Boolean(buyer && buyer.id);
     const token = entitlement?.token || receiptToken || null;
-    const mediaSrc = token ? streamUrl(offer, token) : previewFallbackUrl(offer) || streamUrl(offer, token);
-    const mime = String(offer.primaryFileMime || "");
-    const isVideo = offer.type === "video" || mime.startsWith("video/");
-    const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
-    const coverSrc = isAudio ? offerCoverUrl(offer) : null;
+    const tokenStreamSrc = token ? streamUrl(offer, token) : null;
+    const fallbackPreviewSrc = previewFallbackUrl(offer);
+    const resolvedPreview = resolveRenderablePreview(offer, tokenStreamSrc || fallbackPreviewSrc, fallbackPreviewSrc || tokenStreamSrc);
+    const mediaSrc = resolvedPreview.src || tokenStreamSrc || fallbackPreviewSrc || "";
+    const previewKind = resolvedPreview.kind;
+    const isVideo = previewKind === "video";
+    const isAudio = previewKind === "audio";
+    const coverSrc = (offer.type === "song" || isAudio) ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
@@ -30935,8 +31257,14 @@ async function handleBuyPage(req: any, reply: any) {
       : "";
     app.innerHTML = \`
       <div>
-        <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
-        <div class="muted">\${offer.description || ""}</div>
+        <h1 class="hero-title">\${offer.title || "Content"}</h1>
+        <p class="hero-sub">\${offer.description || ""}</p>
+        <div class="trust-strip">
+          <span class="trust-chip trust-chip--teal">Creator verified</span>
+          <span class="trust-chip trust-chip--green">Instant unlock</span>
+          <span class="trust-chip trust-chip--violet">Receipt protected</span>
+          <span class="trust-chip trust-chip--gold">Attribution enforced</span>
+        </div>
         <section id="cb-attribution" style="display:none"></section>
         \${isAudio && (!receiptView.show || receiptView.showPlayer) ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
         \${mediaSrc && canStream && (!receiptView.show || receiptView.showPlayer) ? \`
@@ -30944,7 +31272,8 @@ async function handleBuyPage(req: any, reply: any) {
             \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview the release</div>\` : ""}
             \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></video>\` : ""}
             \${isAudio ? \`<audio id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
-            \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
+            \${!isVideo && !isAudio && previewKind === "image" ? \`<img id="player" src="\${mediaSrc}" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />\` : ""}
+            \${!isVideo && !isAudio && previewKind === "file" ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
           </div>
         \` : \`\${isPaid && (!receiptView.show || receiptView.showPlayer) ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
         \${isPaid ? \`

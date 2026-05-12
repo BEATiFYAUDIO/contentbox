@@ -2453,16 +2453,6 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             </button>
                           </div>
                           <div className="mt-2 flex items-center gap-2">
-                            {hasDiscoveryBadge && it.discoveryUrl ? (
-                              <a
-                                className="text-xs rounded border border-amber-700/40 px-2 py-1 text-amber-200 hover:bg-amber-500/10"
-                                href={it.discoveryUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                View on Discovery →
-                              </a>
-                            ) : null}
                             {hasPublicPage ? (
                               <a
                                 className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
