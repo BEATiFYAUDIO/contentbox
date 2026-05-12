@@ -388,9 +388,7 @@ export default function ConfigPage({
       const updatedOrigin = String(json?.publicOrigin || normalized);
       setReconnectOriginInput(updatedOrigin);
       const testResult = await testFanNetworkReadiness(updatedOrigin);
-      if (testResult?.ok) {
-        await submitToFanNetwork(updatedOrigin, testResult);
-      } else {
+      if (!testResult?.ok) {
         setFanSubmitMsg("Discovery origin updated. Run Submit to Fan Network after readiness passes.");
       }
     } catch (e: any) {
