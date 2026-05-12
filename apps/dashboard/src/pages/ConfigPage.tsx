@@ -629,7 +629,11 @@ export default function ConfigPage({
   }, [apiBase, token]);
 
   const productTier = diagnosticsStatus?.productTier || "basic";
-  const nodeMode = (modeInfo?.nodeMode || "basic") as "basic" | "advanced" | "lan";
+  const resolvedNodeMode = ((modeInfo?.effectiveMode || modeInfo?.selectedMode || modeInfo?.nodeMode || "basic") as
+    | "basic"
+    | "advanced"
+    | "lan");
+  const nodeMode = resolvedNodeMode;
   const isSovereignPosture = nodeMode === "advanced" || nodeMode === "lan";
   const namedConfigured = Boolean(diagnosticsStatus?.publicStatus?.namedConfigured);
   const quickDisabled = isSovereignPosture && namedConfigured;
