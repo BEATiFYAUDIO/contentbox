@@ -29966,75 +29966,338 @@ async function handleBuyPage(req: any, reply: any) {
   <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
   <title>Buy</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:#0b0b0b; color:#f4f4f5; }
-    .wrap { max-width: 880px; margin: 0 auto; padding: 24px; }
-    .card { background:#111; border:1px solid #222; border-radius:16px; padding:20px; }
-    .muted { color:#a1a1aa; font-size:14px; }
-    .row { display:flex; gap:16px; flex-wrap:wrap; }
-    .rail { flex:1 1 280px; border:1px solid #222; border-radius:12px; padding:12px; background:#0f0f10; }
-    .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; background:#fff; color:#0b0b0b; border:none; border-radius:12px; padding:11px 16px; font-weight:600; cursor:pointer; text-decoration:none; }
-    .btn.primary { background:linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); box-shadow:0 6px 20px rgba(15, 23, 42, 0.25); }
-    .btn.outline { background:#0f0f10; color:#f8fafc; border:1px solid #2a2a2a; }
-    .btn.full { width:100%; }
-    .btn.small { padding:6px 10px; font-size:13px; border-radius:10px; }
-    .btn:disabled { opacity:0.6; cursor:not-allowed; }
-    .input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #333; background:#0b0b0b; color:#fff; }
-    .field { margin-top:10px; }
-    .step { margin-top:14px; padding:12px; border:1px solid #222; border-radius:12px; background:#0f0f10; }
-    .step h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
-    .proof-card { margin-top:12px; padding:12px; border:1px solid #1f3d2f; border-radius:12px; background:#0c1912; }
-    .proof-title { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#86efac; font-weight:700; }
-    .proof-grid { margin-top:8px; display:grid; gap:6px; font-size:12px; color:#cbd5e1; }
-    .proof-label { color:#9ca3af; }
-    .access-card { margin-top:10px; padding:12px; border:1px solid #2b3340; border-radius:12px; background:#10151d; }
-    .access-title { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#93c5fd; font-weight:700; }
-    .access-grid { margin-top:8px; display:grid; gap:6px; font-size:12px; color:#d4d4d8; }
-    .access-label { color:#9ca3af; }
-    .proof-drawer { margin-top:16px; border:1px solid #2b2d33; border-radius:12px; background:linear-gradient(180deg, #111318 0%, #0d0f13 100%); overflow:hidden; }
-    .proof-drawer > summary { list-style:none; cursor:pointer; padding:12px 14px; display:flex; align-items:center; justify-content:space-between; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#c7d2fe; font-weight:700; border-bottom:1px solid transparent; }
-    .proof-drawer > summary::-webkit-details-marker { display:none; }
-    .proof-drawer[open] > summary { border-bottom-color:#252a36; }
-    .proof-drawer-badge { font-size:11px; color:#a1a1aa; text-transform:none; letter-spacing:0; font-weight:500; }
-    .proof-drawer-body { padding:2px 12px 12px; }
-    .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; word-break:break-all; }
-    .copy { font-size:12px; border:1px solid #333; background:#151515; color:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; }
-    .section-title { margin-top:12px; font-size:16px; font-weight:600; }
-    .download-row { margin-top:10px; }
-    .preview { margin-top:14px; }
-    .preview img, .preview video, .preview audio { width:100%; max-width:820px; border-radius:12px; border:1px solid #222; background:#0b0b0b; }
-    .song-cover { margin-top:14px; max-width:420px; aspect-ratio:1/1; border-radius:12px; border:1px solid #222; overflow:hidden; background:#0f0f10; }
-    .song-cover img { width:100%; height:100%; object-fit:cover; display:block; }
-    .song-cover.placeholder { display:flex; align-items:center; justify-content:center; color:#71717a; font-size:12px; }
-    a { color:#93c5fd; }
-    .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
-    .cb-heart { margin-left:4px; font-weight:700; }
-    .cb-heart--grey { color:#cbd5e1; }
-    .cb-heart--gold { color:#fbbf24; }
-    .purchase-card { margin-top:14px; padding:14px; border:1px solid #2a2a2a; border-radius:14px; background:linear-gradient(180deg, #111316 0%, #0f1012 100%); }
-    .purchase-card--unlocked { border-color:#14532d; background:linear-gradient(180deg, #0f1d14 0%, #0b150f 100%); }
-    .purchase-kicker { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
-    .purchase-price { margin-top:6px; font-size:30px; font-weight:800; letter-spacing:-0.02em; line-height:1.1; }
-    .purchase-sub { margin-top:4px; color:#a1a1aa; font-size:13px; }
-    .rails-wrap { margin-top:12px; }
-    .receipt-row { margin-top:10px; padding-top:10px; border-top:1px solid #222; }
-    .library-return-wrap { margin-top:10px; text-align:left; }
-    .library-return { text-decoration:none; }
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      color: #f5f7fa;
+      background:
+        radial-gradient(1200px 550px at 100% -10%, rgba(34, 211, 238, 0.08), transparent 52%),
+        radial-gradient(900px 460px at -8% 20%, rgba(245, 158, 11, 0.09), transparent 48%),
+        linear-gradient(180deg, #07090d 0%, #090c12 45%, #05070a 100%);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 28px 20px 36px;
+    }
+    .card {
+      position: relative;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      background: linear-gradient(180deg, rgba(14, 18, 28, 0.88), rgba(10, 13, 20, 0.92));
+      backdrop-filter: blur(6px);
+      border-radius: 18px;
+      padding: 22px;
+      box-shadow:
+        0 34px 70px rgba(3, 5, 10, 0.6),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(500px 180px at 12% 0%, rgba(250, 204, 21, 0.08), transparent 68%),
+        radial-gradient(460px 200px at 88% 0%, rgba(56, 189, 248, 0.07), transparent 72%);
+    }
+    #app { position: relative; z-index: 1; }
+    .muted { color: #a6afbe; font-size: 14px; }
+    .row { display: flex; gap: 18px; flex-wrap: wrap; }
+    .rail {
+      flex: 1 1 280px;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 14px;
+      padding: 14px;
+      background: linear-gradient(180deg, rgba(16, 20, 30, 0.9), rgba(10, 14, 21, 0.9));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-radius: 12px;
+      padding: 11px 16px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn.primary {
+      border: 1px solid rgba(250, 204, 21, 0.48);
+      color: #0b1220;
+      background: linear-gradient(135deg, #f6d673 0%, #fbbf24 58%, #f59e0b 100%);
+      box-shadow: 0 10px 26px rgba(245, 158, 11, 0.28);
+    }
+    .btn.outline {
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      color: #e9eef7;
+      background: rgba(12, 16, 24, 0.9);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    .btn.full { width: 100%; }
+    .btn.small { padding: 7px 11px; font-size: 12.5px; border-radius: 10px; }
+    .btn:disabled {
+      opacity: 0.62;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+    .input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 11px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(5, 7, 11, 0.88);
+      color: #f8fafc;
+      outline: none;
+      transition: border-color 140ms ease, box-shadow 140ms ease;
+    }
+    .input:focus {
+      border-color: rgba(56, 189, 248, 0.52);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14);
+    }
+    .field { margin-top: 10px; }
+    .step {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 13px;
+      background: linear-gradient(180deg, rgba(14, 18, 28, 0.9), rgba(10, 13, 20, 0.9));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    .step h3 {
+      margin: 0 0 7px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #98a2b3;
+    }
+    .proof-card {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid rgba(74, 222, 128, 0.34);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(8, 29, 20, 0.9), rgba(9, 21, 17, 0.95));
+    }
+    .proof-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: #86efac;
+      font-weight: 700;
+    }
+    .proof-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: #d1d9e6; }
+    .proof-label { color: #97a0af; }
+    .access-card {
+      margin-top: 10px;
+      padding: 12px;
+      border: 1px solid rgba(125, 211, 252, 0.3);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(13, 21, 35, 0.92), rgba(10, 18, 30, 0.96));
+    }
+    .access-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: #93c5fd;
+      font-weight: 700;
+    }
+    .access-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: #d8dee9; }
+    .access-label { color: #9ca7b6; }
+    .proof-drawer {
+      margin-top: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(14, 18, 28, 0.92), rgba(11, 14, 21, 0.96));
+      overflow: hidden;
+    }
+    .proof-drawer > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: #d0d8e7;
+      font-weight: 700;
+      border-bottom: 1px solid transparent;
+    }
+    .proof-drawer > summary::-webkit-details-marker { display: none; }
+    .proof-drawer[open] > summary { border-bottom-color: rgba(255, 255, 255, 0.1); }
+    .proof-drawer-badge { font-size: 11px; color: #9ca7b6; text-transform: none; letter-spacing: 0; font-weight: 500; }
+    .proof-drawer-body { padding: 2px 12px 12px; }
+    .code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      word-break: break-all;
+      color: #dbe6f5;
+    }
+    .copy {
+      font-size: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.17);
+      background: rgba(13, 17, 26, 0.92);
+      color: #eef4ff;
+      padding: 6px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .copy:hover { border-color: rgba(125, 211, 252, 0.5); }
+    .section-title {
+      margin-top: 14px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      color: #f4f7fb;
+    }
+    .download-row { margin-top: 10px; }
+    .preview { margin-top: 14px; }
+    .preview img, .preview video, .preview audio {
+      width: 100%;
+      max-width: 860px;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      background: #080b10;
+      box-shadow: 0 16px 34px rgba(2, 4, 8, 0.45);
+    }
+    .song-cover {
+      margin-top: 14px;
+      max-width: 420px;
+      aspect-ratio: 1 / 1;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      overflow: hidden;
+      background: #0f1219;
+      box-shadow: 0 16px 34px rgba(2, 4, 8, 0.45);
+    }
+    .song-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .song-cover.placeholder { display: flex; align-items: center; justify-content: center; color: #798293; font-size: 12px; }
+    a { color: #8fd3ff; }
+    .footer {
+      margin-top: 22px;
+      font-size: 12px;
+      color: #9da8b8;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 10px;
+    }
+    .cb-heart { margin-left: 4px; font-weight: 700; }
+    .cb-heart--grey { color: #cbd5e1; }
+    .cb-heart--gold { color: #fbbf24; }
+    .purchase-card {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(17, 22, 33, 0.94), rgba(10, 13, 20, 0.96));
+      box-shadow:
+        0 20px 36px rgba(1, 3, 8, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    .purchase-card--unlocked {
+      border-color: rgba(74, 222, 128, 0.38);
+      background: linear-gradient(180deg, rgba(10, 35, 21, 0.94), rgba(8, 24, 15, 0.96));
+    }
+    .purchase-kicker {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.11em;
+      color: #95a1b3;
+    }
+    .purchase-price {
+      margin-top: 6px;
+      font-size: 31px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.08;
+      color: #f9fafb;
+      text-wrap: balance;
+    }
+    .purchase-sub { margin-top: 4px; color: #a9b3c2; font-size: 13px; }
+    .rails-wrap { margin-top: 12px; }
+    .receipt-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.11); }
+    .library-return-wrap { margin-top: 10px; text-align: left; }
+    .library-return { text-decoration: none; }
+    .hero-title {
+      font-size: clamp(28px, 4vw, 38px);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      text-wrap: balance;
+      margin: 0 0 8px;
+      color: #f8fbff;
+    }
+    .hero-sub {
+      margin: 0;
+      color: #a9b5c7;
+      font-size: 15px;
+      line-height: 1.55;
+      text-wrap: pretty;
+      max-width: 76ch;
+    }
+    .trust-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      margin-bottom: 4px;
+    }
+    .trust-chip {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #dce8f7;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(9, 14, 22, 0.88);
+      border-radius: 999px;
+      padding: 6px 10px;
+      white-space: nowrap;
+    }
+    .trust-chip--gold {
+      border-color: rgba(251, 191, 36, 0.38);
+      color: #fde68a;
+      background: rgba(120, 53, 15, 0.22);
+    }
+    .trust-chip--teal {
+      border-color: rgba(56, 189, 248, 0.38);
+      color: #bae6fd;
+      background: rgba(14, 116, 144, 0.2);
+    }
+    .trust-chip--green {
+      border-color: rgba(74, 222, 128, 0.36);
+      color: #bbf7d0;
+      background: rgba(20, 83, 45, 0.25);
+    }
+    .trust-chip--violet {
+      border-color: rgba(167, 139, 250, 0.34);
+      color: #ddd6fe;
+      background: rgba(76, 29, 149, 0.22);
+    }
     @media (max-width: 640px) {
-      .wrap { padding: 16px; }
-      .card { padding: 16px; }
+      .wrap { padding: 14px; }
+      .card { padding: 14px; border-radius: 14px; }
       .purchase-card { padding: 12px; }
-      .purchase-price { font-size:26px; }
-      .btn { width:100%; }
+      .purchase-price { font-size: 26px; }
+      .btn { width: 100%; }
       .library-return {
-        display:inline-flex !important;
-        width:auto !important;
-        min-width:0;
-        padding:10px 14px;
-        border-radius:10px;
+        display: inline-flex !important;
+        width: auto !important;
+        min-width: 0;
+        padding: 10px 14px;
+        border-radius: 10px;
       }
-      .row { gap:12px; }
-      .rail { padding:10px; }
+      .row { gap: 12px; }
+      .rail { padding: 10px; border-radius: 12px; }
+      .preview img, .preview video, .preview audio { border-radius: 12px; }
     }
   </style>
 </head>
@@ -30863,8 +31126,14 @@ async function handleBuyPage(req: any, reply: any) {
         "</div>";
     app.innerHTML =
       "<div>" +
-        "<div style=\\"font-size:22px;font-weight:700;\\">" + (offer.title || "Content") + "</div>" +
-        "<div class=\\"muted\\">" + (offer.description || "") + "</div>" +
+        "<h1 class=\\"hero-title\\">" + (offer.title || "Content") + "</h1>" +
+        "<p class=\\"hero-sub\\">" + (offer.description || "") + "</p>" +
+        "<div class=\\"trust-strip\\">" +
+          "<span class=\\"trust-chip trust-chip--teal\\">Creator verified</span>" +
+          "<span class=\\"trust-chip trust-chip--green\\">Open access</span>" +
+          "<span class=\\"trust-chip trust-chip--violet\\">Receipt protected</span>" +
+          "<span class=\\"trust-chip trust-chip--gold\\">Attribution enforced</span>" +
+        "</div>" +
         "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
         (isAudio
           ? (coverSrc
@@ -30935,8 +31204,14 @@ async function handleBuyPage(req: any, reply: any) {
       : "";
     app.innerHTML = \`
       <div>
-        <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
-        <div class="muted">\${offer.description || ""}</div>
+        <h1 class="hero-title">\${offer.title || "Content"}</h1>
+        <p class="hero-sub">\${offer.description || ""}</p>
+        <div class="trust-strip">
+          <span class="trust-chip trust-chip--teal">Creator verified</span>
+          <span class="trust-chip trust-chip--green">Instant unlock</span>
+          <span class="trust-chip trust-chip--violet">Receipt protected</span>
+          <span class="trust-chip trust-chip--gold">Attribution enforced</span>
+        </div>
         <section id="cb-attribution" style="display:none"></section>
         \${isAudio && (!receiptView.show || receiptView.showPlayer) ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
         \${mediaSrc && canStream && (!receiptView.show || receiptView.showPlayer) ? \`
