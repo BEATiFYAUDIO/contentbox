@@ -629,13 +629,16 @@ export default function ConfigPage({
   }, [apiBase, token]);
 
   const productTier = diagnosticsStatus?.productTier || "basic";
+  const nodeMode = (modeInfo?.nodeMode || "basic") as "basic" | "advanced" | "lan";
+  const isSovereignPosture = nodeMode === "advanced" || nodeMode === "lan";
   const namedConfigured = Boolean(diagnosticsStatus?.publicStatus?.namedConfigured);
-  const quickDisabled = productTier === "advanced" && namedConfigured;
+  const quickDisabled = isSovereignPosture && namedConfigured;
   const modeLocked = Boolean(modeInfo?.tierLocked);
   const namedOriginCandidate = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
   const namedTunnelOnline =
     publicStatus?.mode === "named" &&
     publicStatus?.status === "online" &&
+    !publicStatus?.namedDisabled &&
     Boolean(namedOriginCandidate) &&
     !isTemporaryPublicOrigin(namedOriginCandidate);
   const configuredTunnelName = String(tunnelName || publicStatus?.tunnelName || "").trim();
@@ -649,20 +652,29 @@ export default function ConfigPage({
   const discoveredTunnelNameFromStatus = String(publicStatus?.tunnelName || "").trim() || null;
   const discoveredTunnelName = discoveredTunnelNameState || discoveredTunnelNameFromList || discoveredTunnelNameFromStatus;
   const cloudflaredAvailable = Boolean(publicStatus?.cloudflared?.available);
-  // Treat named tunnel as "detected" only when it is locally discoverable/manageable.
-  // A stale status.mode==="named" on another machine should not block Basic temporary links.
-  const namedTunnelDetectedFromStatus =
-    Boolean(publicStatus?.namedConfigured) || Boolean(discoveredTunnelNameFromStatus);
-  const namedTunnelDetectedRaw =
-    namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList) || namedTunnelDetectedFromStatus;
-  const namedTunnelDetected = Boolean(cloudflaredAvailable && namedTunnelDetectedRaw);
-  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
-  const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const tunnelControlMode = String(publicStatus?.tunnelControl?.mode || "unknown");
   const tunnelControlMessage = String(publicStatus?.tunnelControl?.message || "").trim();
   const serviceManagedTokenMode = tunnelControlMode === "service_token";
+  // Treat named tunnel as "detected" only when it is locally discoverable/manageable.
+  // A stale status.mode==="named" on another machine should not block Basic temporary links.
+  const namedTunnelDetectedFromStatus =
+    !publicStatus?.namedDisabled &&
+    Boolean(publicStatus?.namedConfigured) &&
+    (Boolean(discoveredTunnelNameFromStatus) || publicStatus?.mode === "named");
+  const namedTunnelDetectedRaw =
+    namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList) || namedTunnelDetectedFromStatus;
+  const namedTunnelDetected = serviceManagedTokenMode
+    ? Boolean(namedTunnelDetectedRaw)
+    : Boolean(cloudflaredAvailable && namedTunnelDetectedRaw);
+  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
+  const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const namedTunnelManageableLocally = Boolean(cloudflaredAvailable && (publicStatus?.namedTokenStored || namedTunnelDetected));
-  const startActionLabel = selectedTunnelMode === "existing_named" ? "Start named tunnel" : "Start temporary link";
+  const startActionLabel =
+    selectedTunnelMode === "existing_named"
+      ? "Start named tunnel"
+      : isSovereignPosture
+        ? "Start temporary link (fallback)"
+        : "Start temporary link";
   const startActionDisabled =
     publicBusy ||
     publicStatus?.status === "starting" ||
@@ -685,8 +697,18 @@ export default function ConfigPage({
   const sovereignModeBlockedReason = sovereignCreatorEligible
     ? null
     : "Canonical public origin not detected yet. Sovereign Creator unlocks after stable public host detection.";
-  const isBasicMode = modeInfo?.nodeMode === "basic";
-  const temporaryOverrideAllowed = !namedTunnelDetected;
+  const isBasicMode = nodeMode === "basic";
+  const tunnelStepLabel = isBasicMode
+    ? "Step 1: Basic Creator tunnel setup"
+    : nodeMode === "advanced"
+      ? "Step 1: Sovereign Creator routing"
+      : "Step 1: Sovereign Node routing";
+  const tunnelModeHint = isBasicMode
+    ? "Basic mode uses temporary links by default unless a local named tunnel is active."
+    : nodeMode === "advanced"
+      ? "Sovereign Creator prefers durable named routing. Temporary links are fallback only."
+      : "Sovereign Node expects durable named routing for stable canonical origin.";
+  const temporaryOverrideAllowed = selectedTunnelMode === "existing_named" && !publicStatus?.namedDisabled;
   const routingStatusTitle = publicStatus?.namedDisabled
     ? namedTunnelDetected
       ? "Named tunnel paused"
@@ -725,7 +747,10 @@ export default function ConfigPage({
         : selectedTunnelMode === "existing_named"
         ? "Named tunnel"
           : "Temporary link";
-  const stopActionLabel = publicStatus?.mode === "named" ? "Stop named tunnel" : "Stop temporary link";
+  const stopActionLabel =
+    selectedTunnelMode === "existing_named" && !publicStatus?.namedDisabled
+      ? "Stop named tunnel"
+      : "Stop temporary link";
   const refreshRoutingLabel = "Refresh routing";
   const localRoutingControlsDisabled =
     serviceManagedTokenMode &&
@@ -1461,8 +1486,9 @@ export default function ConfigPage({
       ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>Step 1: Basic Creator tunnel setup</div>
+        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>{tunnelStepLabel}</div>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
+        <div style={{ fontSize: 12, opacity: 0.72, marginBottom: 10 }}>{tunnelModeHint}</div>
         {publicStatus ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
               <button
@@ -1474,7 +1500,7 @@ export default function ConfigPage({
             </button>
             {selectedTunnelMode === "token_bootstrap" && quickDisabled ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-                Temporary (testing only — admin access only). Advanced prefers named when configured.
+                Temporary route is fallback-only in sovereign posture when named routing is configured.
               </div>
             ) : null}
             {selectedTunnelMode === "existing_named" && !cloudflaredAvailable ? (
