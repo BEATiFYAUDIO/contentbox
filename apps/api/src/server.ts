@@ -29010,7 +29010,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         padding-inline:0;
       }
       .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:0; align-self:center; justify-content:flex-start; }
-      .identity-rail { grid-area:identity; margin-left:var(--profile-id-offset); align-items:center; gap:var(--profile-id-gap); }
+      .identity-rail { grid-area:identity; margin-left:14px; align-items:center; gap:var(--profile-id-gap); }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
