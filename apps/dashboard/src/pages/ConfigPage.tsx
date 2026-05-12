@@ -231,6 +231,7 @@ export default function ConfigPage({
   const [reconnectOriginInput, setReconnectOriginInput] = useState<string>("");
   const [reconnectBusy, setReconnectBusy] = useState(false);
   const [reconnectMsg, setReconnectMsg] = useState<string | null>(null);
+  const [lastNamedAutoStartKickAt, setLastNamedAutoStartKickAt] = useState<number>(0);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -909,6 +910,32 @@ export default function ConfigPage({
       if (timer) clearTimeout(timer);
     };
   }, [apiBase, publicStatus?.status, token]);
+
+  // If named tunnel is available and auto-start is enabled, automatically
+  // kick it from offline state so operators don't need to click Start each time.
+  useEffect(() => {
+    if (!token) return;
+    if (publicBusy) return;
+    if (selectedTunnelMode !== "existing_named") return;
+    if (!namedTunnelManageableLocally) return;
+    if (publicStatus?.namedDisabled) return;
+    if (!publicStatus?.autoStartEnabled) return;
+    if (publicStatus?.status !== "offline") return;
+
+    const now = Date.now();
+    if (now - lastNamedAutoStartKickAt < 15000) return;
+    setLastNamedAutoStartKickAt(now);
+    startPublicLink().catch(() => {});
+  }, [
+    lastNamedAutoStartKickAt,
+    namedTunnelManageableLocally,
+    publicBusy,
+    publicStatus?.autoStartEnabled,
+    publicStatus?.namedDisabled,
+    publicStatus?.status,
+    selectedTunnelMode,
+    token
+  ]);
 
   const startPublicLink = async () => {
     if (!token) return;
@@ -1781,7 +1808,11 @@ export default function ConfigPage({
                 autoComplete="off"
               />
             </label>
-            {tunnelEnabled && tokenBootstrapRequired && !localRoutingControlsDisabled && !serviceManagedTokenMode ? (
+            {tunnelEnabled &&
+            tokenBootstrapRequired &&
+            selectedTunnelMode === "token_bootstrap" &&
+            !localRoutingControlsDisabled &&
+            !serviceManagedTokenMode ? (
               <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
                 <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
