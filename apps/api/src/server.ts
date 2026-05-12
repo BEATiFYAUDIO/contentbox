@@ -31093,14 +31093,37 @@ async function handleBuyPage(req: any, reply: any) {
     return mode === "download_only" || mode === "stream_and_download";
   }
 
+  function inferPreviewKind(offer, src){
+    const mime = String(offer?.primaryFileMime || "").toLowerCase();
+    const path = String(src || "").toLowerCase();
+    if (offer?.type === "video" || mime.startsWith("video/") || /\\.(mp4|webm|mov|m4v)(\\?|#|$)/.test(path)) return "video";
+    if (offer?.type === "song" || mime.startsWith("audio/") || /\\.(mp3|wav|m4a|ogg|flac)(\\?|#|$)/.test(path)) return "audio";
+    if (mime.startsWith("image/") || /\\.(png|jpe?g|webp|gif|avif)(\\?|#|$)/.test(path)) return "image";
+    return "file";
+  }
+
+  function resolveRenderablePreview(offer, primarySrc, alternateSrc){
+    const first = String(primarySrc || "").trim();
+    const second = String(alternateSrc || "").trim();
+    const firstKind = first ? inferPreviewKind(offer, first) : "file";
+    if (first && firstKind !== "file") return { src: first, kind: firstKind };
+    const secondKind = second ? inferPreviewKind(offer, second) : "file";
+    if (second && secondKind !== "file") return { src: second, kind: secondKind };
+    if (first) return { src: first, kind: firstKind };
+    if (second) return { src: second, kind: secondKind };
+    return { src: "", kind: "file" };
+  }
+
   function renderBasicOffer(offer){
     const mime = String(offer.primaryFileMime || "");
-    const isVideo = offer.type === "video" || mime.startsWith("video/");
-    const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
-    const mediaSrc = (isVideo || isAudio)
-      ? (previewFallbackUrl(offer) || basicPrimaryUrl(offer))
-      : (basicPrimaryUrl(offer) || previewFallbackUrl(offer));
-    const coverSrc = isAudio ? offerCoverUrl(offer) : null;
+    const preferredPreview = previewFallbackUrl(offer);
+    const primaryPreview = basicPrimaryUrl(offer);
+    const resolvedPreview = resolveRenderablePreview(offer, preferredPreview, primaryPreview);
+    const mediaSrc = resolvedPreview.src || preferredPreview || primaryPreview || "";
+    const previewKind = resolvedPreview.kind;
+    const isVideo = previewKind === "video";
+    const isAudio = previewKind === "audio";
+    const coverSrc = (offer.type === "song" || isAudio) ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
@@ -31144,7 +31167,8 @@ async function handleBuyPage(req: any, reply: any) {
           ? "<div class=\\"preview\\">" +
               (isVideo ? "<video id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></video>" : "") +
               (isAudio ? "<audio id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></audio>" : "") +
-              (!isVideo && !isAudio ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
+              (!isVideo && !isAudio && previewKind === "image" ? "<img id=\\"player\\" src=\\"" + mediaSrc + "\\" alt=\\"Preview image\\" loading=\\"lazy\\" referrerpolicy=\\"no-referrer\\" />" : "") +
+              (!isVideo && !isAudio && previewKind === "file" ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
             "</div>"
           : "") +
         "<div class=\\"section-title\\">Free access</div>" +
@@ -31171,11 +31195,14 @@ async function handleBuyPage(req: any, reply: any) {
     const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
     const hasBuyer = Boolean(buyer && buyer.id);
     const token = entitlement?.token || receiptToken || null;
-    const mediaSrc = token ? streamUrl(offer, token) : previewFallbackUrl(offer) || streamUrl(offer, token);
-    const mime = String(offer.primaryFileMime || "");
-    const isVideo = offer.type === "video" || mime.startsWith("video/");
-    const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
-    const coverSrc = isAudio ? offerCoverUrl(offer) : null;
+    const tokenStreamSrc = token ? streamUrl(offer, token) : null;
+    const fallbackPreviewSrc = previewFallbackUrl(offer);
+    const resolvedPreview = resolveRenderablePreview(offer, tokenStreamSrc || fallbackPreviewSrc, fallbackPreviewSrc || tokenStreamSrc);
+    const mediaSrc = resolvedPreview.src || tokenStreamSrc || fallbackPreviewSrc || "";
+    const previewKind = resolvedPreview.kind;
+    const isVideo = previewKind === "video";
+    const isAudio = previewKind === "audio";
+    const coverSrc = (offer.type === "song" || isAudio) ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
@@ -31219,7 +31246,8 @@ async function handleBuyPage(req: any, reply: any) {
             \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview the release</div>\` : ""}
             \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></video>\` : ""}
             \${isAudio ? \`<audio id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
-            \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
+            \${!isVideo && !isAudio && previewKind === "image" ? \`<img id="player" src="\${mediaSrc}" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />\` : ""}
+            \${!isVideo && !isAudio && previewKind === "file" ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
           </div>
         \` : \`\${isPaid && (!receiptView.show || receiptView.showPlayer) ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
         \${isPaid ? \`
