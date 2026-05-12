@@ -31924,7 +31924,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
         radial-gradient(80% 100% at 20% 100%, rgba(106, 79, 34, 0.18), transparent 75%),
         #0f131b;
     }
-    .item-meta { padding:12px; display:flex; flex-direction:column; gap:8px; }
+    .item-meta { padding:12px; display:flex; flex-direction:column; gap:8px; flex:1; }
     .item-title {
       font-size:20px; line-height:1.15; font-weight:680; letter-spacing:-0.01em; margin:0;
       display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
