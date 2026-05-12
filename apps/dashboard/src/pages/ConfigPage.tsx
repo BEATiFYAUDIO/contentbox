@@ -630,7 +630,7 @@ export default function ConfigPage({
   }, [apiBase, token]);
 
   const productTier = diagnosticsStatus?.productTier || "basic";
-  const resolvedNodeMode = ((modeInfo?.effectiveMode || modeInfo?.selectedMode || modeInfo?.nodeMode || "basic") as
+  const resolvedNodeMode = ((modeInfo?.selectedMode || modeInfo?.nodeMode || modeInfo?.effectiveMode || "basic") as
     | "basic"
     | "advanced"
     | "lan");
@@ -672,10 +672,16 @@ export default function ConfigPage({
     ? Boolean(namedTunnelDetectedRaw)
     : Boolean(cloudflaredAvailable && namedTunnelDetectedRaw);
   const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
-  // UI should honor active named posture when backend is already in named mode,
-  // even if local discovery heuristics temporarily miss detection.
+  // Tunnel controls are posture-driven:
+  // - Basic defaults to temporary links
+  // - Sovereign postures default to named routing controls
+  // Status/detail blocks still reflect real backend mode underneath.
   const activeNamedPosture = Boolean(!publicStatus?.namedDisabled && publicStatus?.mode === "named");
-  const uiTunnelMode: "existing_named" | "token_bootstrap" = activeNamedPosture ? "existing_named" : selectedTunnelMode;
+  const uiTunnelMode: "existing_named" | "token_bootstrap" = isSovereignPosture
+    ? "existing_named"
+    : activeNamedPosture
+      ? "existing_named"
+      : "token_bootstrap";
   const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const namedTunnelManageableLocally = Boolean(cloudflaredAvailable && (publicStatus?.namedTokenStored || namedTunnelDetected));
   const startActionLabel =
