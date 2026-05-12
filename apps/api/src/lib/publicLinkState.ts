@@ -18,9 +18,9 @@ function readStateFlag(): boolean {
 }
 
 /**
- * Strict canonical public link model:
- * - Named tunnel (if configured) is always the canonical origin.
- * - Quick tunnel is allowed only when named is not configured.
+ * Canonical public link model:
+ * - In named mode, configured named origin is canonical.
+ * - In quick mode, quick origin is canonical (even if named config exists).
  * - Named offline is OFFLINE (not ERROR); canonical origin stays the same.
  */
 export type PublicMode = "off" | "quick" | "named";
@@ -87,7 +87,7 @@ export const computePublicLinkState = (input: PublicLinkStateInput): PublicLinkS
   const canonicalNamedOrigin = envNamedOrigin || cfgPublicOrigin || cfgDomainOrigin || null;
   const namedConfigured = Boolean(canonicalNamedOrigin);
 
-  if (namedConfigured) {
+  if (envMode === "named" && namedConfigured) {
     const health = input.namedHealthOk;
     const status: PublicStatus = health === true ? "online" : "offline";
     return {

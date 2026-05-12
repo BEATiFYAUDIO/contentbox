@@ -1781,6 +1781,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       return;
     }
     setBusyAction((m) => ({ ...m, [contentId]: true }));
+    const previousStatus = (() => {
+      const current = items.find((it) => it.id === contentId);
+      return ((current?.storefrontStatus || "DISABLED") as "DISABLED" | "UNLISTED" | "LISTED");
+    })();
+    // Optimistic update avoids the visibility select snapping back to Hidden
+    // while the PATCH request is in flight.
+    setItems((prev) =>
+      prev.map((it) => (it.id === contentId ? { ...it, storefrontStatus } : it))
+    );
     try {
       const res = await api<{ storefrontStatus: string }>(`/api/content/${contentId}/storefront`, "PATCH", {
         storefrontStatus
@@ -1789,6 +1798,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         prev.map((it) => (it.id === contentId ? { ...it, storefrontStatus: res.storefrontStatus as any } : it))
       );
     } catch (e: any) {
+      setItems((prev) =>
+        prev.map((it) => (it.id === contentId ? { ...it, storefrontStatus: previousStatus } : it))
+      );
       if (e?.message && String(e.message).includes("public_discovery_not_allowed")) {
         setError(discoveryPublishReason);
       } else if (e?.message && String(e.message).includes("DISCOVERY_PAID_REQUIRES_COMMERCE")) {

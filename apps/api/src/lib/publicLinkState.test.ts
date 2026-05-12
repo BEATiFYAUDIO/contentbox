@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { canonicalOriginForLinks, computePublicLinkState } from "./publicLinkState.js";
 
-test("named configured => mode named, canonical, offline when health false", () => {
+test("named configured in quick mode keeps quick canonical origin", () => {
   const state = computePublicLinkState({
     publicModeEnv: "quick",
     dbModeEnv: "advanced",
@@ -11,10 +11,10 @@ test("named configured => mode named, canonical, offline when health false", () 
     quick: { status: "ACTIVE", publicOrigin: "https://abc.trycloudflare.com" },
     namedHealthOk: false
   });
-  assert.equal(state.mode, "named");
-  assert.equal(state.isCanonical, true);
-  assert.equal(state.canonicalOrigin, "https://contentbox.example.com");
-  assert.equal(state.status, "offline");
+  assert.equal(state.mode, "quick");
+  assert.equal(state.isCanonical, false);
+  assert.equal(state.canonicalOrigin, "https://abc.trycloudflare.com");
+  assert.equal(state.status, "online");
 });
 
 test("named configured but unknown health => status offline", () => {
@@ -46,9 +46,9 @@ test("no named config + quick active => mode quick, not canonical", () => {
   assert.equal(state.status, "online");
 });
 
-test("named configured wins over quick", () => {
+test("named configured only wins when mode is named", () => {
   const state = computePublicLinkState({
-    publicModeEnv: "quick",
+    publicModeEnv: "named",
     dbModeEnv: "advanced",
     namedEnv: { tunnelName: "contentbox", publicOrigin: "https://contentbox.example.com" },
     config: { provider: "cloudflare", domain: "contentbox.example.com", tunnelName: "contentbox" },
