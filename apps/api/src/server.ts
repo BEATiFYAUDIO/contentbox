@@ -28993,9 +28993,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .profile-header-grid {
         --profile-brand-col: 92px;
         --profile-gap-x: 8px;
-        --profile-id-offset: 4px;
+        --profile-id-offset: 0px;
         --profile-id-gap: 8px;
-        --profile-logo-size: 86px;
+        --profile-logo-size: 80px;
         --profile-avatar-size: 78px;
       }
       body { padding:10px; }
