@@ -31869,25 +31869,86 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
   <title>Library</title>
   <style>
     :root { color-scheme: light dark; }
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:#0b0b0b; color:#f4f4f5; }
-    .wrap { max-width: 880px; margin: 0 auto; padding: 24px; }
-    .card { background:#111; border:1px solid #222; border-radius:16px; padding:20px; }
-    .muted { color:#a1a1aa; font-size:14px; }
-    .row { display:flex; gap:16px; flex-wrap:wrap; }
-    .btn { background:#fff; color:#000; border:none; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
-    .btn.secondary { background:#151515; color:#fff; border:1px solid #333; }
-    .input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #333; background:#0b0b0b; color:#fff; }
-    .field { margin-top:10px; }
-    .step { margin-top:14px; padding:12px; border:1px solid #222; border-radius:12px; background:#0f0f10; }
-    .step h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
-    .item { border:1px solid #222; border-radius:12px; padding:12px; background:#0f0f10; margin-top:10px; }
-    .content-id { display:block; margin-top:2px; overflow-wrap:anywhere; word-break:break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; line-height:1.35; }
-    a { color:#93c5fd; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      margin:0;
+      background:
+        radial-gradient(900px 500px at 12% -10%, rgba(78, 58, 25, 0.18), transparent 60%),
+        radial-gradient(900px 500px at 90% -12%, rgba(25, 35, 58, 0.18), transparent 62%),
+        #050608;
+      color:#eceff5;
+    }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 26px; }
+    .card {
+      background:linear-gradient(180deg, rgba(11, 13, 18, 0.96), rgba(7, 9, 12, 0.98));
+      border:1px solid #222836;
+      border-radius:18px;
+      padding:22px;
+      box-shadow:0 24px 70px rgba(0,0,0,0.45);
+    }
+    .muted { color:#aeb6c4; font-size:14px; }
+    .btn { background:#d4b26a; color:#0b0b0b; border:none; border-radius:10px; padding:10px 14px; font-weight:650; cursor:pointer; }
+    .btn.secondary { background:#151922; color:#e3e8ef; border:1px solid #2a3140; }
+    .step {
+      margin-top:16px;
+      padding:14px;
+      border:1px solid #232a38;
+      border-radius:14px;
+      background:linear-gradient(180deg, rgba(11, 14, 19, 0.95), rgba(9, 11, 16, 0.95));
+    }
+    .step h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:0.12em; color:#c2a56f; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:14px; }
+    .item {
+      border:1px solid #232a38;
+      border-radius:14px;
+      overflow:hidden;
+      background:linear-gradient(180deg, rgba(12, 16, 23, 0.95), rgba(9, 12, 18, 0.98));
+      display:flex;
+      flex-direction:column;
+      min-height:100%;
+    }
+    .media {
+      position:relative;
+      aspect-ratio:16 / 10;
+      background:#0b0f15;
+      border-bottom:1px solid #212838;
+      overflow:hidden;
+    }
+    .media img { width:100%; height:100%; object-fit:cover; display:block; }
+    .media-fallback {
+      display:flex; align-items:center; justify-content:center;
+      width:100%; height:100%;
+      font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:#9aa4b6;
+      background:
+        radial-gradient(120% 100% at 70% 0%, rgba(68, 89, 129, 0.22), transparent 70%),
+        radial-gradient(80% 100% at 20% 100%, rgba(106, 79, 34, 0.18), transparent 75%),
+        #0f131b;
+    }
+    .item-meta { padding:12px; display:flex; flex-direction:column; gap:8px; }
+    .item-title {
+      font-size:20px; line-height:1.15; font-weight:680; letter-spacing:-0.01em; margin:0;
+      display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    }
+    .creator { color:#c9d1de; font-size:13px; }
+    .meta-line { color:#8f9db2; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+    .status-pill {
+      display:inline-flex; align-items:center; align-self:flex-start;
+      border:1px solid #4b3e28; background:#1a1510; color:#e2c786;
+      border-radius:999px; padding:3px 9px; font-size:11px; font-weight:640;
+      letter-spacing:0.06em; text-transform:uppercase;
+    }
+    .actions { margin-top:auto; display:flex; gap:8px; }
+    .action-primary {
+      border-radius:9px; padding:8px 11px; font-size:12px; font-weight:620; text-decoration:none;
+      background:#d4b26a; color:#0c0c0c;
+    }
+    .ownership-copy { margin-top:8px; font-size:13px; color:#9eacbf; line-height:1.4; }
+    a { color:#d4b26a; }
     .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
     @media (max-width: 640px) {
       .wrap { padding: 16px; }
       .card { padding: 16px; }
-      .item { padding: 10px; }
+      .item-title { font-size:18px; }
     }
   </style>
 </head>
@@ -31943,23 +32004,44 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     }
 
     const list = entitlements || [];
+    function mediaLabel(type){
+      const t = String(type || "").toLowerCase();
+      if (!t) return "Media";
+      return t.charAt(0).toUpperCase() + t.slice(1);
+    }
     const listHtml = list.length
-      ? list
-          .map((e) =>
-            '<div class="item">' +
-              '<div style="font-weight:600;">' + (e.content?.title || e.contentId || "Untitled") + '</div>' +
-              '<div class="muted">Content ID:<span class="content-id">' + e.contentId + '</span></div>' +
-              '<div class="muted" style="margin-top:6px;"><a href="/buy/' + encodeURIComponent(e.contentId) + '">Open buy page</a></div>' +
-            '</div>'
-          )
-          .join("")
-      : '<div class="muted">No purchases yet.</div>';
+      ? '<div class="grid">' +
+          list.map((e) => {
+            const title = (e.content?.title || e.title || e.contentId || "Untitled");
+            const contentType = e.content?.type || e.type || null;
+            const creator = e.content?.owner?.displayName || e.content?.owner?.email || "Creator";
+            const cover = e.content?.coverUrl || ("/public/content/" + encodeURIComponent(e.contentId) + "/cover");
+            const buyUrl = e.content?.buyUrl || ("/buy/" + encodeURIComponent(e.contentId));
+            const createdAt = e.grantedAt ? new Date(e.grantedAt) : null;
+            const granted = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toLocaleDateString() : null;
+            return '<article class="item">' +
+              '<div class="media">' +
+                '<img src="' + cover + '" alt="' + title.replace(/"/g, "&quot;") + ' cover" loading="lazy" onerror="this.style.display=\\'none\\'; this.nextElementSibling.style.display=\\'flex\\';" />' +
+                '<div class="media-fallback" style="display:none;">' + mediaLabel(contentType) + '</div>' +
+              '</div>' +
+              '<div class="item-meta">' +
+                '<span class="status-pill">Owned</span>' +
+                '<h4 class="item-title">' + title + '</h4>' +
+                '<div class="creator">by ' + creator + '</div>' +
+                '<div class="meta-line">' + mediaLabel(contentType) + (granted ? " · Unlocked " + granted : "") + '</div>' +
+                '<div class="actions"><a class="action-primary" href="' + buyUrl + '">View</a></div>' +
+              '</div>' +
+            '</article>';
+          }).join("") +
+        '</div>'
+      : '<div class="muted">Your collection is empty. Unlock content and it will appear here.</div>';
     app.innerHTML = \`
       <div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
           <div>
             <div style="font-size:22px;font-weight:700;">Library</div>
             <div class="muted">Signed in locally</div>
+            <div class="ownership-copy">Your sovereign media vault. Owned and unlocked content appears here for instant access.</div>
           </div>
           <button id="logoutBtn" class="btn secondary">Sign out</button>
         </div>
@@ -31985,10 +32067,10 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">Library</div>
-        <div class="muted">Start local session to view your purchases.</div>
+        <div class="muted">Preparing your library…</div>
         <div class="step" id="buyerAuth">
           <h3>Local session</h3>
-          <button id="buyerStart" class="btn" style="margin-top:10px;">Continue</button>
+          <button id="buyerStart" class="btn" style="margin-top:10px;display:none;">Continue</button>
           <div id="buyerError" class="muted" style="margin-top:8px;color:#fca5a5;"></div>
         </div>
       </div>
@@ -31997,19 +32079,23 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     const startBtn = document.getElementById("buyerStart");
     const errorEl = document.getElementById("buyerError");
 
-    if (startBtn) {
-      startBtn.onclick = async () => {
-        if (errorEl) errorEl.textContent = "";
-        try {
-          const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
-          buyer = res?.buyer || null;
-          fetchEntitlements().then(render);
-        } catch (e) {
-          const msg = (e && e.message) ? e.message : "Unable to start.";
-          if (errorEl) errorEl.textContent = msg;
+    const bootstrap = async () => {
+      if (errorEl) errorEl.textContent = "";
+      try {
+        const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+        buyer = res?.buyer || null;
+        await fetchEntitlements();
+        render();
+      } catch (e) {
+        const msg = (e && e.message) ? e.message : "Unable to start.";
+        if (errorEl) errorEl.textContent = msg;
+        if (startBtn) {
+          startBtn.style.display = "";
+          startBtn.onclick = () => { void bootstrap(); };
         }
-      };
-    }
+      }
+    };
+    void bootstrap();
   }
 
   fetchBuyerMe()
