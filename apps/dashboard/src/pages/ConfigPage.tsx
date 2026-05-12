@@ -863,6 +863,49 @@ export default function ConfigPage({
     }
   };
 
+  // Keep tunnel startup responsive: when backend reports startup states,
+  // poll briefly so Basic temporary links flip to "online" without manual refresh.
+  useEffect(() => {
+    if (!token) return;
+    const status = String(publicStatus?.status || "");
+    if (status !== "starting" && status !== "restarting") return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    const maxAttempts = 24;
+
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch(`${apiBase}/api/public/status`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json().catch(() => null);
+        if (!cancelled && json) {
+          setPublicStatus(json);
+        }
+        if (!cancelled && attempts % 4 === 3) {
+          await discoverTunnels({ silent: true });
+        }
+      } catch {
+        // keep trying within bounded attempts
+      } finally {
+        attempts += 1;
+        if (!cancelled && attempts < maxAttempts) {
+          timer = setTimeout(tick, 1500);
+        }
+      }
+    };
+
+    timer = setTimeout(tick, 500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [apiBase, publicStatus?.status, token]);
+
   const startPublicLink = async () => {
     if (!token) return;
     setPublicBusy(true);
@@ -914,6 +957,9 @@ export default function ConfigPage({
               : "Named tunnel start requested."
             : "Temporary link start requested."
         );
+      }
+      if (res.ok) {
+        await refreshPublicStatus({ silent: true, discover: true });
       }
     } catch (e: any) {
       setPublicMsg(e?.message || "Failed to start public link.");
