@@ -23719,14 +23719,6 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth] }, async (r
 
 app.patch("/api/discovery/public-origin", { preHandler: [requireAuth] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
-  const rateCheck = enforceDiscoveryOriginUpdateRateLimit({ userId });
-  if (!rateCheck.ok) {
-    return reply.code(429).send({
-      code: "DISCOVERY_ORIGIN_UPDATE_RATE_LIMITED",
-      message: "Discovery updates are temporarily limited. Please wait and try again.",
-      retryAfterMs: rateCheck.retryAfterMs
-    });
-  }
 
   const body = (req.body ?? {}) as { publicOrigin?: string };
   const incomingRaw = asString(body.publicOrigin || "").trim();
@@ -23751,6 +23743,24 @@ app.patch("/api/discovery/public-origin", { preHandler: [requireAuth] }, async (
       code: "DISCOVERY_PUBLIC_ORIGIN_NOT_SHAREABLE",
       message: "publicOrigin must be a shareable public host (not localhost/private LAN)."
     });
+  }
+
+  const currentPublicStatus = getPublicStatusCached();
+  const currentCanonical = normalizePublicOriginBase(
+    asString(currentPublicStatus.canonicalOrigin || currentPublicStatus.publicOrigin || "").trim()
+  );
+  const isOriginChange = !currentCanonical || currentCanonical !== normalized;
+
+  // Throttle only when changing origin to keep temporary-tunnel reconnects usable.
+  if (isOriginChange) {
+    const rateCheck = enforceDiscoveryOriginUpdateRateLimit({ userId });
+    if (!rateCheck.ok) {
+      return reply.code(429).send({
+        code: "DISCOVERY_ORIGIN_UPDATE_RATE_LIMITED",
+        message: "Discovery updates are temporarily limited. Please wait and try again.",
+        retryAfterMs: rateCheck.retryAfterMs
+      });
+    }
   }
 
   setPublicOriginConfig({
