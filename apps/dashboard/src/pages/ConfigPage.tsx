@@ -248,17 +248,18 @@ export default function ConfigPage({
   const showReconnectDiscovery =
     (modeInfo?.nodeMode === "basic") || !detectedPublicOrigin || isTemporaryPublicOrigin(detectedPublicOrigin);
 
-  async function testFanNetworkReadiness() {
+  async function testFanNetworkReadiness(originOverride?: string): Promise<FanNetworkTestResult | null> {
     setFanTestBusy(true);
     setFanTestError(null);
     setFanSubmitMsg(null);
     try {
-      if (!detectedPublicOrigin) {
+      const targetOrigin = normalizeOrigin(originOverride || reconnectOriginInput || detectedPublicOrigin || "");
+      if (!targetOrigin) {
         setFanTestResult(null);
         setFanTestError("No public origin detected.");
-        return;
+        return null;
       }
-      const endpoint = `${detectedPublicOrigin}/public/discoverable-content?limit=5`;
+      const endpoint = `${targetOrigin}/public/discoverable-content?limit=5`;
       const checkedAt = new Date().toISOString();
       const res = await fetch(endpoint, {
         method: "GET",
@@ -275,7 +276,7 @@ export default function ConfigPage({
       }
       const itemCount = Array.isArray(parsed?.items) ? parsed.items.length : 0;
       const ok = Boolean(res.ok && jsonValid);
-      setFanTestResult({
+      const result = {
         ok,
         checkedAt,
         endpoint,
@@ -285,7 +286,8 @@ export default function ConfigPage({
         message: ok
           ? `Ready${itemCount > 0 ? ` (${itemCount} item${itemCount === 1 ? "" : "s"})` : " (0 items found)"}`
           : `Failed (HTTP ${res.status})`
-      });
+      };
+      setFanTestResult(result);
       if (!ok) {
         setFanTestError(
           !res.ok
@@ -293,35 +295,43 @@ export default function ConfigPage({
             : "Endpoint response is not valid JSON."
         );
       }
+      return result;
     } catch (e: any) {
-      setFanTestResult({
+      const result = {
         ok: false,
         checkedAt: new Date().toISOString(),
-        endpoint: fanDiscoverableEndpoint,
+        endpoint: normalizeOrigin(originOverride || reconnectOriginInput || detectedPublicOrigin || "")
+          ? `${normalizeOrigin(originOverride || reconnectOriginInput || detectedPublicOrigin || "")}/public/discoverable-content`
+          : fanDiscoverableEndpoint,
         itemCount: 0,
         jsonValid: false,
         reachable: false,
         message: "Unreachable"
-      });
+      };
+      setFanTestResult(result);
       setFanTestError(e?.message || String(e));
+      return result;
     } finally {
       setFanTestBusy(false);
     }
   }
 
-  async function submitToFanNetwork() {
+  async function submitToFanNetwork(originOverride?: string, resultOverride?: FanNetworkTestResult | null) {
     setFanSubmitMsg(null);
-    const checkedAt = fanTestResult?.checkedAt || new Date().toISOString();
-    const itemCount = fanTestResult?.itemCount ?? 0;
-    const testSummary = fanTestResult
-      ? fanTestResult.ok
+    const selectedOrigin = normalizeOrigin(originOverride || reconnectOriginInput || detectedPublicOrigin || "");
+    const selectedEndpoint = selectedOrigin ? `${selectedOrigin}/public/discoverable-content` : "unknown";
+    const activeResult = resultOverride ?? fanTestResult;
+    const checkedAt = activeResult?.checkedAt || new Date().toISOString();
+    const itemCount = activeResult?.itemCount ?? 0;
+    const testSummary = activeResult
+      ? activeResult.ok
         ? "pass"
         : "fail"
       : "not_run";
-    const issueTitle = `Join Fan Network: ${detectedPublicOrigin || "unknown-origin"}`;
+    const issueTitle = `Join Fan Network: ${selectedOrigin || "unknown-origin"}`;
     const issueBody = [
-      `publicOrigin: ${detectedPublicOrigin || "unknown"}`,
-      `discoverableEndpoint: ${fanDiscoverableEndpoint || "unknown"}`,
+      `publicOrigin: ${selectedOrigin || "unknown"}`,
+      `discoverableEndpoint: ${selectedEndpoint}`,
       `testResult: ${testSummary}`,
       `itemCount: ${itemCount}`,
       "",
@@ -375,7 +385,14 @@ export default function ConfigPage({
       }
       setReconnectMsg(String(json?.message || "Discovery origin updated."));
       await refreshPublicStatus({ silent: true, discover: true });
-      setReconnectOriginInput(String(json?.publicOrigin || normalized));
+      const updatedOrigin = String(json?.publicOrigin || normalized);
+      setReconnectOriginInput(updatedOrigin);
+      const testResult = await testFanNetworkReadiness(updatedOrigin);
+      if (testResult?.ok) {
+        await submitToFanNetwork(updatedOrigin, testResult);
+      } else {
+        setFanSubmitMsg("Discovery origin updated. Run Submit to Fan Network after readiness passes.");
+      }
     } catch (e: any) {
       setReconnectMsg(e?.message || "Failed to reconnect Discovery.");
     } finally {
@@ -2098,16 +2115,20 @@ export default function ConfigPage({
         ) : null}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
           <button
-            onClick={testFanNetworkReadiness}
+            onClick={() => {
+              testFanNetworkReadiness();
+            }}
             style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
             disabled={fanTestBusy}
           >
             {fanTestBusy ? "Testing…" : "Test fan network readiness"}
           </button>
           <button
-            onClick={submitToFanNetwork}
+            onClick={() => {
+              submitToFanNetwork();
+            }}
             style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
-            disabled={!detectedPublicOrigin}
+            disabled={!normalizeOrigin(reconnectOriginInput || detectedPublicOrigin || "")}
           >
             Submit to Fan Network
           </button>
