@@ -27794,6 +27794,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
+  const safeProfileUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}`);
   const safeBrandLogoSrc = resolveProfileLogoPath()
     ? escHtml("/logo.png?v=20260413b")
     : "";
@@ -28673,8 +28674,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       --profile-signal-col: 320px;
     }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
-    .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:radial-gradient(1200px 600px at 15% -10%, rgba(30,58,138,0.14), transparent 60%), #08090c; color:#eee; padding:24px; }
+    .card { width:min(940px, 100%); margin:0 auto; background:linear-gradient(180deg, #0f1116 0%, #0c0f14 100%); border:1px solid #242a33; border-radius:18px; padding:24px; overflow:hidden; box-shadow:0 30px 90px rgba(0,0,0,0.4); }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     .brand-logo-image { display:block; width:var(--profile-logo-size); height:auto; object-fit:contain; }
     .brand-mark {
@@ -28701,8 +28702,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
     a { color:#9bdcff; text-decoration:none; }
     a:hover { text-decoration:underline; }
-    .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
-    .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
+    .section { margin-top:20px; border:1px solid #232a34; border-radius:14px; background:#0f1218; padding:16px; }
+    .section h3 { margin:0; font-size:18px; letter-spacing:-0.01em; }
+    .section-sub { margin-top:6px; color:#9aa3b2; font-size:13px; }
+    .profile-kicker { font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:#8ea4c2; margin-bottom:8px; }
     .profile-header-grid {
       display:grid;
       grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(260px, var(--profile-signal-col));
@@ -28714,9 +28717,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:0; }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; flex:1 1 auto; }
-    .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
-    .hero-handle { margin-top:4px; }
-    .signal-rail { border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:12px; }
+    .hero-name { font-weight:750; font-size:34px; line-height:1.02; letter-spacing:-0.02em; }
+    .hero-handle { margin-top:6px; font-size:15px; color:#9fb6d1; }
+    .hero-bio { max-width:56ch; }
+    .signal-rail { border:1px solid #2a3240; border-radius:12px; background:#101621; padding:12px; }
     .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
     .signal-compact-score { margin-top:6px; font-size:16px; }
     .signal-compact-meter { margin-top:6px; height:6px; }
@@ -28794,14 +28798,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .proof-badge--instagram { background:#2b1022; border-color:#831843; color:#fbcfe8; }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:12px; }
     .featured-item {
-      border:1px solid #252525;
+      border:1px solid #2a313d;
       border-radius:12px;
-      background:#111215;
+      background:#10141b;
       overflow:hidden;
       display:flex;
       flex-direction:column;
       min-width:0;
+      transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease;
     }
+    .featured-item:hover { transform:translateY(-2px); border-color:#3d4a5e; box-shadow:0 12px 24px rgba(0,0,0,0.26); }
     .featured-media {
       border-bottom:1px solid #20242a;
       background:#0f1115;
@@ -28813,7 +28819,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       align-items:center;
       justify-content:center;
     }
-    .featured-meta { padding:8px 10px 10px; min-width:0; }
+    .featured-meta { padding:10px 12px 12px; min-width:0; }
     .featured-image { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, #121419 0%, #0f1013 100%); }
     .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:#0d0f13; display:flex; align-items:center; justify-content:center; }
@@ -28837,7 +28843,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .posture-pill--node { color:#fef3c7; background:#2c230d; border-color:#b18a2e; }
     .featured-title {
       font-weight:650;
-      font-size:14px;
+      font-size:15px;
       line-height:1.28;
       display:-webkit-box;
       -webkit-line-clamp:2;
@@ -28846,8 +28852,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     .featured-support {
       margin-top:4px;
-      font-size:11px;
-      color:#97a1af;
+      font-size:12px;
+      color:#a5b0c0;
       line-height:1.3;
       display:-webkit-box;
       -webkit-line-clamp:2;
@@ -28861,6 +28867,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       font-weight:600;
       font-size:12px;
       color:#8ecbff;
+    }
+    .empty-state {
+      margin-top:12px;
+      border:1px dashed #2a3442;
+      border-radius:12px;
+      padding:14px;
+      color:#a7b3c4;
+      background:#0f141b;
+      font-size:13px;
+      line-height:1.45;
     }
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
@@ -28995,7 +29011,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
-      .hero-name { font-size:20px; line-height:1.08; }
+      .hero-name { font-size:26px; line-height:1.04; }
       .hero-handle { font-size:13px; }
       .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
       .signal-compact-meter { height:4px; }
@@ -29107,6 +29123,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           ? `<img src="${safeAvatarUrl}" alt="avatar" class="avatar" />`
           : `<div aria-label="avatar fallback" class="avatar">No image</div>`}
         <div class="hero-meta">
+        <div class="profile-kicker">Creator profile</div>
         <div class="hero-name">${safeDisplayName}</div>
         <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
         ${profilePostureBadgeHtml}
@@ -29118,6 +29135,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 
     <section class="section">
       <h3>Verification</h3>
+      <div class="section-sub">Identity and presence signals tied to this creator profile.</div>
       <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
       <div class="proof-group">
         <div class="proof-group-title">Domains</div>
@@ -29137,19 +29155,25 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       featuredContentHtml
         ? `<section class="section">
     <h3>Certifyd Works</h3>
-    <div class="line muted">Verified works published or claimed by this creator.</div>
+    <div class="section-sub">Verified works published or claimed by this creator.</div>
     <div class="line featured-grid">${featuredContentHtml}</div>
   </section>`
-        : ""
+        : `<section class="section">
+    <h3>Certifyd Works</h3>
+    <div class="empty-state">No published works are featured yet. New releases will appear here when the creator features content.</div>
+  </section>`
     }
     ${
       highlightedParticipationsHtml
         ? `<section class="section">
     <h3>Collaborations</h3>
-    <div class="line muted">Profile-highlighted split participation credits and approved derivative collaborations.</div>
+    <div class="section-sub">Split participation credits and approved derivative collaborations.</div>
     <div class="line featured-grid">${highlightedParticipationsHtml}</div>
   </section>`
-        : ""
+        : `<section class="section">
+    <h3>Collaborations</h3>
+    <div class="empty-state">No collaboration credits are highlighted yet.</div>
+  </section>`
     }
     <section class="section">
       <details class="details-toggle">
