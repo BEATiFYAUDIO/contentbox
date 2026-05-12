@@ -28849,6 +28849,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       -webkit-line-clamp:2;
       -webkit-box-orient:vertical;
       overflow:hidden;
+      min-height:2.56em;
     }
     .featured-support {
       margin-top:4px;
@@ -28859,6 +28860,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       -webkit-line-clamp:2;
       -webkit-box-orient:vertical;
       overflow:hidden;
+      min-height:2.6em;
     }
     .featured-cta-row { margin-top:auto; padding-top:7px; }
     .featured-cta {
