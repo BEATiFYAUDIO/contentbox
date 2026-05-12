@@ -28720,7 +28720,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:0; }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; flex:1 1 auto; }
-    .hero-name { font-weight:750; font-size:34px; line-height:1.02; letter-spacing:-0.02em; }
+    .hero-name { font-weight:700; font-size:30px; line-height:1.06; letter-spacing:-0.015em; }
     .hero-handle { margin-top:6px; font-size:15px; color:#b5ad9f; }
     .hero-bio { max-width:56ch; }
     .signal-rail { border:1px solid #3a3327; border-radius:12px; background:#14110c; padding:12px; }
@@ -29014,7 +29014,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
-      .hero-name { font-size:26px; line-height:1.04; }
+      .hero-name { font-size:22px; line-height:1.08; }
       .hero-handle { font-size:13px; }
       .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
       .signal-compact-meter { height:4px; }
