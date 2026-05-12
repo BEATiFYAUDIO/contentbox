@@ -672,10 +672,14 @@ export default function ConfigPage({
     ? Boolean(namedTunnelDetectedRaw)
     : Boolean(cloudflaredAvailable && namedTunnelDetectedRaw);
   const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
+  // UI should honor active named posture when backend is already in named mode,
+  // even if local discovery heuristics temporarily miss detection.
+  const activeNamedPosture = Boolean(!publicStatus?.namedDisabled && publicStatus?.mode === "named");
+  const uiTunnelMode: "existing_named" | "token_bootstrap" = activeNamedPosture ? "existing_named" : selectedTunnelMode;
   const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const namedTunnelManageableLocally = Boolean(cloudflaredAvailable && (publicStatus?.namedTokenStored || namedTunnelDetected));
   const startActionLabel =
-    selectedTunnelMode === "existing_named"
+    uiTunnelMode === "existing_named"
       ? "Start named tunnel"
       : isSovereignPosture
         ? "Start temporary link (fallback)"
@@ -684,7 +688,7 @@ export default function ConfigPage({
     publicBusy ||
     publicStatus?.status === "starting" ||
     publicStatus?.status === "online" ||
-    (selectedTunnelMode === "token_bootstrap" ? quickDisabled : !namedTunnelManageableLocally);
+    (uiTunnelMode === "token_bootstrap" ? quickDisabled : !namedTunnelManageableLocally);
   const selectedMode =
     (modeInfo?.selectedMode || modeInfo?.nodeMode) === "lan"
       ? { label: "Sovereign Node", description: "Creator-hosted storefront with local invoice + commerce stack." }
@@ -713,21 +717,21 @@ export default function ConfigPage({
     : nodeMode === "advanced"
       ? "Sovereign Creator prefers durable named routing. Temporary links are fallback only."
       : "Sovereign Node expects durable named routing for stable canonical origin.";
-  const temporaryOverrideAllowed = selectedTunnelMode === "existing_named" && !publicStatus?.namedDisabled;
+  const temporaryOverrideAllowed = uiTunnelMode === "existing_named" && !publicStatus?.namedDisabled;
   const routingStatusTitle = publicStatus?.namedDisabled
     ? namedTunnelDetected
       ? "Named tunnel paused"
       : "Temporary-link override is on"
-    : selectedTunnelMode === "existing_named" && namedTunnelOnline
+    : uiTunnelMode === "existing_named" && namedTunnelOnline
       ? `Named tunnel ready${discoveredTunnelName ? ` (${discoveredTunnelName})` : ""}`
-      : selectedTunnelMode === "existing_named" && namedTunnelDetected
+      : uiTunnelMode === "existing_named" && namedTunnelDetected
         ? `Named tunnel detected${discoveredTunnelName ? ` (${discoveredTunnelName})` : ""}`
         : "Temporary link mode";
   const routingStatusTone = publicStatus?.namedDisabled
     ? "#ffb4b4"
-    : selectedTunnelMode === "existing_named" && namedTunnelOnline
+    : uiTunnelMode === "existing_named" && namedTunnelOnline
       ? "#a7f3d0"
-      : selectedTunnelMode === "existing_named"
+      : uiTunnelMode === "existing_named"
         ? "#fbbf24"
         : "rgba(255,255,255,0.72)";
   const routingStatusDetail = publicStatus?.namedDisabled
@@ -736,9 +740,9 @@ export default function ConfigPage({
       : "Temporary-link override is active until you restore named routing."
     : serviceManagedTokenMode
       ? "Service-managed token tunnel is authoritative. Local cloudflared ingress settings are informational only."
-      : selectedTunnelMode === "existing_named" && namedTunnelOnline
+      : uiTunnelMode === "existing_named" && namedTunnelOnline
         ? "This machine has a durable named tunnel online. Buyer-facing links should resolve through the configured public domain."
-        : selectedTunnelMode === "existing_named" && namedTunnelDetected
+        : uiTunnelMode === "existing_named" && namedTunnelDetected
         ? "A matching named tunnel exists, but it is not online yet. Start sharing when you want this host active."
         : "No named tunnel is active. Quick links are temporary and do not unlock sovereign creator posture.";
   const routingAuthorityLabel = publicStatus?.namedDisabled
@@ -749,11 +753,11 @@ export default function ConfigPage({
       ? "Service-managed named tunnel"
       : tunnelControlMode === "local_config"
         ? "Local config-managed named tunnel"
-        : selectedTunnelMode === "existing_named"
+        : uiTunnelMode === "existing_named"
         ? "Named tunnel"
           : "Temporary link";
   const stopActionLabel =
-    selectedTunnelMode === "existing_named" && !publicStatus?.namedDisabled
+    uiTunnelMode === "existing_named" && !publicStatus?.namedDisabled
       ? "Stop named tunnel"
       : "Stop temporary link";
   const refreshRoutingLabel = "Refresh routing";
@@ -916,7 +920,7 @@ export default function ConfigPage({
   useEffect(() => {
     if (!token) return;
     if (publicBusy) return;
-    if (selectedTunnelMode !== "existing_named") return;
+    if (uiTunnelMode !== "existing_named") return;
     if (!namedTunnelManageableLocally) return;
     if (publicStatus?.namedDisabled) return;
     if (!publicStatus?.autoStartEnabled) return;
@@ -933,7 +937,7 @@ export default function ConfigPage({
     publicStatus?.autoStartEnabled,
     publicStatus?.namedDisabled,
     publicStatus?.status,
-    selectedTunnelMode,
+    uiTunnelMode,
     token
   ]);
 
@@ -1575,17 +1579,17 @@ export default function ConfigPage({
               >
               {startActionLabel}
             </button>
-            {selectedTunnelMode === "token_bootstrap" && quickDisabled ? (
+            {uiTunnelMode === "token_bootstrap" && quickDisabled ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 Temporary route is fallback-only in sovereign posture when named routing is configured.
               </div>
             ) : null}
-            {selectedTunnelMode === "existing_named" && !cloudflaredAvailable ? (
+            {uiTunnelMode === "existing_named" && !cloudflaredAvailable ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 cloudflared is unavailable on this machine, so local named-tunnel launch is disabled.
               </div>
             ) : null}
-            {selectedTunnelMode === "existing_named" && cloudflaredAvailable && !namedTunnelManageableLocally ? (
+            {uiTunnelMode === "existing_named" && cloudflaredAvailable && !namedTunnelManageableLocally ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 Named tunnel launch is not available yet on this machine. Discover the named tunnel first.
               </div>
@@ -1742,11 +1746,11 @@ export default function ConfigPage({
                 <div>Tunnel name: <b>{configuredTunnelName || "—"}</b></div>
                 <div>Tunnel detected: <b>{namedTunnelDetected ? "yes" : "no"}</b></div>
                 <div>Tunnel online: <b>{namedTunnelOnline ? "yes" : "no"}</b></div>
-                <div>Preferred route: <b>{selectedTunnelMode === "existing_named" ? "Named tunnel" : "Temporary bootstrap"}</b></div>
+                <div>Preferred route: <b>{uiTunnelMode === "existing_named" ? "Named tunnel" : "Temporary bootstrap"}</b></div>
                 <div>Tunnel control mode: <b>{serviceManagedTokenMode ? "Service-managed token" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
                 <div>Public base domain: <b>{tunnelDomain || "—"}</b></div>
               </div>
-              {selectedTunnelMode === "existing_named" ? (
+              {uiTunnelMode === "existing_named" ? (
                 <div style={{ marginTop: 6, fontSize: 12, color: "#a7f3d0" }}>
                   Named tunnel detected. Temporary bootstrap is not needed.
                 </div>
@@ -1810,7 +1814,7 @@ export default function ConfigPage({
             </label>
             {tunnelEnabled &&
             tokenBootstrapRequired &&
-            selectedTunnelMode === "token_bootstrap" &&
+            uiTunnelMode === "token_bootstrap" &&
             !localRoutingControlsDisabled &&
             !serviceManagedTokenMode ? (
               <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
