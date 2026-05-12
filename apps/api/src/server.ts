@@ -28991,12 +28991,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       .profile-header-grid {
-        --profile-brand-col: 92px;
-        --profile-gap-x: 8px;
-        --profile-id-offset: 0px;
+        --profile-brand-col: 88px;
+        --profile-gap-x: 11px;
+        --profile-id-offset: 14px;
         --profile-id-gap: 8px;
-        --profile-logo-size: 80px;
-        --profile-avatar-size: 78px;
+        --profile-logo-size: 78px;
+        --profile-avatar-size: 74px;
       }
       body { padding:10px; }
       .card { padding:14px; }
