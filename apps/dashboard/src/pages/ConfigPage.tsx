@@ -204,7 +204,6 @@ export default function ConfigPage({
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
   const [discoveredTunnelNameState, setDiscoveredTunnelNameState] = useState<string | null>(null);
   const [namedTunnelDetectedState, setNamedTunnelDetectedState] = useState<boolean>(false);
-  const [selectedTunnelModeState, setSelectedTunnelModeState] = useState<"existing_named" | "token_bootstrap">("token_bootstrap");
   const [tokenBootstrapRequiredState, setTokenBootstrapRequiredState] = useState<boolean>(true);
   const [namedTokenInput, setNamedTokenInput] = useState<string>("");
   const [namedTokenBusy, setNamedTokenBusy] = useState<boolean>(false);
@@ -649,12 +648,16 @@ export default function ConfigPage({
   const discoveredTunnelNameFromList = String(discoveredTunnel?.name || discoveredTunnel?.id || "").trim() || null;
   const discoveredTunnelNameFromStatus = String(publicStatus?.tunnelName || "").trim() || null;
   const discoveredTunnelName = discoveredTunnelNameState || discoveredTunnelNameFromList || discoveredTunnelNameFromStatus;
-  const namedTunnelDetectedFromStatus =
-    publicStatus?.mode === "named" || Boolean(publicStatus?.namedConfigured) || Boolean(discoveredTunnelNameFromStatus);
-  const namedTunnelDetected = namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList) || namedTunnelDetectedFromStatus;
-  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : selectedTunnelModeState;
-  const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const cloudflaredAvailable = Boolean(publicStatus?.cloudflared?.available);
+  // Treat named tunnel as "detected" only when it is locally discoverable/manageable.
+  // A stale status.mode==="named" on another machine should not block Basic temporary links.
+  const namedTunnelDetectedFromStatus =
+    Boolean(publicStatus?.namedConfigured) || Boolean(discoveredTunnelNameFromStatus);
+  const namedTunnelDetectedRaw =
+    namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList) || namedTunnelDetectedFromStatus;
+  const namedTunnelDetected = Boolean(cloudflaredAvailable && namedTunnelDetectedRaw);
+  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
+  const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const tunnelControlMode = String(publicStatus?.tunnelControl?.mode || "unknown");
   const tunnelControlMessage = String(publicStatus?.tunnelControl?.message || "").trim();
   const serviceManagedTokenMode = tunnelControlMode === "service_token";
@@ -808,9 +811,7 @@ export default function ConfigPage({
   };
 
   useEffect(() => {
-    const mode = namedTunnelDetected ? "existing_named" : "token_bootstrap";
-    setSelectedTunnelModeState(mode);
-    setTokenBootstrapRequiredState(mode === "token_bootstrap");
+    setTokenBootstrapRequiredState(!namedTunnelDetected);
   }, [namedTunnelDetected]);
 
   const refreshPublicStatus = async (opts?: { silent?: boolean; discover?: boolean }) => {
@@ -842,6 +843,23 @@ export default function ConfigPage({
     setPublicBusy(true);
     setPublicMsg(null);
     try {
+      // Basic/temporary path: if backend is still in named mode on this machine,
+      // force temporary override before requesting /go to prevent stale named-mode failures.
+      if (selectedTunnelMode === "token_bootstrap" && publicStatus?.mode === "named" && !publicStatus?.namedDisabled) {
+        try {
+          const overrideRes = await fetch(`${apiBase}/api/public/named/disable`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          const overrideJson = await overrideRes.json().catch(() => null);
+          if (overrideRes.ok && overrideJson) {
+            setPublicStatus(overrideJson);
+          }
+        } catch {
+          // best-effort; proceed to /go and let backend return actionable error if needed
+        }
+      }
+
       const res = await fetch(`${apiBase}/api/public/go`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
