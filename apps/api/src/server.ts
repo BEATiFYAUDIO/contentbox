@@ -32015,7 +32015,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
             const title = (e.content?.title || e.title || e.contentId || "Untitled");
             const contentType = e.content?.type || e.type || null;
             const creator = e.content?.owner?.displayName || e.content?.owner?.email || "Creator";
-            const cover = e.content?.coverUrl || ("/public/content/" + encodeURIComponent(e.contentId) + "/cover");
+            const cover = "/api/buyer/content/" + encodeURIComponent(e.contentId) + "/cover";
             const buyUrl = e.content?.buyUrl || ("/buy/" + encodeURIComponent(e.contentId));
             const createdAt = e.grantedAt ? new Date(e.grantedAt) : null;
             const granted = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toLocaleDateString() : null;
