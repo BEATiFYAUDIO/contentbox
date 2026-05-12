@@ -28122,7 +28122,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                     <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
                     <span class="featured-video-play" aria-hidden="true">▶</span>
                   </div>`
-                : type === "song" && featuredMediaUrl
+                : type === "song"
                   ? `<div class="featured-song-media">
                       <div class="featured-song-cover-wrap">
                         ${
@@ -28132,9 +28132,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                         }
                         <span class="featured-fallback">${safeType}</span>
                       </div>
-                      <audio class="featured-audio" controls preload="none">
-                        <source src="${escHtml(featuredMediaUrl)}" />
-                      </audio>
                     </div>`
                   : coverUrl
                     ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
@@ -28822,7 +28819,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       align-items:center;
       justify-content:center;
     }
-    .featured-meta { padding:10px 12px 12px; min-width:0; }
+    .featured-meta { padding:10px 12px 12px; min-width:0; display:flex; flex-direction:column; }
     .featured-image { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, #121419 0%, #0f1013 100%); }
     .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:#0d0f13; display:flex; align-items:center; justify-content:center; }
@@ -28863,7 +28860,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       -webkit-box-orient:vertical;
       overflow:hidden;
     }
-    .featured-cta-row { margin-top:7px; }
+    .featured-cta-row { margin-top:auto; padding-top:7px; }
     .featured-cta {
       display:inline-flex;
       align-items:center;
