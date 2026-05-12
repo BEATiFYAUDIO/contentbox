@@ -954,7 +954,7 @@ export default function ConfigPage({
     try {
       // Basic/temporary path: if backend is still in named mode on this machine,
       // force temporary override before requesting /go to prevent stale named-mode failures.
-      if (selectedTunnelMode === "token_bootstrap" && publicStatus?.mode === "named" && !publicStatus?.namedDisabled) {
+      if (uiTunnelMode === "token_bootstrap" && publicStatus?.mode === "named" && !publicStatus?.namedDisabled) {
         try {
           const overrideRes = await fetch(`${apiBase}/api/public/named/disable`, {
             method: "POST",

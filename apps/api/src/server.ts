@@ -9793,8 +9793,8 @@ function getPublicLinkState(): PublicLinkState {
   const quick = tunnelManager.status();
   const namedDisabled = isNamedTunnelDisabled();
   const namedHealthOk = namedCfg ? namedHealthCache.ok : null;
-  const productTier = resolveProductTier().productTier;
-  const preferNamed = productTier === "advanced" && isNamedConfigured();
+  const nodeMode = getNodeModeStatus().nodeMode;
+  const preferNamed = (nodeMode === "advanced" || nodeMode === "lan") && isNamedConfigured();
   const publicModeEnv = preferNamed ? "named" : PUBLIC_MODE;
   const state = computePublicLinkState({
     publicModeEnv,
@@ -16322,7 +16322,7 @@ registerWitnessRoutes(app, { prisma, requireAuth });
 app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const state = getPublicLinkState();
   const nodeMode = getNodeMode();
-  if (state.mode === "quick" && nodeMode !== "advanced") {
+  if (state.mode === "quick" && nodeMode === "basic") {
     const consent = getPublicSharingConsent();
     const consentGranted = consent.granted || consent.dontAskAgain;
     if (consentGranted && getPublicSharingAutoStart()) {
