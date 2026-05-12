@@ -28661,10 +28661,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       --space-4: 16px;
       --space-5: 20px;
       --space-6: 24px;
-      --profile-brand-col: 148px;
-      --profile-gap-x: var(--space-3);
+      --profile-brand-col: 168px;
+      --profile-gap-x: 18px;
       --profile-gap-y: var(--space-3);
-      --profile-logo-size: 148px;
+      --profile-logo-size: 132px;
       --profile-id-offset: 26px;
       --profile-id-gap: 14px;
       --profile-avatar-size: 124px;
@@ -28678,7 +28678,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       color:#eee; padding:24px; }
     .card { width:min(940px, 100%); margin:0 auto; background:linear-gradient(180deg, #0a0b0d 0%, #07080a 100%); border:1px solid #202227; border-radius:18px; padding:24px; overflow:hidden; box-shadow:0 30px 90px rgba(0,0,0,0.46); }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
-    .brand-logo-image { display:block; width:var(--profile-logo-size); height:auto; object-fit:contain; }
+    .brand-logo-image { display:block; width:var(--profile-logo-size); max-width:100%; height:auto; object-fit:contain; }
     .brand-mark {
       width:22px;
       height:22px;
