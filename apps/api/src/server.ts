@@ -23570,6 +23570,18 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       }
     });
   });
+  const publishProfileCacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  app.log.info(
+    {
+      contentId,
+      userId,
+      creatorId: content.ownerUserId,
+      publishedState: "published",
+      storefrontStatus: asString(content.storefrontStatus || "").trim().toUpperCase() || null,
+      cacheInvalidation: publishProfileCacheInvalidation
+    },
+    "profile.publish_projection_cache_invalidated"
+  );
 
   // Best-effort: trigger public sharing on publish
   try {
@@ -23713,6 +23725,20 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth] }, async (r
     where: { id: contentId },
     data: { storefrontStatus: status as any }
   });
+  const storefrontProfileCacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  app.log.info(
+    {
+      contentId,
+      userId,
+      creatorId: content.ownerUserId,
+      previousStorefrontStatus: asString(content.storefrontStatus || "").trim().toUpperCase() || null,
+      nextStorefrontStatus: asString(updated.storefrontStatus || "").trim().toUpperCase() || null,
+      publishedState: asString(content.status || "").trim().toLowerCase(),
+      featuredState: Boolean(content.featureOnProfile),
+      cacheInvalidation: storefrontProfileCacheInvalidation
+    },
+    "profile.storefront_projection_cache_invalidated"
+  );
 
   return reply.send({ ok: true, storefrontStatus: updated.storefrontStatus });
 });
@@ -26802,6 +26828,61 @@ function setTimedCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string, v
     expiresAt: Date.now() + PROFILE_PUBLIC_RENDER_CACHE_TTL_MS,
     value
   });
+}
+
+function invalidatePublicProfileProjectionCachesForUser(userIdRaw: unknown): {
+  proofs: boolean;
+  featured: boolean;
+  wellKnown: boolean;
+  remoteParticipations: boolean;
+  lockedParticipations: boolean;
+  renderSnapshot: boolean;
+  persistedSnapshot: boolean;
+  userAliasKeysDeleted: number;
+} {
+  const userId = asString(userIdRaw || "").trim();
+  if (!userId) {
+    return {
+      proofs: false,
+      featured: false,
+      wellKnown: false,
+      remoteParticipations: false,
+      lockedParticipations: false,
+      renderSnapshot: false,
+      persistedSnapshot: false,
+      userAliasKeysDeleted: 0
+    };
+  }
+
+  const proofs = profilePublicProofsCache.delete(userId);
+  const featured = profilePublicFeaturedCache.delete(userId);
+  const wellKnown = profilePublicWellKnownCache.delete(userId);
+  const remoteParticipations = profilePublicRemoteParticipationsCache.delete(userId);
+  const lockedParticipations = profilePublicLockedParticipationsCache.delete(userId);
+  const renderSnapshot = profilePublicRenderSnapshotCache.delete(userId);
+
+  loadProfilePublicRenderSnapshotsFromDisk();
+  const persistedSnapshot = profilePublicRenderSnapshotFileCache.delete(userId);
+  if (persistedSnapshot) scheduleProfilePublicRenderSnapshotsFlush();
+
+  let userAliasKeysDeleted = 0;
+  for (const [cacheKey, entry] of Array.from(profilePublicUserCache.entries())) {
+    const cachedUserId = asString((entry as any)?.value?.id || "").trim();
+    if (!cachedUserId || cachedUserId !== userId) continue;
+    profilePublicUserCache.delete(cacheKey);
+    userAliasKeysDeleted += 1;
+  }
+
+  return {
+    proofs,
+    featured,
+    wellKnown,
+    remoteParticipations,
+    lockedParticipations,
+    renderSnapshot,
+    persistedSnapshot,
+    userAliasKeysDeleted
+  };
 }
 let creatorSignalNodeDetailsCache:
   | { expiresAt: number; staleExpiresAt: number; value: CreatorSignalNodeDetails }
@@ -35526,38 +35607,33 @@ app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async 
 
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    select: { ownerUserId: true, status: true, deletedAt: true, deletedReason: true, description: true, featureOnProfile: true }
+    select: {
+      ownerUserId: true,
+      status: true,
+      deletedAt: true,
+      deletedReason: true,
+      description: true,
+      storefrontStatus: true,
+      featureOnProfile: true
+    }
   });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  const isActiveLocalPublished = content.status === "published" && !content.deletedAt;
-  let shadowExceptionEligible = false;
-  let shadowExceptionReason: string | null = null;
-  if (next && !isActiveLocalPublished) {
-    const shadowCheck = await isCurrentApprovedFeatureableDerivativeShadow({ contentId, ownerUserId: userId });
-    shadowExceptionEligible = shadowCheck.eligible;
-    shadowExceptionReason = shadowCheck.reason || null;
-  }
-  if (next && !isActiveLocalPublished && !shadowExceptionEligible) {
-    if (process.env.NODE_ENV !== "production") {
-      req.log.info(
-        {
-          contentId,
-          userId,
-          status: content.status,
-          deletedAt: content.deletedAt ? new Date(content.deletedAt).toISOString() : null,
-          deletedReason: content.deletedReason || null,
-          shadowExceptionReason
-        },
-        "feature_on_profile.rejected"
-      );
-    }
-    return reply.code(409).send({
-      error: "NOT_ELIGIBLE",
-      message: "Only active published content can be featured on profile."
-    });
-  }
   if (content.featureOnProfile === next) {
+    const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+    app.log.info(
+      {
+        contentId,
+        userId,
+        creatorId: content.ownerUserId,
+        previousFeaturedState: Boolean(content.featureOnProfile),
+        nextFeaturedState: next,
+        publishedState: asString(content.status || "").trim().toLowerCase(),
+        storefrontStatus: asString(content.storefrontStatus || "").trim().toUpperCase() || null,
+        cacheInvalidation
+      },
+      "profile.feature_on_profile.noop_cache_invalidation"
+    );
     return reply.send({ ok: true, featureOnProfile: next });
   }
 
@@ -35566,6 +35642,20 @@ app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async 
     data: { featureOnProfile: next },
     select: { featureOnProfile: true }
   });
+  const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  app.log.info(
+    {
+      contentId,
+      userId,
+      creatorId: content.ownerUserId,
+      previousFeaturedState: Boolean(content.featureOnProfile),
+      nextFeaturedState: Boolean(updated.featureOnProfile),
+      publishedState: asString(content.status || "").trim().toLowerCase(),
+      storefrontStatus: asString(content.storefrontStatus || "").trim().toUpperCase() || null,
+      cacheInvalidation
+    },
+    "profile.feature_on_profile.updated"
+  );
   return reply.send({ ok: true, featureOnProfile: Boolean(updated.featureOnProfile) });
 });
 
