@@ -1152,6 +1152,16 @@ export default function LibraryPage() {
             ...normalizedItemForEligibility,
             libraryAccess: section
           };
+          const normalizedRelation: LibraryRelation =
+            section === "owned"
+              ? "owner"
+              : section === "purchased"
+                ? "buyer"
+                : section === "participant"
+                  ? "participant"
+                  : section === "preview"
+                    ? "preview"
+                    : "unknown";
           const contentType = mapContentType(normalizedItem.type);
           const viewerOwnsItem = section === "owned" || appearsBecause.has("owned");
           const viewerParticipatesInSplit = section === "participant" || appearsBecause.has("split_participant");
@@ -1221,7 +1231,7 @@ export default function LibraryPage() {
             isDerivativeChild,
             isDerivativeParent,
             availabilityState: getAvailabilityState(normalizedItem),
-            relation,
+            relation: normalizedRelation,
             publicPageUrl: asNonEmptyString(normalizedItem.buyUrl) || buildPublicPageUrl(contentId, participation?.remoteOrigin || normalizedItem.remoteOrigin || null),
             participation
           });
@@ -1596,7 +1606,8 @@ export default function LibraryPage() {
         return;
       }
 
-      if (entry.relation === "owner" || shadowStakeholderFeatureEligible) {
+      const ownerLike = entry.relation === "owner" || entry.isLocalAuthored;
+      if (ownerLike || shadowStakeholderFeatureEligible) {
         const res = await api<{ featureOnProfile: boolean }>(
           `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
           "PATCH",
@@ -2010,6 +2021,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                               ? "participant"
                               : it.libraryAccess
                       },
+                      meUserId: it.ownerUserId || undefined,
                       participation: participationInfo
                     }).allowed || shadowStakeholderFeatureEligible;
                     const currentlyFeatured = shouldUseParticipationHighlight ? participationFeatured : ownerFeatured;
