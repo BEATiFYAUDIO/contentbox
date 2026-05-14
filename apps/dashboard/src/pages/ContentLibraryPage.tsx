@@ -468,6 +468,7 @@ export default function ContentLibraryPage({
   const [filesByContent, setFilesByContent] = React.useState<Record<string, ContentFile[]>>({});
   const [filesLoading, setFilesLoading] = React.useState<Record<string, boolean>>({});
   const [coverLoadErrorByContent, setCoverLoadErrorByContent] = React.useState<Record<string, boolean>>({});
+  const [coverCacheBustByContent, setCoverCacheBustByContent] = React.useState<Record<string, string>>({});
 
   // NEW: latest split (so we can show lock notarization when locked)
   const [splitByContent, setSplitByContent] = React.useState<Record<string, SplitVersion | null>>({});
@@ -2104,7 +2105,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
           // Auto-open the card and refresh files/split so the file ID shows immediately.
           setExpanded((m) => ({ ...m, [contentId]: true }));
-          await Promise.allSettled([loadFiles(contentId), loadLatestSplit(contentId)]);
+          await Promise.allSettled([loadFiles(contentId), loadLatestSplit(contentId), loadPreview(contentId)]);
         } catch (err: any) {
           const raw = String(err?.message || "Upload failed");
           const message = raw.includes("PUBLISHED_IMMUTABLE")
@@ -2198,8 +2199,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         setUpload({ status: "preparing", kind: "cover", contentId, filename: file.name });
         try {
           setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name });
-          await uploadSongCover(contentId, file);
+          const uploaded = await uploadSongCover(contentId, file);
           setUpload({ status: "done", kind: "cover", contentId, filename: file.name });
+          const manifestSha = String(uploaded?.manifestSha256 || "").trim();
+          setCoverCacheBustByContent((m) => ({ ...m, [contentId]: manifestSha || String(Date.now()) }));
           await load();
         } catch (err: any) {
           setUpload({ status: "error", kind: "cover", contentId, message: err?.message || "Cover upload failed" });
@@ -3034,7 +3037,28 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               return (
                 <div key={it.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40">
                   <div className="flex flex-wrap items-center justify-between gap-4 px-3 py-2">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex items-start gap-3">
+                      <div className="shrink-0 w-24 h-16 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900/70">
+                        <img
+                          src={`${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
+                            it.manifest?.sha256 || coverCacheBustByContent[it.id]
+                              ? `?v=${encodeURIComponent(String(coverCacheBustByContent[it.id] || it.manifest?.sha256 || ""))}`
+                              : ""
+                          }`}
+                          alt={`${it.title || "Content"} cover`}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                          onError={(e) => {
+                            const el = e.currentTarget;
+                            const parent = el.parentElement;
+                            if (!parent) return;
+                            parent.innerHTML = `<div class=\"w-full h-full flex items-center justify-center text-[10px] uppercase tracking-wide text-neutral-500\">${String(
+                              it.type || "file"
+                            )}</div>`;
+                          }}
+                        />
+                      </div>
+                      <div className="min-w-0">
                       <div className="text-sm font-medium truncate">{it.title}</div>
                       <div className="text-xs text-neutral-400">
                         {it.type.toUpperCase()} • {it.status.toUpperCase()} • {formatDateLabel(it.createdAt)} • {filesCount} file
@@ -3081,6 +3105,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       {!isOwner ? (
                         <div className="text-xs text-amber-300 mt-1">Read-only • Owner: {ownerLabel}</div>
                       ) : null}
+                      </div>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
@@ -3294,8 +3319,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         const previewMime = String(previewFile?.mime || "");
                         const isVideo = String(it.type || "").toLowerCase() === "video" || previewMime.startsWith("video/");
                         const isAudio = String(it.type || "").toLowerCase() === "song" || previewMime.startsWith("audio/");
+                        const coverVersion = String(coverCacheBustByContent[it.id] || it.manifest?.sha256 || "").trim();
                         const coverUrl = `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
-                          it.manifest?.sha256 ? `?v=${encodeURIComponent(it.manifest.sha256)}` : ""
+                          coverVersion ? `?v=${encodeURIComponent(coverVersion)}` : ""
                         }`;
                         return (
                           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">

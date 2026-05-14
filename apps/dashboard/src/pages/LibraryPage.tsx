@@ -2,7 +2,6 @@ import React from "react";
 import { api, getApiBase } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
 import {
-  canFeatureOnProfile,
   classifyLibraryEligibility,
   getAvailabilityState,
   isActiveLibraryVisible,
@@ -1560,54 +1559,12 @@ export default function LibraryPage() {
     setFeatureMsgById((m) => ({ ...m, [contentId]: "" }));
     try {
       const participation = entry.participation || participationByContentId[contentId] || null;
-      const shouldUseParticipationHighlight = shouldUseParticipationFeatureHighlight(entry, participation);
-      const stakeholderScopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
-      const isShadowLifecycle = entry.item.lifecycle === "shadow" || Boolean(entry.item.isShadow);
-      const isVisibleActionableState = entry.availabilityState === "active" || isShadowLifecycle;
-      const hasPublicTarget = Boolean(entry.publicPageUrl) || Boolean(String(contentId || "").trim());
-      const isStakeholderScope =
-        stakeholderScopes.has("derivatives") || stakeholderScopes.has("shared_splits") || stakeholderScopes.has("all");
-      const shadowStakeholderFeatureEligible = isVisibleActionableState && hasPublicTarget && isStakeholderScope;
 
-      if (shouldUseParticipationHighlight) {
-        if (!participation) throw new Error("Participation info not found.");
-        const res =
-          participation.kind === "remote" && participation.remoteInviteId
-            ? await api<{ highlightedOnProfile: boolean }>(
-                `/my/royalties/remote/${encodeURIComponent(String(participation.remoteInviteId))}/highlight`,
-                "PATCH",
-                { enabled: next, contentId }
-              )
-            : await api<{ highlightedOnProfile: boolean }>(
-                `/my/participations/${encodeURIComponent(String(participation.splitParticipantId || ""))}/highlight`,
-                "PATCH",
-                { enabled: next }
-              );
-        const highlightedOnProfile = Boolean(res?.highlightedOnProfile);
-        setParticipationByContentId((prev) => ({
-          ...prev,
-          [contentId]: {
-            ...(prev[contentId] || participation),
-            highlightedOnProfile
-          }
-        }));
-        setItems((prev) =>
-          prev.map((row) =>
-            row.item.id === contentId
-              ? {
-                  ...row,
-                  participation: row.participation
-                    ? { ...row.participation, highlightedOnProfile }
-                    : row.participation
-                }
-              : row
-          )
-        );
-        return;
-      }
+      let updatedAny = false;
+      let lastError: any = null;
 
-      const ownerLike = entry.relation === "owner" || entry.isLocalAuthored;
-      if (ownerLike || shadowStakeholderFeatureEligible) {
+      // Attempt owner feature flag path first for deterministic profile rendering.
+      try {
         const res = await api<{ featureOnProfile: boolean }>(
           `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
           "PATCH",
@@ -1620,9 +1577,55 @@ export default function LibraryPage() {
               : row
           )
         );
-        return;
+        updatedAny = true;
+      } catch (e: any) {
+        lastError = e;
       }
-      throw new Error("Feature on profile is only available for owned or split-participation content.");
+
+      // Then attempt split/remote participation highlight path when available.
+      if (participation) {
+        try {
+          const res =
+            participation.kind === "remote" && participation.remoteInviteId
+              ? await api<{ highlightedOnProfile: boolean }>(
+                  `/my/royalties/remote/${encodeURIComponent(String(participation.remoteInviteId))}/highlight`,
+                  "PATCH",
+                  { enabled: next, contentId }
+                )
+              : await api<{ highlightedOnProfile: boolean }>(
+                  `/my/participations/${encodeURIComponent(String(participation.splitParticipantId || ""))}/highlight`,
+                  "PATCH",
+                  { enabled: next }
+                );
+          const highlightedOnProfile = Boolean(res?.highlightedOnProfile);
+          setParticipationByContentId((prev) => ({
+            ...prev,
+            [contentId]: {
+              ...(prev[contentId] || participation),
+              highlightedOnProfile
+            }
+          }));
+          setItems((prev) =>
+            prev.map((row) =>
+              row.item.id === contentId
+                ? {
+                    ...row,
+                    participation: row.participation
+                      ? { ...row.participation, highlightedOnProfile }
+                      : row.participation
+                  }
+                : row
+            )
+          );
+          updatedAny = true;
+        } catch (e: any) {
+          lastError = e || lastError;
+        }
+      }
+
+      if (!updatedAny) {
+        throw new Error(lastError?.message || "Failed to update profile feature status.");
+      }
     } catch (e: any) {
       setFeatureMsgById((m) => ({ ...m, [contentId]: e?.message || "Failed to update profile feature status." }));
     } finally {
@@ -2003,28 +2006,8 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       entry,
                       participationInfo
                     );
-                    const stakeholderScopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
-                    const isShadowLifecycle = it.lifecycle === "shadow" || Boolean(it.isShadow);
-                    const isVisibleActionableState = entry.availabilityState === "active" || isShadowLifecycle;
-                    const hasPublicTarget = Boolean(entry.publicPageUrl) || Boolean(String(it.id || "").trim());
-                    const isStakeholderScope =
-                      stakeholderScopes.has("derivatives") || stakeholderScopes.has("shared_splits") || stakeholderScopes.has("all");
-                    const shadowStakeholderFeatureEligible = isVisibleActionableState && hasPublicTarget && isStakeholderScope;
-                    const featureAllowed = canFeatureOnProfile({
-                      item: {
-                        ...it,
-                        libraryAccess: shouldUseParticipationHighlight
-                          ? "participant"
-                          : entry.relation === "owner"
-                            ? "owned"
-                            : entry.relation === "participant"
-                              ? "participant"
-                              : it.libraryAccess
-                      },
-                      meUserId: it.ownerUserId || undefined,
-                      participation: participationInfo
-                    }).allowed || shadowStakeholderFeatureEligible;
                     const currentlyFeatured = shouldUseParticipationHighlight ? participationFeatured : ownerFeatured;
+                    const featureAllowed = true;
                     const preview = previewById[it.id];
                     const previewUrl = preview?.previewUrl || null;
                     const pf = previewFileFor(previewUrl, preview?.files || []);
@@ -2484,7 +2467,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                                   : "border-neutral-900 text-neutral-600 cursor-not-allowed"
                               }`}
                               onClick={() => setFeatureOnProfile(entry, !currentlyFeatured)}
-                              title={featureAllowed ? "" : "Only owned or accepted split participation content can be featured."}
+                              title={featureAllowed ? "" : "Feature toggle unavailable."}
                             >
                               {featureBusyById[it.id]
                                 ? "Updating…"
