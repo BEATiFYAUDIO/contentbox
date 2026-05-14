@@ -3229,7 +3229,21 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           </button>
                         </>
                       ) : (
-                        <div className="text-xs text-amber-300">Archived</div>
+                        <>
+                          {allowRestore ? (
+                            <button
+                              type="button"
+                              className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
+                              onClick={() => restore(it.id)}
+                              disabled={busy}
+                              title="Restore archived content"
+                            >
+                              Unarchive
+                            </button>
+                          ) : (
+                            <div className="text-xs text-amber-300">Archived</div>
+                          )}
+                        </>
                       )}
                     </div>
                     {!canPublishFromLibrary ? (

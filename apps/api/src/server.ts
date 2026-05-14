@@ -136,13 +136,11 @@ import {
 import { registerWitnessRoutes } from "./modules/witness/witness.routes.js";
 import {
   assertCanPublish as assertLifecycleCanPublish,
-  assertCanRestore as assertLifecycleCanRestore,
   assertCanUpload as assertLifecycleCanUpload,
   evaluatePublicBuyAccess,
   isArchivedPublished,
   isPublished,
-  isSaleable,
-  shouldTombstoneOnDelete
+  isSaleable
 } from "./lib/contentLifecycle.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
@@ -21643,10 +21641,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const isLibraryRowEligible = (
     item: any,
     reason: string,
-    options?: { allowActionableShadow?: boolean }
+    options?: { allowActionableShadow?: boolean; includeDeletedLifecycle?: boolean }
   ): { eligible: boolean; actionableShadow: boolean; exclusionReason?: string } => {
     const contentId = asString(item?.id || "").trim();
     if (!contentId) return { eligible: false, actionableShadow: false, exclusionReason: "missing_id" };
+    if (options?.includeDeletedLifecycle) {
+      return { eligible: true, actionableShadow: false };
+    }
     const lifecycle = classifyLibraryLifecycle(item, reason, options);
     if (lifecycle.lifecycle === "active" || lifecycle.lifecycle === "shadow") {
       return { eligible: true, actionableShadow: lifecycle.actionableShadow };
@@ -21696,7 +21697,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     sourcePath: string
   ) => {
     traceLibraryRow("candidate", sourcePath, item, { libraryAccess, reason });
-    const eligibility = isLibraryRowEligible(item, reason, { allowActionableShadow: true });
+    const eligibility = isLibraryRowEligible(item, reason, {
+      allowActionableShadow: true,
+      includeDeletedLifecycle: trash || tombstones
+    });
     if (!eligibility.eligible) {
       traceLibraryRow("excluded", sourcePath, item, {
         libraryAccess,
@@ -34706,7 +34710,9 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
   }
 });
 
-// Soft delete (move to trash)
+// Soft delete (polymorphic lifecycle):
+// - unpublished/draft => trash
+// - published => archive (preserve buyer/audit continuity)
 app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
@@ -34738,55 +34744,56 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
     return draftSplitIds.length;
   };
 
-  if (isPublished(content)) {
-    const [entitlementsCount, paidCount] = await prisma.$transaction([
-      prisma.entitlement.count({ where: { contentId } }),
-      prisma.paymentIntent.count({ where: { contentId, status: "paid" as any } })
-    ]);
-    const tombstone = shouldTombstoneOnDelete(content, entitlementsCount, paidCount);
-    const purgedDraftSplits = await purgeSplitDraftState();
-    await prisma.contentItem.update({
-      where: { id: contentId },
-      data: { deletedAt, deletedReason: tombstone ? "tombstone" : "soft" }
-    });
-    try {
-      await prisma.auditEvent.create({
-        data: {
-          userId,
-          action: tombstone ? "content.tombstone" : "content.delete",
-          entityType: "ContentItem",
-          entityId: contentId,
-          payloadJson: {
-            deletedAt: deletedAt.toISOString(),
-            deletedReason: tombstone ? "tombstone" : "soft",
-            entitlementsCount,
-            paidCount,
-            purgedDraftSplits
-          } as any
-        }
-      });
-    } catch {}
-    return reply.send({ ok: true, tombstoned: tombstone, purgedDraftSplits });
-  }
-
+  const published = isPublished(content);
+  const nextDeletedReason = published ? "archive" : "trash";
+  const interpretedAction = published ? "archive" : "trash";
   const purgedDraftSplits = await purgeSplitDraftState();
-  await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt, deletedReason: "soft" } });
+  const updated = await prisma.contentItem.update({
+    where: { id: contentId },
+    data: { deletedAt, deletedReason: nextDeletedReason }
+  });
+  const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  req.log.info(
+    {
+      userId,
+      contentId,
+      previousStatus: asString(content.status || "").trim().toLowerCase() || null,
+      previousDeletedAt: content.deletedAt ? new Date(content.deletedAt).toISOString() : null,
+      previousDeletedReason: asString(content.deletedReason || "").trim().toLowerCase() || null,
+      nextDeletedAt: deletedAt.toISOString(),
+      nextDeletedReason,
+      interpretedAction,
+      cacheInvalidation
+    },
+    "content.lifecycle.mutate"
+  );
   try {
     await prisma.auditEvent.create({
       data: {
         userId,
-        action: "content.tombstone",
+        action: published ? "content.archive" : "content.trash",
         entityType: "ContentItem",
         entityId: contentId,
         payloadJson: {
+          previousStatus: asString(content.status || "").trim().toLowerCase() || null,
+          previousDeletedAt: content.deletedAt ? new Date(content.deletedAt).toISOString() : null,
+          previousDeletedReason: asString(content.deletedReason || "").trim().toLowerCase() || null,
           deletedAt: deletedAt.toISOString(),
-          deletedReason: "soft",
-          purgedDraftSplits
+          deletedReason: nextDeletedReason,
+          purgedDraftSplits,
+          interpretedAction,
+          cacheInvalidation
         } as any
       }
     });
   } catch {}
-  return reply.send({ ok: true, purgedDraftSplits });
+  return reply.send({
+    ok: true,
+    archived: published,
+    trashed: !published,
+    deletedReason: nextDeletedReason,
+    purgedDraftSplits
+  });
 });
 
 // Restore from trash
@@ -34797,16 +34804,43 @@ app.post("/content/:id/restore", { preHandler: requireAuth }, async (req: any, r
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  const restoreGuard = assertLifecycleCanRestore(content);
-  if (!restoreGuard.ok) {
+  if (!content.deletedAt) {
     return reply.code(409).send({
-      code: restoreGuard.code,
-      error: restoreGuard.message
+      code: "CONTENT_NOT_DELETED",
+      error: "Content is already active."
+    });
+  }
+  if (asString(content.deletedReason || "").trim().toLowerCase() === "hard") {
+    return reply.code(409).send({
+      code: "HARD_DELETED_CONTENT",
+      error: "Hard-deleted content cannot be restored."
     });
   }
 
-  await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt: null, deletedReason: null } });
-  return reply.send({ ok: true });
+  const wasPublished = isPublished(content);
+  const updated = await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt: null, deletedReason: null } });
+  const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  req.log.info(
+    {
+      userId,
+      contentId,
+      previousStatus: asString(content.status || "").trim().toLowerCase() || null,
+      previousDeletedAt: content.deletedAt ? new Date(content.deletedAt).toISOString() : null,
+      previousDeletedReason: asString(content.deletedReason || "").trim().toLowerCase() || null,
+      nextDeletedAt: null,
+      nextDeletedReason: null,
+      interpretedAction: wasPublished ? "unarchive" : "restore",
+      cacheInvalidation
+    },
+    "content.lifecycle.mutate"
+  );
+  return reply.send({
+    ok: true,
+    restored: !wasPublished,
+    unarchived: wasPublished,
+    deletedReason: null,
+    featureOnProfile: Boolean(updated.featureOnProfile)
+  });
 });
 
 // Permanently delete content and remove repo folder
@@ -34827,6 +34861,43 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
     return reply.code(409).send({
       code: "PUBLISHED_DELETE_BLOCKED",
       error: "Published content cannot be permanently deleted from this action."
+    });
+  }
+  const deletedReason = asString(content.deletedReason || "").trim().toLowerCase();
+  if (deletedReason !== "trash") {
+    return reply.code(409).send({
+      code: "PERMANENT_DELETE_REQUIRES_TRASH",
+      error: "Only trashed unpublished content can be permanently deleted."
+    });
+  }
+  const payoutAllocationIds = (
+    await prisma.providerPaymentParticipantAllocation.findMany({
+      where: { contentId },
+      select: { id: true }
+    })
+  ).map((row) => row.id);
+  const [entitlementsCount, paidCount, anyPaymentIntentCount, salesCount, settlementsCount, participantPayoutCount, splitHistoryCount] =
+    await prisma.$transaction([
+      prisma.entitlement.count({ where: { contentId } }),
+      prisma.paymentIntent.count({ where: { contentId, status: "paid" as any } }),
+      prisma.paymentIntent.count({ where: { contentId } }),
+      prisma.sale.count({ where: { contentId } }),
+      prisma.settlement.count({ where: { contentId } }),
+      prisma.participantPayout.count({ where: { allocationId: { in: payoutAllocationIds } } }),
+      prisma.splitVersion.count({ where: { contentId, status: { not: "draft" as any } } })
+    ]);
+  if (
+    entitlementsCount > 0 ||
+    paidCount > 0 ||
+    anyPaymentIntentCount > 0 ||
+    salesCount > 0 ||
+    settlementsCount > 0 ||
+    participantPayoutCount > 0 ||
+    splitHistoryCount > 0
+  ) {
+    return reply.code(409).send({
+      code: "CONTENT_HISTORY_DELETE_BLOCKED",
+      error: "Cannot hard-delete content with purchases, receipts, payouts, splits, or accounting history."
     });
   }
 
@@ -34853,6 +34924,21 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
     where: { id: contentId },
     data: { deletedAt, deletedReason: "hard" }
   });
+  const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  req.log.info(
+    {
+      userId,
+      contentId,
+      previousStatus: asString(content.status || "").trim().toLowerCase() || null,
+      previousDeletedAt: content.deletedAt ? new Date(content.deletedAt).toISOString() : null,
+      previousDeletedReason: asString(content.deletedReason || "").trim().toLowerCase() || null,
+      nextDeletedAt: deletedAt.toISOString(),
+      nextDeletedReason: "hard",
+      interpretedAction: "permanent_delete",
+      cacheInvalidation
+    },
+    "content.lifecycle.mutate"
+  );
 
   if (repoPath) {
     try {

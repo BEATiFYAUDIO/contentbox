@@ -22,7 +22,7 @@ export function canArchive(state: ContentUiState): boolean {
 }
 
 export function canRestore(state: ContentUiState): boolean {
-  return state === "trash";
+  return state === "trash" || state === "archived";
 }
 
 export function canUpload(state: ContentUiState): boolean {
