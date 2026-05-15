@@ -104,6 +104,24 @@ type ContentFile = {
   encAlg?: string | null;
 };
 
+type PreviewDiagnostics = {
+  selectedName?: string;
+  selectedType?: string;
+  selectedExt?: string;
+  selectedSizeBytes?: number;
+  canPlayFileType?: string;
+  canPlayMp4?: string;
+  canPlayMp4H264?: string;
+  canPlayMp4Hevc?: string;
+  videoWidth?: number;
+  videoHeight?: number;
+  duration?: number;
+  readyState?: number;
+  currentTime?: number;
+  errorCode?: number;
+  errorMessage?: string;
+};
+
 type Identity = {
   id: string;
   value: string;
@@ -469,6 +487,9 @@ export default function ContentLibraryPage({
   const [filesLoading, setFilesLoading] = React.useState<Record<string, boolean>>({});
   const [coverLoadErrorByContent, setCoverLoadErrorByContent] = React.useState<Record<string, boolean>>({});
   const [coverCacheBustByContent, setCoverCacheBustByContent] = React.useState<Record<string, string>>({});
+  const [localPreviewUrlByContent, setLocalPreviewUrlByContent] = React.useState<Record<string, string>>({});
+  const [previewDiagnosticsByContent, setPreviewDiagnosticsByContent] = React.useState<Record<string, PreviewDiagnostics>>({});
+  const [localCoverUrlByContent, setLocalCoverUrlByContent] = React.useState<Record<string, string>>({});
 
   // NEW: latest split (so we can show lock notarization when locked)
   const [splitByContent, setSplitByContent] = React.useState<Record<string, SplitVersion | null>>({});
@@ -881,6 +902,22 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     const onPopState = () => setLibraryTypeFilter(readLibraryTypeFromUrl());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      Object.values(localPreviewUrlByContent).forEach((u) => {
+        try {
+          URL.revokeObjectURL(u);
+        } catch {}
+      });
+      Object.values(localCoverUrlByContent).forEach((u) => {
+        try {
+          URL.revokeObjectURL(u);
+        } catch {}
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   React.useEffect(() => {
@@ -2083,6 +2120,35 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         if (!file) return;
 
         setError(null);
+        const ext = (() => {
+          const parts = String(file.name || "").split(".");
+          return parts.length > 1 ? String(parts.pop() || "").toLowerCase() : "";
+        })();
+        const videoProbe = document.createElement("video");
+        setPreviewDiagnosticsByContent((prev) => ({
+          ...prev,
+          [contentId]: {
+            selectedName: file.name,
+            selectedType: file.type,
+            selectedExt: ext,
+            selectedSizeBytes: Number(file.size || 0),
+            canPlayFileType: videoProbe.canPlayType(file.type || ""),
+            canPlayMp4: videoProbe.canPlayType("video/mp4"),
+            canPlayMp4H264: videoProbe.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+            canPlayMp4Hevc: videoProbe.canPlayType('video/mp4; codecs="hvc1"')
+          }
+        }));
+        setLocalPreviewUrlByContent((prev) => {
+          const next = { ...prev };
+          const existing = next[contentId];
+          if (existing) {
+            try {
+              URL.revokeObjectURL(existing);
+            } catch {}
+          }
+          next[contentId] = URL.createObjectURL(file);
+          return next;
+        });
         setUpload({ status: "preparing", kind: "content", contentId, filename: file.name });
         const idempotencyKey = uploadIdempotencyKey(contentId, file);
         if (import.meta.env.DEV) {
@@ -2196,6 +2262,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         if (!file) return;
 
         setError(null);
+        setLocalCoverUrlByContent((prev) => {
+          const next = { ...prev };
+          const existing = next[contentId];
+          if (existing) {
+            try {
+              URL.revokeObjectURL(existing);
+            } catch {}
+          }
+          next[contentId] = URL.createObjectURL(file);
+          return next;
+        });
         setUpload({ status: "preparing", kind: "cover", contentId, filename: file.name });
         try {
           setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name });
@@ -3040,7 +3117,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     <div className="min-w-0 flex items-start gap-3">
                       <div className="shrink-0 w-24 h-16 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900/70">
                         <img
-                          src={`${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
+                          src={localCoverUrlByContent[it.id] || `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
                             it.manifest?.sha256 || coverCacheBustByContent[it.id]
                               ? `?v=${encodeURIComponent(String(coverCacheBustByContent[it.id] || it.manifest?.sha256 || ""))}`
                               : ""
@@ -3314,13 +3391,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     <div className="border-t border-neutral-800 px-3 py-3 space-y-3">
                       {(() => {
                         const preview = previewByContent[it.id] || null;
-                        const previewUrl = preview?.previewUrl || null;
+                        const previewUrl = localPreviewUrlByContent[it.id] || preview?.previewUrl || null;
                         const previewFile = previewFileFor(previewUrl, preview?.files || files);
                         const previewMime = String(previewFile?.mime || "");
                         const isVideo = String(it.type || "").toLowerCase() === "video" || previewMime.startsWith("video/");
                         const isAudio = String(it.type || "").toLowerCase() === "song" || previewMime.startsWith("audio/");
                         const coverVersion = String(coverCacheBustByContent[it.id] || it.manifest?.sha256 || "").trim();
-                        const coverUrl = `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
+                        const coverUrl = localCoverUrlByContent[it.id] || `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
                           coverVersion ? `?v=${encodeURIComponent(coverVersion)}` : ""
                         }`;
                         return (
@@ -3360,7 +3437,102 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   ) : null}
                                 </div>
                               ) : null}
-                              {previewUrl && isVideo ? <video className="w-full rounded-md" controls src={previewUrl} /> : null}
+                              {previewUrl && isVideo ? (
+                                <video
+                                  className="w-full rounded-md bg-black object-contain"
+                                  controls
+                                  playsInline
+                                  preload="auto"
+                                  src={previewUrl}
+                                  onLoadedMetadata={(e) => {
+                                    const v = e.currentTarget;
+                                    setPreviewDiagnosticsByContent((prev) => ({
+                                      ...prev,
+                                      [it.id]: {
+                                        ...(prev[it.id] || {}),
+                                        videoWidth: Number(v.videoWidth || 0),
+                                        videoHeight: Number(v.videoHeight || 0),
+                                        duration: Number.isFinite(v.duration) ? Number(v.duration) : 0,
+                                        readyState: Number(v.readyState || 0),
+                                        currentTime: Number(v.currentTime || 0),
+                                        errorCode: undefined,
+                                        errorMessage: undefined
+                                      }
+                                    }));
+                                    if (import.meta.env.DEV) {
+                                      console.debug("[catalog.preview.video] metadata", {
+                                        contentId: it.id,
+                                        src: previewUrl,
+                                        readyState: v.readyState,
+                                        duration: v.duration,
+                                        videoWidth: v.videoWidth,
+                                        videoHeight: v.videoHeight
+                                      });
+                                    }
+                                  }}
+                                  onLoadedData={(e) => {
+                                    const v = e.currentTarget;
+                                    if (import.meta.env.DEV) {
+                                      console.debug("[catalog.preview.video] loadedData", {
+                                        contentId: it.id,
+                                        readyState: v.readyState,
+                                        currentTime: v.currentTime
+                                      });
+                                    }
+                                    setPreviewDiagnosticsByContent((prev) => ({
+                                      ...prev,
+                                      [it.id]: {
+                                        ...(prev[it.id] || {}),
+                                        readyState: Number(v.readyState || 0),
+                                        currentTime: Number(v.currentTime || 0)
+                                      }
+                                    }));
+                                  }}
+                                  onCanPlay={(e) => {
+                                    const v = e.currentTarget;
+                                    if (import.meta.env.DEV) {
+                                      console.debug("[catalog.preview.video] canPlay", {
+                                        contentId: it.id,
+                                        readyState: v.readyState,
+                                        currentTime: v.currentTime
+                                      });
+                                    }
+                                    setPreviewDiagnosticsByContent((prev) => ({
+                                      ...prev,
+                                      [it.id]: {
+                                        ...(prev[it.id] || {}),
+                                        readyState: Number(v.readyState || 0),
+                                        currentTime: Number(v.currentTime || 0)
+                                      }
+                                    }));
+                                  }}
+                                  onError={(e) => {
+                                    const v = e.currentTarget;
+                                    const mediaErr = v.error;
+                                    setPreviewDiagnosticsByContent((prev) => ({
+                                      ...prev,
+                                      [it.id]: {
+                                        ...(prev[it.id] || {}),
+                                        errorCode: Number(mediaErr?.code || 0),
+                                        errorMessage: String(mediaErr?.message || "Video decode failed"),
+                                        readyState: Number(v.readyState || 0),
+                                        currentTime: Number(v.currentTime || 0),
+                                        videoWidth: Number(v.videoWidth || 0),
+                                        videoHeight: Number(v.videoHeight || 0),
+                                        duration: Number.isFinite(v.duration) ? Number(v.duration) : 0
+                                      }
+                                    }));
+                                    if (import.meta.env.DEV) {
+                                      console.debug("[catalog.preview.video] error", {
+                                        contentId: it.id,
+                                        code: mediaErr?.code,
+                                        message: mediaErr?.message || null,
+                                        src: previewUrl
+                                      });
+                                    }
+                                  }}
+                                />
+                              ) : null}
                               {previewUrl && isAudio ? <audio className="w-full" controls src={previewUrl} /> : null}
                               {previewUrl && !isAudio && !isVideo ? (
                                 <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
@@ -3371,6 +3543,45 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 <div className="text-xs text-neutral-500">No preview available yet.</div>
                               ) : null}
                               {preview?.error ? <div className="text-xs text-amber-300">{String(preview.error)}</div> : null}
+                              {(() => {
+                                const diag = previewDiagnosticsByContent[it.id];
+                                if (!diag) return null;
+                                const likelyCodecDecodeIssue =
+                                  (isVideo && Number(diag.videoWidth || 0) === 0 && Number(diag.duration || 0) > 0) ||
+                                  Number(diag.errorCode || 0) > 0;
+                                return (
+                                  <div className="text-[11px] text-neutral-500 space-y-1">
+                                    <div>
+                                      File:{" "}
+                                      <span className="text-neutral-400">
+                                        {diag.selectedName || "—"} {diag.selectedExt ? `(.${diag.selectedExt})` : ""}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      MIME: <span className="text-neutral-400">{diag.selectedType || "—"}</span> · canPlay(file):{" "}
+                                      <span className="text-neutral-400">{diag.canPlayFileType || "no"}</span>
+                                    </div>
+                                    <div>
+                                      canPlay mp4/h264/hevc:{" "}
+                                      <span className="text-neutral-400">
+                                        {diag.canPlayMp4 || "no"} / {diag.canPlayMp4H264 || "no"} / {diag.canPlayMp4Hevc || "no"}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      Frame:{" "}
+                                      <span className="text-neutral-400">
+                                        {Number(diag.videoWidth || 0)}×{Number(diag.videoHeight || 0)}
+                                      </span>{" "}
+                                      · duration: <span className="text-neutral-400">{Number(diag.duration || 0).toFixed(2)}s</span>
+                                    </div>
+                                    {likelyCodecDecodeIssue ? (
+                                      <div className="text-amber-300">
+                                        This file uploaded, but your browser may not be able to display its video codec. Try re-exporting as H.264 MP4.
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </div>
                         );
