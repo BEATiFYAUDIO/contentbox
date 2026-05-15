@@ -199,7 +199,9 @@ function mapAcceptErrorMessage(raw: string): string {
     if (text.includes("DISCOVERY_UNREACHABLE_OR_INVALID")) return "Remote node discovery endpoint is unreachable or invalid.";
     if (text.includes("DISCOVERY_KEY_MISSING")) return "Remote node discovery did not provide a public verification key.";
     if (text.includes("FORWARDED_PAYLOAD_MISMATCH")) return "Forwarded identity payload does not match invite token/origin context.";
-    if (text.includes("FORWARDED_PAYLOAD_TS_INVALID")) return "Forwarded identity payload timestamp is invalid or expired.";
+    if (text.includes("FORWARDED_PAYLOAD_TS_INVALID")) {
+      return "Your system clock appears out of sync. Certifyd uses signed timestamps to prevent invite replay attacks. Sync your clock and try again.";
+    }
     if (text.includes("FORWARDED_SIGNATURE_INVALID")) return "Forwarded identity signature is invalid.";
     return "Forwarded identity proof was rejected by the remote node.";
   }

@@ -43899,8 +43899,11 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         app.log.info(
           {
             tokenId,
+            tokenPrefix: token ? `${String(token).slice(0, 8)}…` : null,
             remoteNodeUrl,
             origin: remoteNodeUrl || null,
+            tsRaw: timestampValidation.raw,
+            parsedMs: timestampValidation.parsedMs,
             timestampRaw: timestampValidation.raw,
             timestampFormat: timestampValidation.format,
             timestampParsedMs: timestampValidation.parsedMs,

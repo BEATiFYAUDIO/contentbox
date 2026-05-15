@@ -135,6 +135,21 @@ type DiagnosticsPageProps = {
   whoamiStatus?: "idle" | "disabled" | "ok" | "error";
 };
 
+type ClockSkewStatus = "ok" | "warning" | "severe" | "unknown";
+
+type ClockSkewResult = {
+  status: ClockSkewStatus;
+  serverDateRaw?: string | null;
+  serverMs?: number | null;
+  browserMs?: number | null;
+  driftMs?: number | null;
+  latencyMs?: number | null;
+  error?: string | null;
+};
+
+const CLOCK_SKEW_WARNING_MS = 5 * 60 * 1000;
+const CLOCK_SKEW_SEVERE_MS = 15 * 60 * 1000;
+
 function isLocalHostname(hostname: string): boolean {
   if (!hostname) return false;
   if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return true;
@@ -177,6 +192,22 @@ function fmtStatus(row: ProbeRow) {
   return row.errorType || "Fail";
 }
 
+function fmtClockDrift(ms?: number | null) {
+  if (ms === undefined || ms === null || !Number.isFinite(ms)) return "—";
+  const abs = Math.abs(ms);
+  const minutes = abs / 60000;
+  const direction = ms > 0 ? "ahead of" : "behind";
+  if (minutes >= 1) return `${minutes.toFixed(minutes >= 10 ? 0 : 1)} minutes ${direction} server`;
+  return `${Math.round(abs / 1000)} seconds ${direction} server`;
+}
+
+function classifyClockSkew(driftMs: number): ClockSkewStatus {
+  const abs = Math.abs(driftMs);
+  if (abs > CLOCK_SKEW_SEVERE_MS) return "severe";
+  if (abs > CLOCK_SKEW_WARNING_MS) return "warning";
+  return "ok";
+}
+
 export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idle" }: DiagnosticsPageProps) {
   const apiBase = useMemo(() => getApiBase(), []);
   const inputClass =
@@ -212,6 +243,8 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
   const [backupRetentionDays, setBackupRetentionDays] = useState<number | null>(null);
   const [backupsEnabled, setBackupsEnabled] = useState(true);
   const [backupsSettingsBusy, setBackupsSettingsBusy] = useState(false);
+  const [clockSkew, setClockSkew] = useState<ClockSkewResult>({ status: "unknown" });
+  const [clockSkewBusy, setClockSkewBusy] = useState(false);
   const token = getToken();
 
   const healthPath = DEFAULT_HEALTH_PATH;
@@ -305,6 +338,46 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
       cancelled = true;
     };
   }, [apiBase, token]);
+
+  const checkClockSkew = async () => {
+    setClockSkewBusy(true);
+    try {
+      const startedMs = Date.now();
+      const res = await fetch(`${apiBase}/api/health`, { method: "GET", cache: "no-store" });
+      const endedMs = Date.now();
+      const serverDateRaw = res.headers.get("date");
+      const serverMs = serverDateRaw ? Date.parse(serverDateRaw) : NaN;
+      if (!Number.isFinite(serverMs)) {
+        setClockSkew({
+          status: "unknown",
+          serverDateRaw,
+          error: "API health response did not include a readable Date header."
+        });
+        return;
+      }
+      const browserMs = Math.round((startedMs + endedMs) / 2);
+      const driftMs = browserMs - serverMs;
+      setClockSkew({
+        status: classifyClockSkew(driftMs),
+        serverDateRaw,
+        serverMs,
+        browserMs,
+        driftMs,
+        latencyMs: endedMs - startedMs
+      });
+    } catch (e: any) {
+      setClockSkew({
+        status: "unknown",
+        error: e?.message || String(e)
+      });
+    } finally {
+      setClockSkewBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    checkClockSkew().catch(() => {});
+  }, [apiBase]);
 
   const loadPublicTunnels = async () => {
     if (!token) return;
@@ -531,6 +604,64 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
           )}
         </div>
       ) : null}
+
+      <div
+        style={{
+          border:
+            clockSkew.status === "severe"
+              ? "1px solid rgba(248,113,113,0.55)"
+              : clockSkew.status === "warning"
+                ? "1px solid rgba(251,191,36,0.55)"
+                : "1px solid rgba(255,255,255,0.12)",
+          borderRadius: 12,
+          padding: 12,
+          marginBottom: 12,
+          background:
+            clockSkew.status === "severe"
+              ? "rgba(127,29,29,0.22)"
+              : clockSkew.status === "warning"
+                ? "rgba(113,63,18,0.18)"
+                : "transparent"
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Clock sync</div>
+            <div style={{ fontSize: 13, opacity: 0.78 }}>
+              Certifyd remote invites use signed timestamps to prevent replay attacks.
+            </div>
+          </div>
+          <button onClick={checkClockSkew} disabled={clockSkewBusy} className={buttonClass}>
+            {clockSkewBusy ? "Checking…" : "Recheck clock"}
+          </button>
+        </div>
+        <div style={{ marginTop: 8, display: "grid", gap: 4, fontSize: 13 }}>
+          {clockSkew.status === "severe" ? (
+            <div style={{ color: "#fecaca" }}>
+              Severe clock drift detected: this browser appears {fmtClockDrift(clockSkew.driftMs)}. Signed remote invite
+              acceptance can fail until this machine clock is synced.
+            </div>
+          ) : clockSkew.status === "warning" ? (
+            <div style={{ color: "#fde68a" }}>
+              Clock drift warning: this browser appears {fmtClockDrift(clockSkew.driftMs)}. Remote signed actions become
+              unreliable above 15 minutes of drift.
+            </div>
+          ) : clockSkew.status === "ok" ? (
+            <div style={{ color: "#bbf7d0" }}>Clock drift is within signed trust tolerance.</div>
+          ) : (
+            <div style={{ color: "#fde68a" }}>{clockSkew.error || "Clock skew has not been checked yet."}</div>
+          )}
+          <div style={{ opacity: 0.72 }}>
+            Drift: {fmtClockDrift(clockSkew.driftMs)} • API Date: {clockSkew.serverDateRaw || "—"} • Probe:{" "}
+            {fmtLatency(clockSkew.latencyMs || undefined)}
+          </div>
+          {(clockSkew.status === "warning" || clockSkew.status === "severe") ? (
+            <div style={{ opacity: 0.72 }}>
+              Linux quick check: <code>timedatectl</code> then <code>sudo timedatectl set-ntp true</code>.
+            </div>
+          ) : null}
+        </div>
+      </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 12, marginBottom: 12 }}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Public tunnel health</div>
