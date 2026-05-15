@@ -121,7 +121,8 @@ import {
   buildInviteAcceptanceIdentityWrites,
   mapRemoteInviteAcceptErrorCode,
   mapTerminalInviteStatusToCode,
-  resolveInviteRecipientMatch
+  resolveInviteRecipientMatch,
+  validateForwardedInviteTimestamp
 } from "./lib/inviteAcceptResolution.js";
 import { evaluateTunnelConflictGuard, type TunnelConflictGuardState } from "./lib/tunnelConflictGuard.js";
 import {
@@ -43894,11 +43895,25 @@ async function handlePublicInviteAccept(req: any, reply: any) {
           String(payload?.nodeUrl || "").replace(/\/$/, "") === remoteNodeUrl &&
           Boolean(payloadNonce) &&
           Boolean(payloadAudience && acceptedAudiences.has(payloadAudience));
-        const ts = Date.parse(String(payload?.ts || ""));
-        const tsOk = Number.isFinite(ts) && Math.abs(Date.now() - ts) < 15 * 60 * 1000;
+        const timestampValidation = validateForwardedInviteTimestamp(payload?.ts);
+        app.log.info(
+          {
+            tokenId,
+            remoteNodeUrl,
+            origin: remoteNodeUrl || null,
+            timestampRaw: timestampValidation.raw,
+            timestampFormat: timestampValidation.format,
+            timestampParsedMs: timestampValidation.parsedMs,
+            nowMs: timestampValidation.nowMs,
+            deltaSeconds:
+              timestampValidation.deltaMs === null ? null : Math.round((timestampValidation.deltaMs / 1000) * 1000) / 1000,
+            allowedSkewSeconds: timestampValidation.allowedSkewMs / 1000
+          },
+          "invite.remote_accept_forwarded_timestamp"
+        );
         if (!payloadOk) {
           remoteAuthFailure = "FORWARDED_PAYLOAD_MISMATCH";
-        } else if (!tsOk) {
+        } else if (!timestampValidation.ok) {
           remoteAuthFailure = "FORWARDED_PAYLOAD_TS_INVALID";
         } else {
           const sigBuf = Buffer.from(signature, "base64");
@@ -44260,9 +44275,8 @@ async function handlePublicInviteAccept(req: any, reply: any) {
           // basic payload checks
           if (String(payload.token) === token && String(payload.remoteUserId) === remoteUserId && String(payload.nodeUrl).replace(/\/$/, "") === remoteNodeUrl) {
             // check timestamp (allow 15m skew)
-            const ts = Date.parse(String(payload.ts || ""));
-            const okTs = Number.isFinite(ts) && Math.abs(Date.now() - ts) < 15 * 60 * 1000;
-            if (okTs) {
+            const timestampValidation = validateForwardedInviteTimestamp(payload.ts);
+            if (timestampValidation.ok) {
               const sigBuf = Buffer.from(signature, "base64");
               try {
                 const verified = (crypto.verify as any)(null, Buffer.from(payloadStr), remotePub, sigBuf) as boolean;

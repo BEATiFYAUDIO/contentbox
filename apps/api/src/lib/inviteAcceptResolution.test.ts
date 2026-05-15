@@ -4,7 +4,8 @@ import {
   buildInviteAcceptanceIdentityWrites,
   mapRemoteInviteAcceptErrorCode,
   mapTerminalInviteStatusToCode,
-  resolveInviteRecipientMatch
+  resolveInviteRecipientMatch,
+  validateForwardedInviteTimestamp
 } from "./inviteAcceptResolution.js";
 
 test("mapRemoteInviteAcceptErrorCode keeps explicit code", () => {
@@ -23,6 +24,51 @@ test("mapTerminalInviteStatusToCode maps known statuses", () => {
   assert.equal(mapTerminalInviteStatusToCode("tombstoned"), "INVITE_TOMBSTONED");
   assert.equal(mapTerminalInviteStatusToCode("declined"), "INVITE_DECLINED");
   assert.equal(mapTerminalInviteStatusToCode("expired"), "INVITE_EXPIRED");
+});
+
+test("validateForwardedInviteTimestamp accepts current ISO timestamps", () => {
+  const nowMs = Date.UTC(2026, 4, 15, 12, 0, 0);
+  const result = validateForwardedInviteTimestamp(new Date(nowMs).toISOString(), { nowMs });
+  assert.equal(result.ok, true);
+  assert.equal(result.format, "iso");
+  assert.equal(result.parsedMs, nowMs);
+});
+
+test("validateForwardedInviteTimestamp accepts numeric seconds timestamps", () => {
+  const nowMs = Date.UTC(2026, 4, 15, 12, 0, 0);
+  const result = validateForwardedInviteTimestamp(String(Math.floor(nowMs / 1000)), { nowMs });
+  assert.equal(result.ok, true);
+  assert.equal(result.format, "seconds");
+  assert.equal(result.parsedMs, Math.floor(nowMs / 1000) * 1000);
+});
+
+test("validateForwardedInviteTimestamp accepts numeric milliseconds timestamps", () => {
+  const nowMs = Date.UTC(2026, 4, 15, 12, 0, 0);
+  const result = validateForwardedInviteTimestamp(String(nowMs), { nowMs });
+  assert.equal(result.ok, true);
+  assert.equal(result.format, "milliseconds");
+  assert.equal(result.parsedMs, nowMs);
+});
+
+test("validateForwardedInviteTimestamp rejects stale timestamps", () => {
+  const nowMs = Date.UTC(2026, 4, 15, 12, 0, 0);
+  const result = validateForwardedInviteTimestamp(new Date(nowMs - 16 * 60 * 1000).toISOString(), { nowMs });
+  assert.equal(result.ok, false);
+  assert.equal(result.format, "iso");
+});
+
+test("validateForwardedInviteTimestamp rejects future timestamps beyond skew", () => {
+  const nowMs = Date.UTC(2026, 4, 15, 12, 0, 0);
+  const result = validateForwardedInviteTimestamp(new Date(nowMs + 16 * 60 * 1000).toISOString(), { nowMs });
+  assert.equal(result.ok, false);
+  assert.equal(result.format, "iso");
+});
+
+test("validateForwardedInviteTimestamp rejects malformed timestamps", () => {
+  const result = validateForwardedInviteTimestamp("not-a-timestamp", { nowMs: Date.UTC(2026, 4, 15, 12, 0, 0) });
+  assert.equal(result.ok, false);
+  assert.equal(result.format, "invalid");
+  assert.equal(result.parsedMs, null);
 });
 
 test("resolveInviteRecipientMatch allows cross-node email identity without local DB id equality", () => {

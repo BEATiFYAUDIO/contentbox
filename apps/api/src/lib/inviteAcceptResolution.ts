@@ -18,6 +18,50 @@ export function mapTerminalInviteStatusToCode(status: string): string {
   return "INVITE_INVALID_STATUS";
 }
 
+export type ForwardedInviteTimestampValidation = {
+  ok: boolean;
+  raw: string;
+  parsedMs: number | null;
+  nowMs: number;
+  deltaMs: number | null;
+  allowedSkewMs: number;
+  format: "iso" | "seconds" | "milliseconds" | "invalid";
+};
+
+export function validateForwardedInviteTimestamp(
+  value: unknown,
+  opts?: { nowMs?: number; allowedSkewMs?: number }
+): ForwardedInviteTimestampValidation {
+  const raw = String(value ?? "").trim();
+  const nowMs = Number.isFinite(opts?.nowMs) ? Number(opts?.nowMs) : Date.now();
+  const allowedSkewMs = Number.isFinite(opts?.allowedSkewMs) ? Number(opts?.allowedSkewMs) : 15 * 60 * 1000;
+  let parsedMs: number | null = null;
+  let format: ForwardedInviteTimestampValidation["format"] = "invalid";
+
+  if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      if (Math.abs(numeric) < 1_000_000_000_000) {
+        parsedMs = numeric * 1000;
+        format = "seconds";
+      } else {
+        parsedMs = numeric;
+        format = "milliseconds";
+      }
+    }
+  } else if (raw) {
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) {
+      parsedMs = parsed;
+      format = "iso";
+    }
+  }
+
+  const deltaMs = parsedMs === null ? null : nowMs - parsedMs;
+  const ok = parsedMs !== null && Math.abs(deltaMs || 0) <= allowedSkewMs;
+  return { ok, raw, parsedMs, nowMs, deltaMs, allowedSkewMs, format };
+}
+
 export type InviteRecipientMatchInput = {
   authMode: "local_auth" | "remote_signature" | "none";
   targetType: "email" | "local_user" | "identity_ref";
