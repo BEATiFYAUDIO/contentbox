@@ -117,7 +117,12 @@ import {
   resolveLockedSnapshotAttributionLabel,
   resolveLockedSnapshotDisplayLabel
 } from "./lib/lockedParticipantSnapshot.js";
-import { mapRemoteInviteAcceptErrorCode, mapTerminalInviteStatusToCode } from "./lib/inviteAcceptResolution.js";
+import {
+  buildInviteAcceptanceIdentityWrites,
+  mapRemoteInviteAcceptErrorCode,
+  mapTerminalInviteStatusToCode,
+  resolveInviteRecipientMatch
+} from "./lib/inviteAcceptResolution.js";
 import { evaluateTunnelConflictGuard, type TunnelConflictGuardState } from "./lib/tunnelConflictGuard.js";
 import {
   buildContentPublishReceiptPayload,
@@ -43973,7 +43978,19 @@ async function handlePublicInviteAccept(req: any, reply: any) {
 
   const inv: any = await prisma.invitation.findFirst({
     where: { OR: [{ token }, { tokenHash }] },
-    include: { splitParticipant: { include: { splitVersion: { include: { content: true } } } } }
+    include: {
+      splitParticipant: {
+        include: {
+          splitVersion: {
+            include: {
+              content: {
+                include: { owner: { select: { id: true, email: true } } }
+              }
+            }
+          }
+        }
+      }
+    }
   });
 
   if (!inv) {
@@ -44147,13 +44164,58 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     where: { id: userId },
     select: { id: true, email: true }
   });
+  const targetLocalUser =
+    inviteTargetType === "local_user" || (inviteTargetType === "identity_ref" && inviteTargetValue && looksLikeInternalUserId(inviteTargetValue))
+      ? await prisma.user.findUnique({
+          where: { id: inviteTargetValue },
+          select: { id: true, email: true }
+        })
+      : null;
   const remoteSignedEmail =
     acceptanceAuthMode === "remote_signature"
       ? normalizeEmail(asString((payload as any)?.remoteUserEmail || "").trim())
       : "";
+  const remoteSignedOwnerEmail =
+    acceptanceAuthMode === "remote_signature"
+      ? normalizeEmail(asString((payload as any)?.remoteOwnerEmail || "").trim())
+      : "";
   const meEmail = normalizeEmail(me?.email || "");
   const effectiveInviteEmail = remoteSignedEmail || meEmail;
-  if (inviteTargetType === "local_user" && inviteTargetValue !== userId) {
+  const inviteTargetEmail = inviteTargetType === "email" ? normalizeEmail(inviteTargetValue) : "";
+  const participantEmail = normalizeEmail(inv.splitParticipant?.participantEmail || "");
+  const contentOwnerEmail = normalizeEmail(inv.splitParticipant?.splitVersion?.content?.owner?.email || "");
+  const recipientMatch = resolveInviteRecipientMatch({
+    authMode: acceptanceAuthMode,
+    targetType: inviteTargetType,
+    targetValue: inviteTargetValue,
+    attemptedUserId: userId,
+    effectiveEmail: effectiveInviteEmail,
+    effectiveOwnerEmail: remoteSignedOwnerEmail,
+    participantEmail,
+    inviteTargetEmail,
+    targetLocalUserEmail: targetLocalUser?.email || null,
+    contentOwnerEmail,
+    remoteNodeUrl
+  });
+  app.log.info(
+    {
+      tokenId,
+      invitationId: inv.id,
+      splitParticipantId: inv.splitParticipantId,
+      targetType: inviteTargetType,
+      targetValue: inviteTargetValue,
+      participantEmail: participantEmail || null,
+      acceptingUserId: userId || null,
+      acceptingEmail: effectiveInviteEmail || null,
+      acceptingOwnerEmail: remoteSignedOwnerEmail || null,
+      matchMethod: recipientMatch.ok ? recipientMatch.reason : "rejected",
+      rejectedReason: recipientMatch.ok ? null : recipientMatch.reason,
+      authMode: acceptanceAuthMode
+    },
+    "remote_invite.accept.recipient_match"
+  );
+  if (!recipientMatch.ok) {
+    const rejectionReason = recipientMatch.reason;
     app.log.info(
       {
         tokenId,
@@ -44161,54 +44223,18 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         splitParticipantId: inv.splitParticipantId,
         targetType: inviteTargetType,
         targetValue: inviteTargetValue,
-        attemptedUserId: userId
+        attemptedUserId: userId,
+        attemptedEmail: effectiveInviteEmail || null,
+        authMode: acceptanceAuthMode,
+        reason: rejectionReason
       },
       "invite.remote_accept_participant_mismatch"
     );
     return reply.code(403).send({
-      error: "Invite is bound to a different identity",
+      error: rejectionReason === "email_mismatch" ? "Invite email does not match your identity" : "Invite is bound to a different identity",
       code: "INVITE_WRONG_RECIPIENT",
-      reason: "target_mismatch"
+      reason: rejectionReason
     });
-  }
-  if (inviteTargetType === "identity_ref" && inviteTargetValue && inviteTargetValue !== userId) {
-    app.log.info(
-      {
-        tokenId,
-        invitationId: inv.id,
-        splitParticipantId: inv.splitParticipantId,
-        targetType: inviteTargetType,
-        targetValue: inviteTargetValue,
-        attemptedUserId: userId
-      },
-      "invite.remote_accept_participant_mismatch"
-    );
-    return reply.code(403).send({
-      error: "Invite is bound to a different identity",
-      code: "INVITE_WRONG_RECIPIENT",
-      reason: "identity_ref_mismatch"
-    });
-  }
-  if (inviteTargetType === "email") {
-    if (!effectiveInviteEmail || normalizeEmail(inviteTargetValue) !== effectiveInviteEmail) {
-      app.log.info(
-        {
-          tokenId,
-          invitationId: inv.id,
-          splitParticipantId: inv.splitParticipantId,
-          targetType: inviteTargetType,
-          targetValue: inviteTargetValue,
-          attemptedEmail: effectiveInviteEmail || null,
-          authMode: acceptanceAuthMode
-        },
-        "invite.remote_accept_participant_mismatch"
-      );
-      return reply.code(403).send({
-        error: "Invite email does not match your identity",
-        code: "INVITE_WRONG_RECIPIENT",
-        reason: "email_mismatch"
-      });
-    }
   }
 
   // If local auth accepted the request and remote info is also provided, verify
@@ -44283,11 +44309,15 @@ async function handlePublicInviteAccept(req: any, reply: any) {
 
   try {
     await prisma.$transaction(async (tx) => {
-      const acceptedByUserId = acceptanceAuthMode === "local_auth" ? userId : null;
-      const acceptedIdentityRef =
-        acceptanceAuthMode === "remote_signature"
-          ? `remote:${remoteNodeUrl || "unknown"}#user:${userId}`
-          : `user:${userId}`;
+      const identityWrites = buildInviteAcceptanceIdentityWrites({
+        authMode: acceptanceAuthMode,
+        userId,
+        remoteNodeUrl,
+        existingParticipantEmail: inv.splitParticipant?.participantEmail || null,
+        effectiveEmail: effectiveInviteEmail
+      });
+      const acceptedByUserId = identityWrites.acceptedByUserId;
+      const acceptedIdentityRef = identityWrites.acceptedIdentityRef;
       await tx.invitation.update({
         where: { id: inv.id },
         data: {
@@ -44298,7 +44328,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         }
       });
 
-      const spUpdate: any = { acceptedAt: now, participantUserId: userId, verifiedAt: now };
+      const spUpdate: any = { acceptedAt: now, verifiedAt: now, ...identityWrites.splitParticipantUpdate };
 
       await tx.splitParticipant.update({
         where: { id: inv.splitParticipantId },
@@ -44322,6 +44352,9 @@ async function handlePublicInviteAccept(req: any, reply: any) {
             invitationId: inv.id,
             splitParticipantId: inv.splitParticipantId,
             participantUserId: userId,
+            participantEmail: effectiveInviteEmail || inv.splitParticipant?.participantEmail || null,
+            acceptedIdentityRef,
+            acceptanceAuthMode,
             remoteNodeUrl: remoteNodeUrl || null,
             remoteUserId: remoteUserId || null,
             remoteVerified,
@@ -44340,6 +44373,9 @@ async function handlePublicInviteAccept(req: any, reply: any) {
           payloadJson: {
             splitParticipantId: inv.splitParticipantId,
             participantEmail: inv.splitParticipant?.participantEmail || null,
+            acceptedEmail: effectiveInviteEmail || inv.splitParticipant?.participantEmail || null,
+            acceptedIdentityRef,
+            acceptanceAuthMode,
             contentId: inv.splitParticipant?.splitVersion?.contentId || null,
             acceptedAt: now,
             remoteNodeUrl: remoteNodeUrl || null,
