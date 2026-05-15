@@ -10456,6 +10456,7 @@ type Manifest = {
   title?: string;
   type?: string;
   primaryFile?: string | ManifestFile | null;
+  preview?: string | ManifestFile | null;
   files?: ManifestFile[];
 };
 
@@ -10574,6 +10575,24 @@ function getManifestAssetPath(
   return null;
 }
 
+function previewExtForMime(mime: string): "mp4" | "mp3" | null {
+  const normalized = String(mime || "").toLowerCase();
+  if (normalized.startsWith("video/")) return "mp4";
+  if (normalized.startsWith("audio/")) return "mp3";
+  return null;
+}
+
+function stablePreviewObjectKey(contentId: string, mimeOrExt: string) {
+  const raw = String(mimeOrExt || "").toLowerCase().replace(/^\./, "");
+  const ext = raw === "mp4" || raw === "mp3" ? raw : previewExtForMime(raw);
+  return ext ? `previews/${contentId}-preview.${ext}` : null;
+}
+
+function isStablePreviewObjectKey(contentId: string, objectKey: string) {
+  const key = String(objectKey || "").trim();
+  return key === stablePreviewObjectKey(contentId, "mp4") || key === stablePreviewObjectKey(contentId, "mp3");
+}
+
 function getFirstImageAssetFromManifest(
   manifest: any
 ): { path: string; sha256: string | null; mime: string | null } | null {
@@ -10689,14 +10708,61 @@ async function ensurePreviewFile(content: any, files: any[]) {
     const mime = String(source?.mime || "").toLowerCase();
     if (!source || (!mime.startsWith("video/") && !mime.startsWith("audio/"))) return null;
 
-    const previewExt = mime.startsWith("video/") ? "mp4" : "mp3";
-    const previewDir = "previews";
-    const previewName = `${content.id}-preview.${previewExt}`;
-    const previewObjectKey = `${previewDir}/${previewName}`;
+    const previewExt = previewExtForMime(mime);
+    if (!previewExt) return null;
+    const previewObjectKey = stablePreviewObjectKey(content.id, previewExt);
+    if (!previewObjectKey) return null;
+    const previewName = path.basename(previewObjectKey);
 
     const repoRoot = path.resolve(content.repoPath);
     const previewAbs = path.resolve(repoRoot, previewObjectKey);
-    if (fsSync.existsSync(previewAbs)) return previewObjectKey;
+    if (!previewAbs.startsWith(repoRoot)) return null;
+
+    const manifestRecord = await prisma.manifest.findUnique({ where: { contentId: content.id } }).catch(() => null);
+    const manifestPreview = asString((manifestRecord?.json as any)?.preview || "").trim();
+    if (manifestPreview && isStablePreviewObjectKey(content.id, manifestPreview) && fsSync.existsSync(path.resolve(repoRoot, manifestPreview))) {
+      await prisma.contentFile
+        .deleteMany({
+          where: {
+            contentId: content.id,
+            originalName: previewName,
+            mime: previewExt === "mp4" ? "video/mp4" : "audio/mpeg"
+          }
+        })
+        .catch(() => null);
+      app.log.info(
+        {
+          contentId: content.id,
+          previewObjectKey: manifestPreview,
+          reusedExistingPreview: true,
+          generatedNewPreview: false
+        },
+        "preview.artifact.ready"
+      );
+      return manifestPreview;
+    }
+
+    if (fsSync.existsSync(previewAbs)) {
+      await prisma.contentFile
+        .deleteMany({
+          where: {
+            contentId: content.id,
+            originalName: previewName,
+            mime: previewExt === "mp4" ? "video/mp4" : "audio/mpeg"
+          }
+        })
+        .catch(() => null);
+      app.log.info(
+        {
+          contentId: content.id,
+          previewObjectKey,
+          reusedExistingPreview: true,
+          generatedNewPreview: false
+        },
+        "preview.artifact.ready"
+      );
+      return previewObjectKey;
+    }
 
     const inputAbs = path.resolve(repoRoot, source.objectKey || "");
     if (!inputAbs.startsWith(repoRoot)) return null;
@@ -10732,43 +10798,34 @@ async function ensurePreviewFile(content: any, files: any[]) {
 
     await execFileAsync("ffmpeg", ffmpegArgs);
 
-    const stream = fsSync.createReadStream(tmpOut);
-    const fileEntry = await addFileToContentRepo({
-      repoPath: content.repoPath,
-      contentTitle: content.title,
-      originalName: previewName,
-      mime: mime.startsWith("video/") ? "video/mp4" : "audio/mpeg",
-      stream,
-      setAsPrimary: false,
-      preferMasterName: false
-    });
+    await fs.mkdir(path.dirname(previewAbs), { recursive: true });
+    await fs.copyFile(tmpOut, previewAbs);
+    await commitAll(content.repoPath, `generate preview ${previewName}`).catch(() => {});
 
-    await prisma.contentFile.upsert({
-      where: { contentId_objectKey: { contentId: content.id, objectKey: fileEntry.path } },
-      update: {
-        originalName: previewName,
-        mime: mime.startsWith("video/") ? "video/mp4" : "audio/mpeg",
-        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
-        sha256: fileEntry.sha256 || "",
-        createdAt: new Date(fileEntry.committedAt)
-      },
-      create: {
-        contentId: content.id,
-        objectKey: fileEntry.path,
-        originalName: previewName,
-        mime: mime.startsWith("video/") ? "video/mp4" : "audio/mpeg",
-        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
-        sha256: fileEntry.sha256 || "",
-        encDek: "",
-        encAlg: ""
-      }
-    });
+    await prisma.contentFile
+      .deleteMany({
+        where: {
+          contentId: content.id,
+          originalName: previewName,
+          mime: previewExt === "mp4" ? "video/mp4" : "audio/mpeg"
+        }
+      })
+      .catch(() => null);
 
     try {
       fsSync.unlinkSync(tmpOut);
     } catch {}
 
-    return fileEntry.path || previewObjectKey;
+    app.log.info(
+      {
+        contentId: content.id,
+        previewObjectKey,
+        reusedExistingPreview: false,
+        generatedNewPreview: true
+      },
+      "preview.artifact.ready"
+    );
+    return previewObjectKey;
   } catch (e: any) {
     app.log.warn({ err: e }, "preview.generate.failed");
     return null;
@@ -10875,8 +10932,11 @@ async function ensureCoverImage(content: any, files: any[]) {
 
 async function buildManifestWithDerivedAssets(content: any, files: any[], opts?: { coverObjectKey?: string | null }) {
   // Cover is a manifest attachment on the same content item (never a separate content record).
-  const manifestJson = await buildManifestJson(content, files);
   const previewObjectKey = await ensurePreviewFile(content, files);
+  if (previewObjectKey) {
+    files = await prisma.contentFile.findMany({ where: { contentId: content.id }, orderBy: { createdAt: "asc" } }).catch(() => files);
+  }
+  const manifestJson = await buildManifestJson(content, files);
   if (previewObjectKey) {
     (manifestJson as any).preview = previewObjectKey;
   }
@@ -27394,7 +27454,8 @@ async function handlePublicPreviewFile(req: any, reply: any) {
       (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
       (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
       null;
-    const previewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview) || "";
+    const rawPreviewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview.trim()) || "";
+    const previewFromManifest = rawPreviewFromManifest && isStablePreviewObjectKey(contentId, rawPreviewFromManifest) ? rawPreviewFromManifest : "";
     objectKey = previewFromManifest || "";
     const contentType = asString(content?.type || "").trim().toLowerCase();
     const isVideoLike = contentType === "video" || contentType === "movie" || contentType === "clip";
@@ -27454,7 +27515,12 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
-  const mime = file?.mime || "application/octet-stream";
+  const derivedPreviewMime = !file && isStablePreviewObjectKey(contentId, objectKey)
+    ? objectKey.toLowerCase().endsWith(".mp3")
+      ? "audio/mpeg"
+      : "video/mp4"
+    : null;
+  const mime = file?.mime || derivedPreviewMime || "application/octet-stream";
 
   const stat = fsSync.statSync(absPath);
   const range = req.headers.range;
@@ -35151,10 +35217,11 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
 
   const content = access.content;
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-  const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
+  let files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
 
   const manifestJson = (manifest?.json || {}) as any;
-  const previewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview) || "";
+  const rawPreviewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview.trim()) || "";
+  const previewFromManifest = rawPreviewFromManifest && isStablePreviewObjectKey(contentId, rawPreviewFromManifest) ? rawPreviewFromManifest : "";
   const primaryFileId =
     (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
     (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
@@ -35177,6 +35244,7 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
       ffmpegResult = "generated";
       primaryObjectKey = generatedPreview;
       selectedPreviewSource = "generated";
+      files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
       try {
         const nextManifestJson = { ...(manifestJson || {}), preview: generatedPreview };
         const manifestHash = hashManifestJson(nextManifestJson);
@@ -35297,21 +35365,30 @@ app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: a
   if (!content.repoPath) return notFound(reply, "Content repo not found");
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
-  if (!file) return notFound(reply, "File not found");
+  let derivedPreviewMime: string | null = null;
+  if (!file) {
+    const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+    const manifestPreview = asString((manifest?.json as any)?.preview || "").trim();
+    if (manifestPreview && objectKey === manifestPreview && isStablePreviewObjectKey(contentId, objectKey)) {
+      derivedPreviewMime = objectKey.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : "video/mp4";
+    } else {
+      return notFound(reply, "File not found");
+    }
+  }
 
   const repoRoot = path.resolve(content.repoPath);
   const absPath = path.resolve(repoRoot, objectKey);
   if (!absPath.startsWith(repoRoot)) return forbidden(reply);
   if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
 
-  const safeName = path.basename(file.originalName || "preview").replace(/\"/g, "");
+  const safeName = path.basename(file?.originalName || objectKey || "preview").replace(/\"/g, "");
   const stat = await fs.stat(absPath);
   const fileSize = stat.size;
   const range = req.headers.range as string | undefined;
 
   reply.header("Content-Disposition", `inline; filename=\"${safeName}\"`);
   reply.header("Accept-Ranges", "bytes");
-  reply.type(file.mime || "application/octet-stream");
+  reply.type(file?.mime || derivedPreviewMime || "application/octet-stream");
 
   if (range) {
     const m = range.match(/bytes=(\d*)-(\d*)/);
