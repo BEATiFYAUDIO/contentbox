@@ -35156,12 +35156,77 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
 
   const manifestJson = (manifest?.json || {}) as any;
-  const primaryObjectKey =
-    (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
+  const previewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview) || "";
+  const primaryFileId =
     (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
-    (Array.isArray(manifestJson?.files) && manifestJson.files[0]?.path) ||
+    (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
     files[0]?.objectKey ||
-    null;
+    "";
+  let primaryObjectKey = previewFromManifest || primaryFileId || null;
+  let selectedPreviewSource: "generated" | "original" = previewFromManifest ? "generated" : "original";
+  let ffmpegAttempted = false;
+  let ffmpegResult: "skipped" | "generated" | "failed" = "skipped";
+
+  const selectedFile = primaryObjectKey ? files.find((f: any) => String(f?.objectKey || "") === primaryObjectKey) : null;
+  const selectedMime = String(selectedFile?.mime || "").toLowerCase();
+  const contentType = asString(content?.type || "").trim().toLowerCase();
+  const isVideoLike = contentType === "video" || contentType === "movie" || contentType === "clip" || selectedMime.startsWith("video/");
+  const isAudioLike = contentType === "audio" || contentType === "song" || selectedMime.startsWith("audio/");
+  if (!previewFromManifest && (isVideoLike || isAudioLike)) {
+    ffmpegAttempted = true;
+    const generatedPreview = await withSoftTimeout(ensurePreviewFileOnce(content, files), 12000, null);
+    if (generatedPreview) {
+      ffmpegResult = "generated";
+      primaryObjectKey = generatedPreview;
+      selectedPreviewSource = "generated";
+      try {
+        const nextManifestJson = { ...(manifestJson || {}), preview: generatedPreview };
+        const manifestHash = hashManifestJson(nextManifestJson);
+        const existingManifest = manifest || (await prisma.manifest.findUnique({ where: { contentId } }));
+        const manifestRecord = await prisma.manifest.upsert({
+          where: { contentId },
+          update: {
+            json: nextManifestJson as any,
+            sha256: manifestHash,
+            parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+            lineageRelation: existingManifest?.lineageRelation || null
+          },
+          create: {
+            contentId,
+            json: nextManifestJson as any,
+            sha256: manifestHash,
+            parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+            lineageRelation: existingManifest?.lineageRelation || null
+          }
+        });
+        if (asString(content?.manifestId || "").trim() !== asString(manifestRecord?.id || "").trim()) {
+          await prisma.contentItem.update({
+            where: { id: contentId },
+            data: { manifestId: manifestRecord.id }
+          });
+        }
+        (manifestJson as any).preview = generatedPreview;
+      } catch (err: any) {
+        app.log.warn({ err, contentId, generatedPreview }, "preview.manifest.persist.failed");
+      }
+    } else {
+      ffmpegResult = "failed";
+      selectedPreviewSource = "original";
+      primaryObjectKey = primaryFileId || primaryObjectKey;
+    }
+  }
+
+  app.log.info(
+    {
+      contentId,
+      selectedPreviewSource,
+      generatedPreviewExists: Boolean((manifestJson as any)?.preview),
+      ffmpegAttempted,
+      ffmpegResult,
+      objectKey: primaryObjectKey
+    },
+    "catalog.preview.selected"
+  );
 
   if (!primaryObjectKey) {
     return reply.code(400).send({ error: "Upload a master file to preview." });
