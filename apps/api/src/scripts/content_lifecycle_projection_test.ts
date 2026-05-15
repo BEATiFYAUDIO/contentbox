@@ -236,10 +236,20 @@ async function run() {
         storefrontStatus: "DISABLED"
       }
     });
+    await prisma.splitVersion.create({
+      data: {
+        contentId: plainDraft.id,
+        versionNumber: 1,
+        createdByUserId: ownerId,
+        status: "locked" as any,
+        lockedAt: new Date(),
+        lockedManifestSha256: `split-history-${stamp}`
+      }
+    });
     const plainTrash = await postJson(`${baseUrl}/content/${encodeURIComponent(plainDraft.id)}/delete`, {}, ownerToken);
     assert.equal(plainTrash.status, 200, "plain draft should trash");
     const plainDelete = await del(`${baseUrl}/content/${encodeURIComponent(plainDraft.id)}`, ownerToken);
-    assert.equal(plainDelete.status, 200, "plain trashed unpublished should hard-delete");
+    assert.equal(plainDelete.status, 200, "plain trashed unpublished with split history should hard-delete");
   } finally {
     if (entitlementId) await prisma.entitlement.deleteMany({ where: { id: entitlementId } }).catch(() => {});
     if (paymentIntentId) await prisma.paymentIntent.deleteMany({ where: { id: paymentIntentId } }).catch(() => {});

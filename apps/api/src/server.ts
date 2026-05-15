@@ -34879,15 +34879,14 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
       select: { id: true }
     })
   ).map((row) => row.id);
-  const [entitlementsCount, paidCount, anyPaymentIntentCount, salesCount, settlementsCount, participantPayoutCount, splitHistoryCount] =
+  const [entitlementsCount, paidCount, anyPaymentIntentCount, salesCount, settlementsCount, participantPayoutCount] =
     await prisma.$transaction([
       prisma.entitlement.count({ where: { contentId } }),
       prisma.paymentIntent.count({ where: { contentId, status: "paid" as any } }),
       prisma.paymentIntent.count({ where: { contentId } }),
       prisma.sale.count({ where: { contentId } }),
       prisma.settlement.count({ where: { contentId } }),
-      prisma.participantPayout.count({ where: { allocationId: { in: payoutAllocationIds } } }),
-      prisma.splitVersion.count({ where: { contentId, status: { not: "draft" as any } } })
+      prisma.participantPayout.count({ where: { allocationId: { in: payoutAllocationIds } } })
     ]);
   if (
     entitlementsCount > 0 ||
@@ -34895,12 +34894,11 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
     anyPaymentIntentCount > 0 ||
     salesCount > 0 ||
     settlementsCount > 0 ||
-    participantPayoutCount > 0 ||
-    splitHistoryCount > 0
+    participantPayoutCount > 0
   ) {
     return reply.code(409).send({
       code: "CONTENT_HISTORY_DELETE_BLOCKED",
-      error: "Cannot hard-delete content with purchases, receipts, payouts, splits, or accounting history."
+      error: "Cannot hard-delete content with purchases, receipts, payouts, or accounting history."
     });
   }
 
