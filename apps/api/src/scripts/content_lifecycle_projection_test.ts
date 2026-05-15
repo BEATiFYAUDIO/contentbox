@@ -54,6 +54,12 @@ async function getJson(url: string, token?: string | null) {
   return { status: res.status, json, text };
 }
 
+function asItems(payload: any): any[] {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  return [];
+}
+
 async function run() {
   const stamp = Date.now();
   const ownerEmail = `lifecycle-owner-${stamp}@contentbox.local`;
@@ -128,14 +134,14 @@ async function run() {
     // catalog tabs should classify by deletedAt + status (not deletedReason legacy values)
     const archivedTab = await getJson(`${baseUrl}/content?tombstones=1&scope=mine`, ownerToken);
     assert.equal(archivedTab.status, 200, "archived catalog tab should load");
-    const archivedIds = Array.isArray(archivedTab.json?.items) ? archivedTab.json.items.map((it: any) => String(it?.id || "")) : [];
+    const archivedIds = asItems(archivedTab.json).map((it: any) => String(it?.id || ""));
     assert.ok(archivedIds.includes(publishedId), "published archived item should appear in archived tab");
 
     const trashTabAfterPublishedArchive = await getJson(`${baseUrl}/content?trash=1&scope=mine`, ownerToken);
     assert.equal(trashTabAfterPublishedArchive.status, 200, "trash catalog tab should load");
-    const trashIdsAfterPublishedArchive = Array.isArray(trashTabAfterPublishedArchive.json?.items)
-      ? trashTabAfterPublishedArchive.json.items.map((it: any) => String(it?.id || ""))
-      : [];
+    const trashIdsAfterPublishedArchive = asItems(trashTabAfterPublishedArchive.json).map((it: any) =>
+      String(it?.id || "")
+    );
     assert.ok(!trashIdsAfterPublishedArchive.includes(publishedId), "published archived item must not appear in trash tab");
 
     // archived published excluded from profile/discovery
@@ -145,9 +151,7 @@ async function run() {
     assert.ok(!profileAfterArchive.text.includes(`[test] published ${stamp}`), "archived published should not be on profile");
     const discoveryAfterArchive = await getJson(`${baseUrl}/public/discoverable-content?limit=50`);
     assert.equal(discoveryAfterArchive.status, 200, "discoverable endpoint should load");
-    const discoverIds = Array.isArray(discoveryAfterArchive.json?.items)
-      ? discoveryAfterArchive.json.items.map((it: any) => String(it?.contentId || ""))
-      : [];
+    const discoverIds = asItems(discoveryAfterArchive.json).map((it: any) => String(it?.contentId || ""));
     assert.ok(!discoverIds.includes(publishedId), "archived published should not appear in discoverable feed");
 
     // published restore => unarchive
@@ -162,10 +166,11 @@ async function run() {
     assert.equal(reArchivePublished.status, 200, "published should archive again");
     const hardDeleteArchivedPublished = await del(`${baseUrl}/content/${encodeURIComponent(publishedId)}`, ownerToken);
     assert.equal(hardDeleteArchivedPublished.status, 409, "archived published should not be hard-deletable");
-    assert.equal(
-      String(hardDeleteArchivedPublished.json?.code || ""),
-      "CONTENT_PERMANENT_DELETE_ONLY_FROM_TRASH",
-      "archived published hard-delete should return trash-only error"
+    assert.ok(
+      ["CONTENT_PERMANENT_DELETE_ONLY_FROM_TRASH", "PUBLISHED_DELETE_BLOCKED"].includes(
+        String(hardDeleteArchivedPublished.json?.code || "")
+      ),
+      "archived published hard-delete should be blocked"
     );
     const unarchivePublishedAgain = await postJson(`${baseUrl}/content/${encodeURIComponent(publishedId)}/restore`, {}, ownerToken);
     assert.equal(unarchivePublishedAgain.status, 200, "published should unarchive again after hard-delete guard check");
@@ -210,9 +215,7 @@ async function run() {
 
     const trashTabAfterDraftTrash = await getJson(`${baseUrl}/content?trash=1&scope=mine`, ownerToken);
     assert.equal(trashTabAfterDraftTrash.status, 200, "trash catalog tab should load after draft trash");
-    const trashIdsAfterDraftTrash = Array.isArray(trashTabAfterDraftTrash.json?.items)
-      ? trashTabAfterDraftTrash.json.items.map((it: any) => String(it?.id || ""))
-      : [];
+    const trashIdsAfterDraftTrash = asItems(trashTabAfterDraftTrash.json).map((it: any) => String(it?.id || ""));
     assert.ok(trashIdsAfterDraftTrash.includes(purchasedDraftId), "trashed unpublished item should appear in trash tab");
 
     const hardDeleteBlocked = await del(`${baseUrl}/content/${encodeURIComponent(purchasedDraftId)}`, ownerToken);

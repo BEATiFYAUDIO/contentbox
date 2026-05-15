@@ -22373,7 +22373,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     isLibraryRowEligible(
       row,
       asString((Array.isArray(row?.appearsBecause) ? row.appearsBecause[0] : "") || "").trim() || "unknown",
-      { allowActionableShadow: true }
+      {
+        allowActionableShadow: true,
+        includeDeletedLifecycle: trash || tombstones
+      }
     ).eligible
   );
   const uniqueRowIds = Array.from(new Set(unique.map((row: any) => asString(row?.id || "").trim()).filter(Boolean)));
