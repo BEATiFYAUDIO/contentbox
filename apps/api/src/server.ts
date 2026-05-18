@@ -11494,6 +11494,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
   appPublic.get("/buy/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/content/:id", handlePublicContent);
+  appPublic.get("/public/content/:id/context", handlePublicContentContext);
   appPublic.get("/public/discoverable-content", { preHandler: optionalAuth }, handlePublicDiscoverableContent);
   appPublic.get("/public/content/:id/attribution", handlePublicAttribution);
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
@@ -25988,6 +25989,382 @@ async function handlePublicContent(req: any, reply: any) {
   });
 }
 
+type PublicContentContextCreator = {
+  handle: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  profileUrl: string | null;
+  publicOrigin: string | null;
+};
+
+type PublicContentContextParticipant = PublicContentContextCreator & {
+  role: string | null;
+  relationshipLabel: string;
+};
+
+type PublicContentContextRelatedWork = {
+  contentId: string;
+  title: string;
+  contentType: string;
+  primaryTopic: string | null;
+  coverUrl: string | null;
+  previewUrl: string | null;
+  publicUrl: string | null;
+  creator: PublicContentContextCreator | null;
+  relationshipLabel: string;
+};
+
+function publicContentContextCreatorFromUser(
+  user: { displayName?: string | null; email?: string | null; avatarUrl?: string | null } | null | undefined,
+  publicOrigin: string
+): PublicContentContextCreator | null {
+  if (!user) return null;
+  const handle = resolveCreatorHandleForDiscoverable(user);
+  const displayName = asString(user.displayName || "").trim() || (handle ? handle.replace(/[-_]+/g, " ") : null);
+  const profileUrl = handle ? buildPublicUrlFromOrigin(publicOrigin, `/u/${encodeURIComponent(handle)}`) : null;
+  return {
+    handle,
+    displayName,
+    avatarUrl: resolveCreatorAvatarUrlForPublicPayload(user.avatarUrl || null, publicOrigin),
+    profileUrl,
+    publicOrigin
+  };
+}
+
+function publicContentContextParticipantKey(p: PublicContentContextParticipant): string {
+  return [
+    p.profileUrl || "",
+    p.handle || "",
+    p.displayName || "",
+    p.role || "",
+    p.relationshipLabel || ""
+  ].join("|").toLowerCase();
+}
+
+function uniquePublicContentContextParticipants(
+  participants: PublicContentContextParticipant[]
+): PublicContentContextParticipant[] {
+  const seen = new Set<string>();
+  const out: PublicContentContextParticipant[] = [];
+  for (const p of participants) {
+    const key = publicContentContextParticipantKey(p);
+    if (!key.trim() || seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
+
+function publicContentContextRelatedWorkKey(w: PublicContentContextRelatedWork): string {
+  return `${w.contentId}|${w.publicUrl || ""}`;
+}
+
+function isPublicContextVisibleContent(content: any): boolean {
+  return Boolean(content && isSaleable(content) && !isArchivedPublished(content));
+}
+
+function isPublicContextVisibleLink(link: any): boolean {
+  return Boolean(link && (!link.requiresApproval || link.approvedAt));
+}
+
+function publicContentContextUrls(contentId: string, publicOrigin: string) {
+  return {
+    publicUrl: buildPublicUrlFromOrigin(publicOrigin, `/buy/${encodeURIComponent(contentId)}`) || null,
+    coverUrl: buildPublicUrlFromOrigin(publicOrigin, `/public/content/${encodeURIComponent(contentId)}/cover`) || null,
+    previewUrl: buildPublicUrlFromOrigin(publicOrigin, `/public/content/${encodeURIComponent(contentId)}/preview-file`) || null
+  };
+}
+
+function publicContentContextRelatedWorkFromContent(input: {
+  content: any;
+  publicOrigin: string;
+  relationshipLabel: string;
+}): PublicContentContextRelatedWork | null {
+  const content = input.content;
+  if (!isPublicContextVisibleContent(content)) return null;
+  const urls = publicContentContextUrls(content.id, input.publicOrigin);
+  return {
+    contentId: content.id,
+    title: content.title,
+    contentType: asString(content.type || ""),
+    primaryTopic: normalizePrimaryTopic((content as any).primaryTopic),
+    coverUrl: urls.coverUrl,
+    previewUrl: urls.previewUrl,
+    publicUrl: urls.publicUrl,
+    creator: publicContentContextCreatorFromUser(content.owner || null, input.publicOrigin),
+    relationshipLabel: input.relationshipLabel
+  };
+}
+
+function publicContentContextParticipantFromPublicIdentity(input: {
+  displayName: string | null;
+  user?: { displayName?: string | null; avatarUrl?: string | null } | null;
+  publicOrigin: string;
+  role: string | null;
+  relationshipLabel: string;
+}): PublicContentContextParticipant | null {
+  const userDisplayName = asString(input.user?.displayName || "").trim();
+  const displayName = asString(input.displayName || userDisplayName || "").trim();
+  const safeDisplayName = displayName && !looksLikeInternalUserId(displayName) ? displayName : "Contributor";
+  const handleSource = userDisplayName && !looksLikeInternalUserId(userDisplayName) ? userDisplayName : "";
+  const handle = normalizePublicProfileHandle(handleSource);
+  return {
+    displayName: safeDisplayName,
+    handle: handle && !looksLikeInternalUserId(handle) ? handle : null,
+    avatarUrl: input.user?.avatarUrl ? resolveCreatorAvatarUrlForPublicPayload(input.user.avatarUrl, input.publicOrigin) : null,
+    profileUrl: handle && !looksLikeInternalUserId(handle)
+      ? buildPublicUrlFromOrigin(input.publicOrigin, `/u/${encodeURIComponent(handle)}`)
+      : null,
+    publicOrigin: input.publicOrigin,
+    role: input.role,
+    relationshipLabel: input.relationshipLabel
+  };
+}
+
+async function handlePublicContentContext(req: any, reply: any) {
+  applyFanReadCors(reply);
+  const contentId = asString((req.params as any).id).trim();
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  if (!gated.content) {
+    if (gated.tombstoned && !gated.entitled) {
+      return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+    }
+    return notFound(reply, "Content not found");
+  }
+
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    include: {
+      owner: { select: { id: true, displayName: true, email: true, avatarUrl: true } },
+      credits: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
+      manifest: { select: { json: true, sha256: true, createdAt: true } },
+      splitVersions: {
+        where: { status: "locked" as any },
+        orderBy: [{ versionNumber: "desc" }],
+        take: 1,
+        include: {
+          participants: {
+            include: {
+              invitation: { select: { status: true, acceptedAt: true, acceptedIdentityRef: true } }
+            },
+            orderBy: [{ createdAt: "asc" }]
+          }
+        }
+      },
+      parentLinks: {
+        include: {
+          parentContent: {
+            include: {
+              owner: { select: { displayName: true, email: true, avatarUrl: true } }
+            }
+          }
+        },
+        orderBy: { id: "asc" }
+      },
+      childLinks: {
+        include: {
+          childContent: {
+            include: {
+              owner: { select: { displayName: true, email: true, avatarUrl: true } }
+            }
+          }
+        },
+        orderBy: { id: "asc" }
+      }
+    }
+  });
+  if (!content || !isPublicContextVisibleContent(content)) return notFound(reply, "Not found");
+
+  const isBasic = resolveProductTier().productTier === "basic";
+  const childPublicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
+  if (!isBasic) {
+    if (childPublicLinks.length > 1) return notFound(reply, "Not found");
+    const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
+    if (isDerivativeType || childPublicLinks.length > 0) {
+      if (childPublicLinks.length === 0) return notFound(reply, "Not found");
+      if (childPublicLinks[0].requiresApproval && !childPublicLinks[0].approvedAt) return notFound(reply, "Not found");
+    }
+  }
+
+  const publicOrigin = resolveCanonicalPublicOrigin(req);
+  const creator = publicContentContextCreatorFromUser(content.owner, publicOrigin);
+  const creditUserIds = Array.from(new Set((content.credits || []).map((c: any) => asString(c.userId || "").trim()).filter(Boolean)));
+  const splitParticipantUserIds = Array.from(
+    new Set(
+      ((content.splitVersions?.[0]?.participants || []) as any[])
+        .map((p) => asString(p.participantUserId || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const userIds = Array.from(new Set([...creditUserIds, ...splitParticipantUserIds]));
+  const users = userIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, displayName: true, avatarUrl: true }
+      })
+    : [];
+  const userById = new Map(users.map((u) => [u.id, u]));
+
+  const creditParticipants: PublicContentContextParticipant[] = (content.credits || [])
+    .map((credit: any) => {
+      const role = asString(credit.role || "").trim() || null;
+      const linkedUser = credit.userId ? userById.get(credit.userId) : null;
+      return publicContentContextParticipantFromPublicIdentity({
+        displayName: asString(credit.name || "").trim() || null,
+        user: linkedUser || null,
+        publicOrigin,
+        role,
+        relationshipLabel: role || "Contributor"
+      });
+    })
+    .filter(Boolean) as PublicContentContextParticipant[];
+
+  const splitParticipants: PublicContentContextParticipant[] = ((content.splitVersions?.[0]?.participants || []) as any[])
+    .filter((participant) => participant.acceptedAt && participant.verifiedAt)
+    .map((participant) => {
+      const user = participant.participantUserId ? userById.get(participant.participantUserId) : null;
+      const role = asString(participant.role || "").trim() || null;
+      return publicContentContextParticipantFromPublicIdentity({
+        displayName: user?.displayName || null,
+        user: user || null,
+        publicOrigin,
+        role,
+        relationshipLabel: role || "Collaborator"
+      });
+    })
+    .filter(Boolean) as PublicContentContextParticipant[];
+
+  const peopleBehindThis = uniquePublicContentContextParticipants([
+    ...(creator
+      ? [{
+          ...creator,
+          role: "creator",
+          relationshipLabel: "Creator"
+        }]
+      : []),
+    ...creditParticipants,
+    ...splitParticipants
+  ]).slice(0, 12);
+
+  const roleIsFeaturing = (role: string | null | undefined) => {
+    const normalized = asString(role || "").trim().toLowerCase();
+    return ["featuring", "featured", "performer", "artist", "guest", "vocalist", "actor"].includes(normalized);
+  };
+  const featuring = peopleBehindThis.filter((p) => roleIsFeaturing(p.role)).slice(0, 8);
+  const createdWith = peopleBehindThis.filter((p) => p.relationshipLabel !== "Creator").slice(0, 10);
+
+  const parentWorks = (content.parentLinks || [])
+    .filter(isPublicContextVisibleLink)
+    .slice(0, 12)
+    .map((link: any) => publicContentContextRelatedWorkFromContent({
+      content: link.parentContent,
+      publicOrigin,
+      relationshipLabel: `Derived from ${asString(link.relation || "work").replace(/_/g, " ")}`
+    }))
+    .filter(Boolean) as PublicContentContextRelatedWork[];
+
+  const childWorks = (content.childLinks || [])
+    .filter(isPublicContextVisibleLink)
+    .slice(0, 12)
+    .map((link: any) => publicContentContextRelatedWorkFromContent({
+      content: link.childContent,
+      publicOrigin,
+      relationshipLabel: `Built on this ${asString(link.relation || "work").replace(/_/g, " ")}`
+    }))
+    .filter(Boolean) as PublicContentContextRelatedWork[];
+
+  const collaboratorUserIds = users.map((u) => u.id).filter((id) => id && id !== content.ownerUserId).slice(0, 10);
+  const moreTheyWorkedOnRows = await prisma.contentItem.findMany({
+    where: {
+      id: { not: contentId },
+      status: "published" as any,
+      deletedAt: null,
+      storefrontStatus: "LISTED" as any,
+      OR: [
+        { ownerUserId: content.ownerUserId },
+        ...(collaboratorUserIds.length ? [{ credits: { some: { userId: { in: collaboratorUserIds } } } }] : [])
+      ]
+    } as any,
+    include: { owner: { select: { displayName: true, email: true, avatarUrl: true } } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: 8
+  });
+  const moreTheyWorkedOn = moreTheyWorkedOnRows
+    .map((row) => publicContentContextRelatedWorkFromContent({
+      content: row,
+      publicOrigin,
+      relationshipLabel: row.ownerUserId === content.ownerUserId ? "More from this creator" : "Shared collaborator"
+    }))
+    .filter(Boolean) as PublicContentContextRelatedWork[];
+
+  const relatedByKey = new Map<string, PublicContentContextRelatedWork>();
+  for (const work of [...parentWorks, ...childWorks, ...moreTheyWorkedOn]) {
+    const key = publicContentContextRelatedWorkKey(work);
+    if (!relatedByKey.has(key)) relatedByKey.set(key, work);
+  }
+
+  const connectedByKey = new Map<string, PublicContentContextCreator>();
+  for (const person of peopleBehindThis) {
+    if (!person.handle && !person.displayName) continue;
+    const key = `${person.profileUrl || ""}|${person.handle || ""}|${person.displayName || ""}`.toLowerCase();
+    if (creator && key === `${creator.profileUrl || ""}|${creator.handle || ""}|${creator.displayName || ""}`.toLowerCase()) continue;
+    if (!connectedByKey.has(key)) {
+      connectedByKey.set(key, {
+        handle: person.handle,
+        displayName: person.displayName,
+        avatarUrl: person.avatarUrl,
+        profileUrl: person.profileUrl,
+        publicOrigin: person.publicOrigin
+      });
+    }
+  }
+
+  const manifestJson = (content.manifest?.json || {}) as any;
+  const canonicalOrigin = publicOrigin || resolveCanonicalPublicOrigin(req);
+  const originTrust = deriveDiscoveryOriginTrust(canonicalOrigin || null);
+  const originHealth = canonicalOrigin ? await getDiscoveryOriginHealthCached(canonicalOrigin).catch(() => null) : null;
+
+  reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+  return reply.send({
+    contentId: content.id,
+    publicOrigin: canonicalOrigin,
+    title: content.title,
+    contentType: asString(content.type || ""),
+    primaryTopic: normalizePrimaryTopic((content as any).primaryTopic),
+    creator,
+    peopleBehindThis,
+    featuring,
+    createdWith,
+    builtFrom: parentWorks,
+    derivedFrom: parentWorks,
+    worksThatBuiltOnThis: childWorks,
+    moreTheyWorkedOn,
+    relatedWorks: Array.from(relatedByKey.values()).slice(0, 12),
+    connectedCreators: Array.from(connectedByKey.values()).slice(0, 12),
+    provenance: {
+      hasManifest: Boolean(content.manifest?.sha256),
+      hasLockedProof: Boolean(content.splitVersions?.[0]?.lockedAt || content.splitVersions?.[0]?.lockedManifestSha256),
+      proofVersion: Number(manifestJson?.proofVersion || 0) || null,
+      lockedAt: content.splitVersions?.[0]?.lockedAt ? new Date(content.splitVersions[0].lockedAt).toISOString() : null
+    },
+    origin: canonicalOrigin
+      ? {
+          origin: canonicalOrigin,
+          displayHost: (() => {
+            try {
+              return new URL(canonicalOrigin).hostname.replace(/^www\./, "");
+            } catch {
+              return canonicalOrigin;
+            }
+          })(),
+          health: originHealth?.state || "unknown",
+          trust: originTrust
+        }
+      : null,
+    generatedAt: new Date().toISOString()
+  });
+}
+
 function decodeDiscoverableCursor(raw: unknown): { createdAt: Date; id: string } | null {
   const value = asString(raw || "").trim();
   if (!value) return null;
@@ -26177,6 +26554,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
 }
 
 app.get("/public/content/:id", handlePublicContent);
+app.get("/public/content/:id/context", handlePublicContentContext);
 app.get("/public/discoverable-content", { preHandler: optionalAuth }, handlePublicDiscoverableContent);
 app.get("/public/content/:id/attribution", handlePublicAttribution);
 
