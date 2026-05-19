@@ -26685,6 +26685,13 @@ type PublicDiscoverySignalWork = {
   accessMode: "unlocked" | "locked";
   priceSats: number;
   publicOrigin: string | null;
+  contributors?: {
+    displayName: string | null;
+    handle: string | null;
+    avatarUrl: string | null;
+    profileUrl: string | null;
+    role: string | null;
+  }[];
 };
 
 type PublicDiscoveryCreatorSignal = {
@@ -26975,9 +26982,45 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     collaboratorCount: number;
     connectedWorkCount: number;
   }>();
+  const contributorsByContent = new Map<string, PublicDiscoverySignalWork["contributors"]>();
+
+  await Promise.all(publicRows.map(async (row) => {
+    const splitVersionId = asString((row as any).splitVersions?.[0]?.id || "").trim();
+    if (!splitVersionId) return;
+    const snapshots = await getLockedParticipantSnapshotsForSplitVersion(splitVersionId).catch(() => []);
+    const contributors = uniquePublicContentContextParticipants(
+      snapshots
+        .filter((snapshot) => snapshot.acceptedAt && snapshot.verifiedAt)
+        .filter((snapshot) => Math.max(0, Math.round(Number(snapshot?.bps || 0))) > 0)
+        .map((snapshot) => {
+          const role = asString(snapshot.role || "").trim() || null;
+          return publicContentContextParticipantFromLockedSnapshot({
+            snapshot,
+            fallbackOrigin: canonicalOrigin,
+            relationshipLabel: role || "Contributor"
+          });
+        })
+        .filter((person): person is PublicContentContextParticipant => Boolean(person))
+        .filter((person) => {
+          const label = asString(person.displayName || "").trim();
+          return Boolean(label && label !== "Contributor" && !looksLikeInternalUserId(label));
+        })
+    )
+      .slice(0, 4)
+      .map((person) => ({
+        displayName: person.displayName,
+        handle: person.handle,
+        avatarUrl: person.avatarUrl,
+        profileUrl: person.profileUrl,
+        role: person.role
+      }));
+    if (contributors.length) contributorsByContent.set(row.id, contributors);
+  }));
 
   for (const row of publicRows) {
     const work = discoveryPublicWorkFromContent({ row, publicOrigin: canonicalOrigin, originHealth: originHealth.state, originTrust });
+    const contributors = contributorsByContent.get(row.id) || [];
+    if (contributors.length) work.contributors = contributors;
     workById.set(row.id, work);
     const acceptedParticipants = ((row as any).splitVersions?.[0]?.participants || []) as any[];
     const creditCount = Array.isArray((row as any).credits) ? (row as any).credits.length : 0;
