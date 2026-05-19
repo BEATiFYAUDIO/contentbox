@@ -26178,6 +26178,37 @@ function publicContentContextParticipantFromAttributionPerson(input: {
   };
 }
 
+function publicContentContextParticipantFromLockedSnapshot(input: {
+  snapshot: LockedParticipantSnapshotRecord;
+  fallbackOrigin: string;
+  relationshipLabel: string;
+}): PublicContentContextParticipant | null {
+  const snapshot = input.snapshot;
+  if (!isTopologyNeutralLockedSnapshotEligible(snapshot)) return null;
+  const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
+  const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
+  const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? normalizedHandle : null;
+  const identityOrigin = parseRemoteIdentityRef(asString(snapshot.identityRef || "").trim() || null).origin;
+  const publicOrigin = asString(identityOrigin || snapshot.participantOrigin || input.fallbackOrigin).trim() || input.fallbackOrigin;
+  const profilePath = normalizePublicProfileHref(snapshot.profilePathSnapshot || "");
+  const profileUrl = profilePath
+    ? (/^https?:\/\//i.test(profilePath)
+        ? profilePath
+        : `${publicOrigin.replace(/\/+$/, "")}${profilePath.startsWith("/") ? "" : "/"}${profilePath}`)
+    : safeHandle
+      ? buildPublicUrlFromOrigin(publicOrigin, `/u/${encodeURIComponent(safeHandle)}`)
+      : null;
+  return {
+    displayName,
+    handle: safeHandle,
+    avatarUrl: null,
+    profileUrl,
+    publicOrigin,
+    role: asString(snapshot.role || "").trim() || null,
+    relationshipLabel: input.relationshipLabel
+  };
+}
+
 function publicContentContextRelatedWorkFromAttributionUpstream(input: {
   item: any;
   fallbackOrigin: string;
@@ -26443,16 +26474,14 @@ async function handlePublicContentContext(req: any, reply: any) {
     })
     .filter(Boolean) as PublicContentContextParticipant[];
 
-  const splitParticipants: PublicContentContextParticipant[] = ((content.splitVersions?.[0]?.participants || []) as any[])
-    .filter((participant) => participant.acceptedAt && participant.verifiedAt)
-    .map((participant) => {
-      const user = participant.participantUserId ? userById.get(participant.participantUserId) : null;
-      const role = asString(participant.role || "").trim() || null;
-      return publicContentContextParticipantFromPublicIdentity({
-        displayName: user?.displayName || null,
-        user: user || null,
-        publicOrigin,
-        role,
+  const lockedSplit = content.splitVersions?.[0] || null;
+  const splitSnapshots = lockedSplit?.id ? await getLockedParticipantSnapshotsForSplitVersion(lockedSplit.id) : [];
+  const splitParticipants: PublicContentContextParticipant[] = splitSnapshots
+    .map((snapshot) => {
+      const role = asString(snapshot.role || "").trim() || null;
+      return publicContentContextParticipantFromLockedSnapshot({
+        snapshot,
+        fallbackOrigin: publicOrigin,
         relationshipLabel: role || "Collaborator"
       });
     })
