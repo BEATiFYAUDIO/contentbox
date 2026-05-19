@@ -28424,10 +28424,20 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const stat = fsSync.statSync(absPath);
   const range = req.headers.range;
   if (range) {
-    const m = /bytes=(\d+)-(\d+)?/.exec(range);
+    const m = /bytes=(\d*)-(\d*)/.exec(range);
     if (m) {
-      const start = Number(m[1]);
-      const end = m[2] ? Number(m[2]) : stat.size - 1;
+      const startRaw = m[1] || "";
+      const endRaw = m[2] || "";
+      let start = startRaw ? Number(startRaw) : 0;
+      let end = endRaw ? Number(endRaw) : stat.size - 1;
+      if (!startRaw && endRaw) {
+        const suffixLength = Number(endRaw);
+        if (!Number.isFinite(suffixLength) || suffixLength <= 0) return reply.code(416).send();
+        start = Math.max(stat.size - suffixLength, 0);
+        end = stat.size - 1;
+      }
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return reply.code(416).send();
+      end = Math.min(end, stat.size - 1);
       if (start >= stat.size) return reply.code(416).send();
       reply.code(206);
       reply.header("Content-Range", `bytes ${start}-${end}/${stat.size}`);
@@ -28438,6 +28448,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     }
   }
 
+  reply.header("Accept-Ranges", "bytes");
   reply.header("Content-Length", stat.size);
   reply.type(mime);
   return reply.send(fsSync.createReadStream(absPath));
