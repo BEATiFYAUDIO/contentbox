@@ -26122,6 +26122,224 @@ function publicContentContextParticipantFromPublicIdentity(input: {
   };
 }
 
+function publicContentContextCreatorFromAttributionPerson(input: {
+  person: any;
+  fallbackOrigin: string;
+  fallbackLabel: string;
+}): PublicContentContextCreator | null {
+  const rawDisplay = asString(input.person?.displayName || input.person?.name || "").trim();
+  const rawHandle = asString(input.person?.handle || "").trim().replace(/^@+/, "");
+  const handle = normalizePublicProfileHandle(rawHandle || rawDisplay);
+  const safeHandle = handle && !looksLikeInternalUserId(handle) ? handle : null;
+  const displayName = rawDisplay && !looksLikeInternalUserId(rawDisplay)
+    ? rawDisplay
+    : safeHandle
+      ? safeHandle.replace(/[-_]+/g, " ")
+      : input.fallbackLabel;
+  const rawProfilePath = normalizePublicProfileHref(input.person?.profilePath || "");
+  const profileUrl = rawProfilePath
+    ? (/^https?:\/\//i.test(rawProfilePath)
+        ? rawProfilePath
+        : `${input.fallbackOrigin.replace(/\/+$/, "")}${rawProfilePath.startsWith("/") ? "" : "/"}${rawProfilePath}`)
+    : (safeHandle ? buildPublicUrlFromOrigin(input.fallbackOrigin, `/u/${encodeURIComponent(safeHandle)}`) : null);
+  const publicOrigin = (() => {
+    try {
+      return profileUrl && /^https?:\/\//i.test(profileUrl) ? new URL(profileUrl).origin : input.fallbackOrigin;
+    } catch {
+      return input.fallbackOrigin;
+    }
+  })();
+  return {
+    handle: safeHandle,
+    displayName,
+    avatarUrl: null,
+    profileUrl,
+    publicOrigin
+  };
+}
+
+function publicContentContextParticipantFromAttributionPerson(input: {
+  person: any;
+  fallbackOrigin: string;
+  fallbackLabel: string;
+  role: string | null;
+  relationshipLabel: string;
+}): PublicContentContextParticipant | null {
+  const creator = publicContentContextCreatorFromAttributionPerson({
+    person: input.person,
+    fallbackOrigin: input.fallbackOrigin,
+    fallbackLabel: input.fallbackLabel
+  });
+  if (!creator) return null;
+  return {
+    ...creator,
+    role: input.role,
+    relationshipLabel: input.relationshipLabel
+  };
+}
+
+function publicContentContextRelatedWorkFromAttributionUpstream(input: {
+  item: any;
+  fallbackOrigin: string;
+  relationshipLabel: string;
+}): PublicContentContextRelatedWork | null {
+  const parentContentId = asString(input.item?.parentContentId || "").trim();
+  const title = asString(input.item?.title || "").trim() || "Original work";
+  const parentBuyUrl = asString(input.item?.parentBuyUrl || "").trim();
+  const parentOrigin = (() => {
+    try {
+      return parentBuyUrl ? new URL(parentBuyUrl).origin : input.fallbackOrigin;
+    } catch {
+      return input.fallbackOrigin;
+    }
+  })();
+  const publicUrl = parentBuyUrl || (parentContentId ? buildPublicUrlFromOrigin(parentOrigin, `/buy/${encodeURIComponent(parentContentId)}`) : null);
+  const creator = publicContentContextCreatorFromAttributionPerson({
+    person: input.item?.primaryCreator || null,
+    fallbackOrigin: parentOrigin,
+    fallbackLabel: "Creator"
+  });
+  return {
+    contentId: parentContentId || publicUrl || title,
+    title,
+    contentType: "",
+    primaryTopic: null,
+    coverUrl: parentContentId ? buildPublicUrlFromOrigin(parentOrigin, `/public/content/${encodeURIComponent(parentContentId)}/cover`) : null,
+    previewUrl: parentContentId ? buildPublicUrlFromOrigin(parentOrigin, `/public/content/${encodeURIComponent(parentContentId)}/preview-file`) : null,
+    publicUrl,
+    creator,
+    relationshipLabel: input.relationshipLabel
+  };
+}
+
+async function resolvePublicContentContextUpstream(input: {
+  contentId: string;
+  parentLinks: any[];
+  publicOrigin: string;
+}): Promise<{
+  parentWorks: PublicContentContextRelatedWork[];
+  participants: PublicContentContextParticipant[];
+  connectedCreators: PublicContentContextCreator[];
+}> {
+  const parentWorks: PublicContentContextRelatedWork[] = [];
+  const participants: PublicContentContextParticipant[] = [];
+  const connectedCreators: PublicContentContextCreator[] = [];
+  const links = (Array.isArray(input.parentLinks) ? input.parentLinks : []).filter(isPublicContextVisibleLink).slice(0, 12);
+
+  for (const link of links) {
+    const parentContentId = asString(link?.parentContent?.id || link?.parentContentId || "").trim();
+    const parentContent = link?.parentContent || (parentContentId
+      ? await prisma.contentItem.findUnique({
+          where: { id: parentContentId },
+          include: { owner: { select: { displayName: true, email: true, avatarUrl: true } } }
+        }).catch(() => null)
+      : null);
+    const parentOrigin = getRemoteOriginFromDescription((parentContent as any)?.description || null) || input.publicOrigin;
+    const parentBuyUrl = parentContentId
+      ? buildPublicUrlFromOrigin(parentOrigin, `/buy/${encodeURIComponent(parentContentId)}`)
+      : null;
+    const relation = asString(link?.relation || "work").replace(/_/g, " ");
+    const parentRelationshipLabel = relation === "derivative" ? "Derived from source work" : `Derived from ${relation}`;
+    const remoteAttributionUrl = parentContentId
+      ? buildPublicUrlFromOrigin(parentOrigin, `/public/content/${encodeURIComponent(parentContentId)}/attribution`)
+      : null;
+
+    let remoteAttribution: any = null;
+    if (remoteAttributionUrl && parentOrigin !== input.publicOrigin) {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 3000);
+      try {
+        const res = await fetch(remoteAttributionUrl, { signal: ctrl.signal as any });
+        if (res.ok) remoteAttribution = await res.json().catch(() => null);
+      } catch {
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    const upstreamItem = {
+      parentContentId,
+      parentBuyUrl,
+      title: parentContent?.title || remoteAttribution?.title || null,
+      primaryCreator: remoteAttribution?.primaryCreator || toPublicCreator(parentContent?.owner || null) || null
+    };
+    const upstreamWork = publicContentContextRelatedWorkFromAttributionUpstream({
+      item: upstreamItem,
+      fallbackOrigin: parentOrigin,
+      relationshipLabel: parentRelationshipLabel
+    });
+    if (upstreamWork) parentWorks.push(upstreamWork);
+
+    const primary = publicContentContextParticipantFromAttributionPerson({
+      person: upstreamItem.primaryCreator || null,
+      fallbackOrigin: parentOrigin,
+      fallbackLabel: "Creator",
+      role: "creator",
+      relationshipLabel: "Upstream creator"
+    });
+    if (primary) {
+      participants.push(primary);
+      connectedCreators.push(primary);
+    }
+
+    const parentSplitVersionId = asString(link?.parentSplitVersionId || "").trim();
+    const parentSplit = parentSplitVersionId ? await getLockedSplitVersionById(parentSplitVersionId) : null;
+    const snapshots = parentSplit ? await getLockedParticipantSnapshotsForSplitVersion(parentSplit.id) : [];
+    const snapshotParticipants = snapshots
+      .filter((snapshot) => Math.max(0, Math.round(Number(snapshot?.bps || 0))) > 0)
+      .map((snapshot) => {
+        const identityOrigin = parseRemoteIdentityRef(asString(snapshot?.identityRef || "").trim() || null).origin;
+        const fallbackOrigin = asString(identityOrigin || snapshot?.participantOrigin || parentOrigin || input.publicOrigin).trim() || input.publicOrigin;
+        const normalizedHandle = normalizePublicProfileHandle(snapshot?.handleSnapshot || resolveLockedSnapshotAttributionLabel(snapshot) || "");
+        const profilePath = normalizePublicProfileHref(snapshot?.profilePathSnapshot || "");
+        const profileUrl = profilePath
+          ? (/^https?:\/\//i.test(profilePath) ? profilePath : `${fallbackOrigin.replace(/\/+$/, "")}${profilePath.startsWith("/") ? "" : "/"}${profilePath}`)
+          : (normalizedHandle && !looksLikeInternalUserId(normalizedHandle)
+              ? buildPublicUrlFromOrigin(fallbackOrigin, `/u/${encodeURIComponent(normalizedHandle)}`)
+              : null);
+        return {
+          displayName: resolveLockedSnapshotAttributionLabel(snapshot),
+          handle: normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? normalizedHandle : null,
+          profilePath: profileUrl,
+          role: snapshot?.role || null
+        };
+      });
+    const remoteParticipants = Array.isArray(remoteAttribution?.contributors)
+      ? remoteAttribution.contributors.map((c: any) => ({
+          displayName: asString(c?.displayName || c?.name || c?.handle || "").trim(),
+          handle: asString(c?.handle || "").trim(),
+          profilePath: asString(c?.profilePath || "").trim(),
+          role: asString(c?.role || "").trim() || null
+        }))
+      : [];
+    for (const p of (remoteParticipants.length ? remoteParticipants : snapshotParticipants).slice(0, 12)) {
+      const participant = publicContentContextParticipantFromAttributionPerson({
+        person: p,
+        fallbackOrigin: parentOrigin,
+        fallbackLabel: "Contributor",
+        role: p.role || "contributor",
+        relationshipLabel: "Upstream contributor"
+      });
+      if (participant) {
+        participants.push(participant);
+        connectedCreators.push(participant);
+      }
+    }
+  }
+
+  const creatorByKey = new Map<string, PublicContentContextCreator>();
+  for (const creator of connectedCreators) {
+    const key = `${creator.profileUrl || ""}|${creator.handle || ""}|${creator.displayName || ""}`.toLowerCase();
+    if (!key.trim() || creatorByKey.has(key)) continue;
+    creatorByKey.set(key, creator);
+  }
+  return {
+    parentWorks: Array.from(new Map(parentWorks.map((work) => [publicContentContextRelatedWorkKey(work), work])).values()).slice(0, 12),
+    participants: uniquePublicContentContextParticipants(participants).slice(0, 12),
+    connectedCreators: Array.from(creatorByKey.values()).slice(0, 12)
+  };
+}
+
 async function handlePublicContentContext(req: any, reply: any) {
   applyFanReadCors(reply);
   const contentId = asString((req.params as any).id).trim();
@@ -26205,6 +26423,11 @@ async function handlePublicContentContext(req: any, reply: any) {
       })
     : [];
   const userById = new Map(users.map((u) => [u.id, u]));
+  const upstreamContext = await resolvePublicContentContextUpstream({
+    contentId,
+    parentLinks: childPublicLinks || [],
+    publicOrigin
+  });
 
   const creditParticipants: PublicContentContextParticipant[] = (content.credits || [])
     .map((credit: any) => {
@@ -26244,7 +26467,8 @@ async function handlePublicContentContext(req: any, reply: any) {
         }]
       : []),
     ...creditParticipants,
-    ...splitParticipants
+    ...splitParticipants,
+    ...upstreamContext.participants
   ]).slice(0, 12);
 
   const roleIsFeaturing = (role: string | null | undefined) => {
@@ -26254,24 +26478,33 @@ async function handlePublicContentContext(req: any, reply: any) {
   const featuring = peopleBehindThis.filter((p) => roleIsFeaturing(p.role)).slice(0, 8);
   const createdWith = peopleBehindThis.filter((p) => p.relationshipLabel !== "Creator").slice(0, 10);
 
-  const parentWorks = (content.parentLinks || [])
+  const directParentWorks = (content.childLinks || [])
     .filter(isPublicContextVisibleLink)
     .slice(0, 12)
-    .map((link: any) => publicContentContextRelatedWorkFromContent({
-      content: link.parentContent,
-      publicOrigin,
-      relationshipLabel: `Derived from ${asString(link.relation || "work").replace(/_/g, " ")}`
-    }))
+    .map((link: any) => {
+      const relation = asString(link.relation || "work").replace(/_/g, " ");
+      return publicContentContextRelatedWorkFromContent({
+        content: link.parentContent,
+        publicOrigin,
+        relationshipLabel: relation === "derivative" ? "Derived from source work" : `Derived from ${relation}`
+      });
+    })
     .filter(Boolean) as PublicContentContextRelatedWork[];
+  const parentWorks = Array.from(
+    new Map([...directParentWorks, ...upstreamContext.parentWorks].map((work) => [publicContentContextRelatedWorkKey(work), work])).values()
+  ).slice(0, 12);
 
-  const childWorks = (content.childLinks || [])
+  const childWorks = (content.parentLinks || [])
     .filter(isPublicContextVisibleLink)
     .slice(0, 12)
-    .map((link: any) => publicContentContextRelatedWorkFromContent({
-      content: link.childContent,
-      publicOrigin,
-      relationshipLabel: `Built on this ${asString(link.relation || "work").replace(/_/g, " ")}`
-    }))
+    .map((link: any) => {
+      const relation = asString(link.relation || "work").replace(/_/g, " ");
+      return publicContentContextRelatedWorkFromContent({
+        content: link.childContent,
+        publicOrigin,
+        relationshipLabel: relation === "derivative" ? "Built on this work" : `Built on this ${relation}`
+      });
+    })
     .filter(Boolean) as PublicContentContextRelatedWork[];
 
   const collaboratorUserIds = users.map((u) => u.id).filter((id) => id && id !== content.ownerUserId).slice(0, 10);
@@ -26318,6 +26551,12 @@ async function handlePublicContentContext(req: any, reply: any) {
         publicOrigin: person.publicOrigin
       });
     }
+  }
+  for (const upstreamCreator of upstreamContext.connectedCreators) {
+    if (!upstreamCreator.handle && !upstreamCreator.displayName) continue;
+    const key = `${upstreamCreator.profileUrl || ""}|${upstreamCreator.handle || ""}|${upstreamCreator.displayName || ""}`.toLowerCase();
+    if (creator && key === `${creator.profileUrl || ""}|${creator.handle || ""}|${creator.displayName || ""}`.toLowerCase()) continue;
+    if (!connectedByKey.has(key)) connectedByKey.set(key, upstreamCreator);
   }
 
   const manifestJson = (content.manifest?.json || {}) as any;
