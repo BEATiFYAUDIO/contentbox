@@ -32809,12 +32809,15 @@ async function handleBuyPage(req: any, reply: any) {
     if (openWalletBtn) {
       openWalletBtn.addEventListener("click", async (e) => {
         if (!hasLightningInvoice) return;
-        e.preventDefault();
         const statusEl = document.getElementById("status");
+        if (!invoiceExpired(lightning.expiresAt)) {
+          if (statusEl) statusEl.textContent = "Opening wallet...";
+          startReceiptPolling(60_000, 2_000);
+          return;
+        }
+        e.preventDefault();
         if (statusEl) {
-          statusEl.textContent = invoiceExpired(lightning.expiresAt)
-            ? "Refreshing expired invoice..."
-            : "Checking current invoice...";
+          statusEl.textContent = "Refreshing expired invoice...";
         }
         try {
           const nextIntent = await refreshLightningInvoiceFromIntent();
