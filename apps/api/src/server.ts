@@ -11496,6 +11496,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/content/:id", handlePublicContent);
   appPublic.get("/public/content/:id/context", handlePublicContentContext);
   appPublic.get("/public/discoverable-content", { preHandler: optionalAuth }, handlePublicDiscoverableContent);
+  appPublic.get("/public/discovery/signals", handlePublicDiscoverySignals);
   appPublic.get("/public/content/:id/attribution", handlePublicAttribution);
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
@@ -26402,6 +26403,519 @@ function applyFanReadCors(reply: any) {
   reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
+type PublicDiscoverySignalWork = {
+  contentId: string;
+  title: string;
+  contentType: string;
+  primaryTopic: string | null;
+  creatorHandle: string | null;
+  creatorDisplayName: string | null;
+  creatorAvatarUrl: string | null;
+  publicUrl: string | null;
+  coverUrl: string | null;
+  previewUrl: string | null;
+  accessMode: "unlocked" | "locked";
+  priceSats: number;
+  publicOrigin: string | null;
+};
+
+type PublicDiscoveryCreatorSignal = {
+  creatorHandle: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  profileUrl: string | null;
+  publicOrigin: string | null;
+  workCount: number;
+  recentWorkCount: number;
+  topicCount: number;
+  typeCount: number;
+  unlockableWorkCount: number;
+  representativeWorks: PublicDiscoverySignalWork[];
+  signals: {
+    support: string;
+    unlocks: string;
+    views: string;
+    collaborators: number;
+    connectedWorks: number;
+    originHealth: DiscoveryOriginHealth;
+    originTrust: DiscoveryOriginTrust;
+  };
+  scores: {
+    creatorMomentumScore: number;
+    ecosystemDensityScore: number;
+    supportMomentumScore: number;
+    unlockMomentumScore: number;
+    topConnectedScore: number;
+  };
+  labels: string[];
+};
+
+function clampScore(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function logScaledScore(value: number, cap: number): number {
+  const safeValue = Math.max(0, value || 0);
+  const safeCap = Math.max(1, cap || 1);
+  return clampScore((Math.log1p(safeValue) / Math.log1p(safeCap)) * 100);
+}
+
+function signalBucket(count: number): "none" | "some" | "active" | "high" {
+  if (!Number.isFinite(count) || count <= 0) return "none";
+  if (count < 3) return "some";
+  if (count < 10) return "active";
+  return "high";
+}
+
+function recencyScore(date: Date | string | null | undefined, windowStart: Date, now: Date): number {
+  if (!date) return 0;
+  const t = new Date(date).getTime();
+  if (!Number.isFinite(t)) return 0;
+  const start = windowStart.getTime();
+  const end = now.getTime();
+  if (t < start) return 0;
+  if (end <= start) return 100;
+  return clampScore(((t - start) / (end - start)) * 100);
+}
+
+function discoveryPublicWorkFromContent(input: {
+  row: any;
+  publicOrigin: string;
+  originHealth: DiscoveryOriginHealth;
+  originTrust: DiscoveryOriginTrust;
+}): PublicDiscoverySignalWork {
+  const row = input.row;
+  const creatorHandle = resolveCreatorHandleForDiscoverable(row.owner || null);
+  const priceSats = row.priceSats != null ? Number(row.priceSats) : 0;
+  return {
+    contentId: row.id,
+    title: row.title,
+    contentType: asString(row.type || ""),
+    primaryTopic: normalizePrimaryTopic(row.primaryTopic),
+    creatorHandle,
+    creatorDisplayName: asString(row.owner?.displayName || "").trim() || creatorHandle,
+    creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload(row.owner?.avatarUrl || null, input.publicOrigin),
+    publicUrl: buildPublicUrlFromOrigin(input.publicOrigin, `/buy/${encodeURIComponent(row.id)}`) || null,
+    coverUrl: buildPublicUrlFromOrigin(input.publicOrigin, `/public/content/${encodeURIComponent(row.id)}/cover`) || null,
+    previewUrl: buildPublicUrlFromOrigin(input.publicOrigin, `/public/content/${encodeURIComponent(row.id)}/preview-file`) || null,
+    accessMode: priceSats > 0 ? "locked" : "unlocked",
+    priceSats,
+    publicOrigin: input.publicOrigin
+  };
+}
+
+async function handlePublicDiscoverySignals(req: any, reply: any) {
+  applyFanReadCors(reply);
+  const query = (req.query ?? {}) as { window?: string; limit?: string | number };
+  const requestedLimit = Number(query.limit ?? 80);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 10), 120) : 80;
+  const windowDays = asString(query.window || "").trim() === "7d" ? 7 : 30;
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+  const canonicalOrigin = resolveCanonicalPublicOrigin(req);
+  const publicStatus = getPublicStatusCached();
+  const nodeMode = getNodeModeStatus().nodeMode;
+  const originTrust = deriveDiscoveryOriginTrust(canonicalOrigin || null);
+
+  reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+
+  if (!canonicalOrigin || publicStatus.status !== "online") {
+    return reply.send({
+      generatedAt: now.toISOString(),
+      window: `${windowDays}d`,
+      origin: {
+        publicOrigin: canonicalOrigin || null,
+        health: "unknown",
+        trust: originTrust
+      },
+      creators: { topCreators: [] },
+      works: {
+        topSelling: [],
+        mostSupported: [],
+        fastestMoving: [],
+        recentlySupported: [],
+        collaborativeReleases: []
+      },
+      ecosystems: []
+    });
+  }
+
+  const originHealth = await getDiscoveryOriginHealthCached(canonicalOrigin).catch(() => null);
+  if (!originHealth || originHealth.state !== "healthy") {
+    return reply.send({
+      generatedAt: now.toISOString(),
+      window: `${windowDays}d`,
+      origin: {
+        publicOrigin: canonicalOrigin,
+        health: originHealth?.state || "unknown",
+        trust: originTrust
+      },
+      creators: { topCreators: [] },
+      works: {
+        topSelling: [],
+        mostSupported: [],
+        fastestMoving: [],
+        recentlySupported: [],
+        collaborativeReleases: []
+      },
+      ecosystems: []
+    });
+  }
+
+  const rows = await prisma.contentItem.findMany({
+    where: {
+      status: "published" as any,
+      deletedAt: null,
+      storefrontStatus: "LISTED" as any
+    } as any,
+    include: {
+      owner: { select: { id: true, displayName: true, email: true, avatarUrl: true } },
+      credits: { select: { id: true, userId: true } },
+      splitVersions: {
+        where: { status: "locked" as any },
+        orderBy: [{ versionNumber: "desc" }],
+        take: 1,
+        include: {
+          participants: {
+            where: {
+              acceptedAt: { not: null },
+              verifiedAt: { not: null }
+            } as any,
+            select: { id: true, participantUserId: true }
+          }
+        }
+      }
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit
+  });
+
+  const publicRows = rows
+    .filter((row) => isSaleable(row as any) && !isArchivedPublished(row as any))
+    .filter((row) => {
+      const priceSats = row.priceSats != null ? Number(row.priceSats) : 0;
+      if (nodeMode === "basic" && priceSats > 0) return false;
+      return true;
+    });
+
+  const contentIds = publicRows.map((row) => row.id);
+  if (!contentIds.length) {
+    return reply.send({
+      generatedAt: now.toISOString(),
+      window: `${windowDays}d`,
+      origin: {
+        publicOrigin: canonicalOrigin,
+        health: originHealth.state,
+        trust: originTrust
+      },
+      creators: { topCreators: [] },
+      works: {
+        topSelling: [],
+        mostSupported: [],
+        fastestMoving: [],
+        recentlySupported: [],
+        collaborativeReleases: []
+      },
+      ecosystems: []
+    });
+  }
+
+  const [salesGroups, purchaseGroups, tipGroups, viewGroups, linkRows] = await Promise.all([
+    prisma.sale.groupBy({
+      by: ["contentId"],
+      where: { contentId: { in: contentIds }, recognizedAt: { gte: windowStart } },
+      _count: { _all: true }
+    } as any).catch(() => [] as any[]),
+    prisma.paymentIntent.groupBy({
+      by: ["contentId"],
+      where: {
+        contentId: { in: contentIds },
+        status: "paid" as any,
+        purpose: "CONTENT_PURCHASE" as any,
+        paidAt: { gte: windowStart }
+      },
+      _count: { _all: true }
+    } as any).catch(() => [] as any[]),
+    prisma.paymentIntent.groupBy({
+      by: ["contentId"],
+      where: {
+        contentId: { in: contentIds },
+        status: "paid" as any,
+        purpose: "TIP" as any,
+        paidAt: { gte: windowStart }
+      },
+      _count: { _all: true }
+    } as any).catch(() => [] as any[]),
+    prisma.audienceEvent.groupBy({
+      by: ["contentId"],
+      where: {
+        contentId: { in: contentIds },
+        eventType: "view" as any,
+        createdAt: { gte: windowStart }
+      },
+      _count: { _all: true }
+    } as any).catch(() => [] as any[]),
+    prisma.contentLink.findMany({
+      where: {
+        OR: [
+          { parentContentId: { in: contentIds } },
+          { childContentId: { in: contentIds } }
+        ]
+      } as any,
+      select: {
+        parentContentId: true,
+        childContentId: true,
+        requiresApproval: true,
+        approvedAt: true
+      }
+    }).catch(() => [] as any[])
+  ]);
+
+  const countByContent = (groups: any[]) => {
+    const m = new Map<string, number>();
+    for (const group of groups || []) {
+      const contentId = asString(group?.contentId || "").trim();
+      if (!contentId) continue;
+      m.set(contentId, Number(group?._count?._all || 0));
+    }
+    return m;
+  };
+  const salesByContent = countByContent(salesGroups as any[]);
+  const purchasesByContent = countByContent(purchaseGroups as any[]);
+  const tipsByContent = countByContent(tipGroups as any[]);
+  const viewsByContent = countByContent(viewGroups as any[]);
+
+  const publicIdSet = new Set(contentIds);
+  const connectedByContent = new Map<string, number>();
+  for (const link of linkRows || []) {
+    if (link?.requiresApproval && !link?.approvedAt) continue;
+    const parentId = asString(link?.parentContentId || "").trim();
+    const childId = asString(link?.childContentId || "").trim();
+    if (parentId && childId && publicIdSet.has(parentId) && publicIdSet.has(childId)) {
+      connectedByContent.set(parentId, (connectedByContent.get(parentId) || 0) + 1);
+      connectedByContent.set(childId, (connectedByContent.get(childId) || 0) + 1);
+    }
+  }
+
+  const workById = new Map<string, PublicDiscoverySignalWork>();
+  const scoreByContent = new Map<string, {
+    topConnectedScore: number;
+    supportMomentumScore: number;
+    unlockMomentumScore: number;
+    fastestMovingScore: number;
+    collaboratorCount: number;
+    connectedWorkCount: number;
+  }>();
+
+  for (const row of publicRows) {
+    const work = discoveryPublicWorkFromContent({ row, publicOrigin: canonicalOrigin, originHealth: originHealth.state, originTrust });
+    workById.set(row.id, work);
+    const acceptedParticipants = ((row as any).splitVersions?.[0]?.participants || []) as any[];
+    const creditCount = Array.isArray((row as any).credits) ? (row as any).credits.length : 0;
+    const collaboratorCount = Math.max(0, creditCount + acceptedParticipants.length);
+    const connectedWorkCount = connectedByContent.get(row.id) || 0;
+    const saleCount = salesByContent.get(row.id) || 0;
+    const purchaseCount = purchasesByContent.get(row.id) || 0;
+    const tipCount = tipsByContent.get(row.id) || 0;
+    const viewCount = viewsByContent.get(row.id) || 0;
+    const supportCount = saleCount + purchaseCount + tipCount;
+    const unlockCount = saleCount + purchaseCount;
+    scoreByContent.set(row.id, {
+      topConnectedScore: clampScore(logScaledScore(collaboratorCount, 8) * 0.55 + logScaledScore(connectedWorkCount, 8) * 0.45),
+      supportMomentumScore: logScaledScore(supportCount, 20),
+      unlockMomentumScore: logScaledScore(unlockCount, 20),
+      fastestMovingScore: clampScore(logScaledScore(viewCount, 50) * 0.45 + logScaledScore(supportCount, 20) * 0.35 + recencyScore(row.createdAt, windowStart, now) * 0.2),
+      collaboratorCount,
+      connectedWorkCount
+    });
+  }
+
+  const creators = new Map<string, {
+    ownerUserId: string;
+    handle: string | null;
+    displayName: string | null;
+    avatarUrl: string | null;
+    rows: any[];
+    topics: Set<string>;
+    types: Set<string>;
+    collaboratorCount: number;
+    connectedWorkCount: number;
+    supportCount: number;
+    unlockCount: number;
+    viewCount: number;
+  }>();
+
+  for (const row of publicRows) {
+    const ownerUserId = asString(row.ownerUserId || "").trim();
+    if (!ownerUserId) continue;
+    const handle = resolveCreatorHandleForDiscoverable(row.owner || null);
+    const existing = creators.get(ownerUserId) || {
+      ownerUserId,
+      handle,
+      displayName: asString(row.owner?.displayName || "").trim() || handle,
+      avatarUrl: resolveCreatorAvatarUrlForPublicPayload(row.owner?.avatarUrl || null, canonicalOrigin),
+      rows: [],
+      topics: new Set<string>(),
+      types: new Set<string>(),
+      collaboratorCount: 0,
+      connectedWorkCount: 0,
+      supportCount: 0,
+      unlockCount: 0,
+      viewCount: 0
+    };
+    existing.rows.push(row);
+    const topic = normalizePrimaryTopic(row.primaryTopic);
+    if (topic) existing.topics.add(topic);
+    const type = asString(row.type || "").trim();
+    if (type) existing.types.add(type);
+    const scores = scoreByContent.get(row.id);
+    existing.collaboratorCount += scores?.collaboratorCount || 0;
+    existing.connectedWorkCount += scores?.connectedWorkCount || 0;
+    existing.supportCount += (salesByContent.get(row.id) || 0) + (purchasesByContent.get(row.id) || 0) + (tipsByContent.get(row.id) || 0);
+    existing.unlockCount += (salesByContent.get(row.id) || 0) + (purchasesByContent.get(row.id) || 0);
+    existing.viewCount += viewsByContent.get(row.id) || 0;
+    creators.set(ownerUserId, existing);
+  }
+
+  const originScore = originHealth.state === "healthy" ? (originTrust === "provider" ? 100 : originTrust === "stable" ? 85 : 65) : 20;
+  const topCreators: PublicDiscoveryCreatorSignal[] = Array.from(creators.values()).map((creator) => {
+    const workCount = creator.rows.length;
+    const recentWorkCount = creator.rows.filter((row) => new Date(row.createdAt).getTime() >= windowStart.getTime()).length;
+    const topicCount = creator.topics.size;
+    const typeCount = creator.types.size;
+    const unlockableWorkCount = creator.rows.filter((row) => row.priceSats != null && Number(row.priceSats) > 0).length;
+    const ecosystemDensityScore = clampScore(
+      logScaledScore(workCount, 12) * 0.25 +
+      logScaledScore(topicCount + typeCount, 8) * 0.2 +
+      logScaledScore(creator.collaboratorCount, 12) * 0.3 +
+      logScaledScore(creator.connectedWorkCount, 12) * 0.25
+    );
+    const supportMomentumScore = logScaledScore(creator.supportCount, 30);
+    const unlockMomentumScore = logScaledScore(creator.unlockCount, 30);
+    const topConnectedScore = clampScore(logScaledScore(creator.collaboratorCount, 12) * 0.55 + logScaledScore(creator.connectedWorkCount, 12) * 0.45);
+    const creatorMomentumScore = clampScore(
+      logScaledScore(recentWorkCount, 8) * 0.3 +
+      Math.max(supportMomentumScore, unlockMomentumScore) * 0.25 +
+      logScaledScore(creator.viewCount, 100) * 0.2 +
+      ecosystemDensityScore * 0.15 +
+      originScore * 0.1
+    );
+    const labels = [
+      creator.connectedWorkCount > 0 ? "Connected works" : null,
+      creator.collaboratorCount > 1 ? "Collaborative" : null,
+      unlockableWorkCount > 0 ? "Unlockable works" : null,
+      recentWorkCount > 0 ? "Recently active" : null,
+      originHealth.state === "healthy" ? "Trusted source" : null
+    ].filter(Boolean) as string[];
+
+    return {
+      creatorHandle: creator.handle,
+      displayName: creator.displayName,
+      avatarUrl: creator.avatarUrl,
+      profileUrl: creator.handle ? buildPublicUrlFromOrigin(canonicalOrigin, `/u/${encodeURIComponent(creator.handle)}`) || null : null,
+      publicOrigin: canonicalOrigin,
+      workCount,
+      recentWorkCount,
+      topicCount,
+      typeCount,
+      unlockableWorkCount,
+      representativeWorks: creator.rows.slice(0, 3).map((row) => workById.get(row.id)).filter(Boolean) as PublicDiscoverySignalWork[],
+      signals: {
+        support: signalBucket(creator.supportCount),
+        unlocks: signalBucket(creator.unlockCount),
+        views: signalBucket(creator.viewCount),
+        collaborators: creator.collaboratorCount,
+        connectedWorks: creator.connectedWorkCount,
+        originHealth: originHealth.state,
+        originTrust
+      },
+      scores: {
+        creatorMomentumScore,
+        ecosystemDensityScore,
+        supportMomentumScore,
+        unlockMomentumScore,
+        topConnectedScore
+      },
+      labels
+    };
+  }).sort((a, b) => b.scores.creatorMomentumScore - a.scores.creatorMomentumScore).slice(0, 12);
+
+  const rankedWorks = publicRows.map((row) => {
+    const work = workById.get(row.id)!;
+    const scores = scoreByContent.get(row.id)!;
+    const supportCount = (salesByContent.get(row.id) || 0) + (purchasesByContent.get(row.id) || 0) + (tipsByContent.get(row.id) || 0);
+    const unlockCount = (salesByContent.get(row.id) || 0) + (purchasesByContent.get(row.id) || 0);
+    return {
+      ...work,
+      signals: {
+        support: signalBucket(supportCount),
+        unlocks: signalBucket(unlockCount),
+        views: signalBucket(viewsByContent.get(row.id) || 0),
+        collaborators: scores.collaboratorCount,
+        connectedWorks: scores.connectedWorkCount
+      },
+      scores: {
+        topConnectedScore: scores.topConnectedScore,
+        supportMomentumScore: scores.supportMomentumScore,
+        unlockMomentumScore: scores.unlockMomentumScore,
+        fastestMovingScore: scores.fastestMovingScore
+      },
+      labels: [
+        scores.collaboratorCount > 1 ? "Collaborative release" : null,
+        scores.connectedWorkCount > 0 ? "Connected work" : null,
+        supportCount > 0 ? "Supported" : null,
+        unlockCount > 0 ? "Unlocked by fans" : null
+      ].filter(Boolean)
+    };
+  });
+
+  const topSelling = rankedWorks
+    .filter((work) => work.scores.unlockMomentumScore > 0)
+    .sort((a, b) => b.scores.unlockMomentumScore - a.scores.unlockMomentumScore)
+    .slice(0, 10);
+  const mostSupported = rankedWorks
+    .filter((work) => work.scores.supportMomentumScore > 0)
+    .sort((a, b) => b.scores.supportMomentumScore - a.scores.supportMomentumScore)
+    .slice(0, 10);
+  const fastestMoving = rankedWorks
+    .filter((work) => work.scores.fastestMovingScore > 0)
+    .sort((a, b) => b.scores.fastestMovingScore - a.scores.fastestMovingScore)
+    .slice(0, 10);
+  const collaborativeReleases = rankedWorks
+    .filter((work) => work.signals.collaborators > 1 || work.signals.connectedWorks > 0)
+    .sort((a, b) => b.scores.topConnectedScore - a.scores.topConnectedScore)
+    .slice(0, 10);
+  const recentlySupported = rankedWorks
+    .filter((work) => work.scores.supportMomentumScore > 0)
+    .sort((a, b) => b.scores.supportMomentumScore - a.scores.supportMomentumScore)
+    .slice(0, 10);
+
+  return reply.send({
+    generatedAt: now.toISOString(),
+    window: `${windowDays}d`,
+    origin: {
+      publicOrigin: canonicalOrigin,
+      health: originHealth.state,
+      trust: originTrust
+    },
+    creators: {
+      topCreators
+    },
+    works: {
+      topSelling,
+      mostSupported,
+      fastestMoving,
+      recentlySupported,
+      collaborativeReleases
+    },
+    ecosystems: topCreators
+      .filter((creator) => creator.scores.ecosystemDensityScore > 0)
+      .sort((a, b) => b.scores.ecosystemDensityScore - a.scores.ecosystemDensityScore)
+      .slice(0, 8)
+  });
+}
+
 async function handlePublicDiscoverableContent(req: any, reply: any) {
   applyFanReadCors(reply);
   const query = (req.query ?? {}) as { topic?: string; limit?: string | number; cursor?: string };
@@ -26556,6 +27070,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
 app.get("/public/content/:id", handlePublicContent);
 app.get("/public/content/:id/context", handlePublicContentContext);
 app.get("/public/discoverable-content", { preHandler: optionalAuth }, handlePublicDiscoverableContent);
+app.get("/public/discovery/signals", handlePublicDiscoverySignals);
 app.get("/public/content/:id/attribution", handlePublicAttribution);
 
 const BEATIFY_PROOF_CACHE_VALID_TTL_MS = 5 * 60 * 1000;
