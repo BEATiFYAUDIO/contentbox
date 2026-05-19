@@ -32174,7 +32174,7 @@ async function handleBuyPage(req: any, reply: any) {
     const previewKind = resolvedPreview.kind;
     const isVideo = previewKind === "video";
     const isAudio = previewKind === "audio";
-    const coverSrc = (offer.type === "song" || isAudio) ? offerCoverUrl(offer) : null;
+    const coverSrc = (offer.type === "song" || isAudio || isVideo) ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
@@ -32217,7 +32217,7 @@ async function handleBuyPage(req: any, reply: any) {
           : "") +
         (mediaSrc
           ? "<div class=\\"preview\\">" +
-              (isVideo ? "<video id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></video>" : "") +
+              (isVideo ? "<video id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\"" + (coverSrc ? " poster=\\"" + coverSrc + "\\"" : "") + " src=\\"" + mediaSrc + "\\"></video>" : "") +
               (isAudio ? "<audio id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></audio>" : "") +
               (!isVideo && !isAudio && previewKind === "image" ? "<img id=\\"player\\" src=\\"" + mediaSrc + "\\" alt=\\"Preview image\\" loading=\\"lazy\\" referrerpolicy=\\"no-referrer\\" />" : "") +
               (!isVideo && !isAudio && previewKind === "file" ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
@@ -32249,12 +32249,15 @@ async function handleBuyPage(req: any, reply: any) {
     const token = entitlement?.token || receiptToken || null;
     const tokenStreamSrc = token ? streamUrl(offer, token) : null;
     const fallbackPreviewSrc = previewFallbackUrl(offer);
-    const resolvedPreview = resolveRenderablePreview(offer, tokenStreamSrc || fallbackPreviewSrc, fallbackPreviewSrc || tokenStreamSrc);
-    const mediaSrc = resolvedPreview.src || tokenStreamSrc || fallbackPreviewSrc || "";
+    const isPreviewEntitlement = entitlement?.status === "preview";
+    const preferredMediaSrc = isPreviewEntitlement ? (fallbackPreviewSrc || tokenStreamSrc) : (tokenStreamSrc || fallbackPreviewSrc);
+    const alternateMediaSrc = isPreviewEntitlement ? (tokenStreamSrc || fallbackPreviewSrc) : (fallbackPreviewSrc || tokenStreamSrc);
+    const resolvedPreview = resolveRenderablePreview(offer, preferredMediaSrc, alternateMediaSrc);
+    const mediaSrc = resolvedPreview.src || preferredMediaSrc || alternateMediaSrc || "";
     const previewKind = resolvedPreview.kind;
     const isVideo = previewKind === "video";
     const isAudio = previewKind === "audio";
-    const coverSrc = (offer.type === "song" || isAudio) ? offerCoverUrl(offer) : null;
+    const coverSrc = (offer.type === "song" || isAudio || isVideo) ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
@@ -32304,7 +32307,7 @@ async function handleBuyPage(req: any, reply: any) {
         \${mediaSrc && canStream && (!receiptView.show || receiptView.showPlayer) ? \`
           <div class="preview">
             \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview the release</div>\` : ""}
-            \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></video>\` : ""}
+            \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata"\${coverSrc ? \` poster="\${coverSrc}"\` : ""} src="\${mediaSrc}"></video>\` : ""}
             \${isAudio ? \`<audio id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
             \${!isVideo && !isAudio && previewKind === "image" ? \`<img id="player" src="\${mediaSrc}" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />\` : ""}
             \${!isVideo && !isAudio && previewKind === "file" ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
