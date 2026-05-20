@@ -410,7 +410,8 @@ function formatDateLabel(value?: string | null) {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
-function publicDiscoveryReadyLabel(item: Pick<ContentItem, "priceSats">) {
+function publicDiscoveryReadyLabel(item: Pick<ContentItem, "priceSats">, paidDiscoveryBlocked = false) {
+  if (paidDiscoveryBlocked) return "Not discoverable: set price to 0";
   const raw = item.priceSats;
   if (raw === undefined || raw === null || String(raw).trim() === "") return "Ready";
   const price = Number(raw);
@@ -3003,6 +3004,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 Number.isFinite(currentPriceSats) &&
                 currentPriceSats > 0 &&
                 commerceAuthorityAvailable;
+              const paidDiscoveryBlocked =
+                uiState === "published" &&
+                discoveryFreeListingAllowed &&
+                Number.isFinite(currentPriceSats) &&
+                currentPriceSats > 0 &&
+                (isBasicTier || !commerceAuthorityAvailable);
               const creatorSales = salesByContent[it.id] || null;
               const recentSales = Array.isArray(creatorSales?.recent) ? creatorSales.recent : [];
               const lastSale = recentSales[0] || null;
@@ -3294,12 +3301,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       ) : null}
                       <div>
                         Public discovery:{" "}
-                        <span className={discoveryFreeListingAllowed ? "text-emerald-300" : "text-amber-300"}>
-                          {discoveryFreeListingAllowed ? publicDiscoveryReadyLabel(it) : "Not ready"}
+                        <span className={discoveryFreeListingAllowed && !paidDiscoveryBlocked ? "text-emerald-300" : "text-amber-300"}>
+                          {discoveryFreeListingAllowed ? publicDiscoveryReadyLabel(it, paidDiscoveryBlocked) : "Not ready"}
                         </span>
                       </div>
                       {!discoveryFreeListingAllowed ? (
                         <div className="text-amber-300">{discoveryPublishReason}</div>
+                      ) : paidDiscoveryBlocked ? (
+                        <div className="text-amber-300">
+                          Basic creators can receive tips, but paid unlocks require commerce-ready setup. Set price to 0 to publish this as a free drop with tips enabled.
+                        </div>
                       ) : isBasicTier ? (
                         <div className="text-neutral-500">Basic mode: free content can be discoverable; paid listings require commerce.</div>
                       ) : null}
