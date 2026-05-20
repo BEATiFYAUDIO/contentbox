@@ -410,6 +410,14 @@ function formatDateLabel(value?: string | null) {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
+function publicDiscoveryReadyLabel(item: Pick<ContentItem, "priceSats">) {
+  const raw = item.priceSats;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return "Ready";
+  const price = Number(raw);
+  if (!Number.isFinite(price)) return "Ready";
+  return price > 0 ? "Ready (premium work)" : "Ready (free drop)";
+}
+
 async function copyText(text: string) {
   if (!text) return;
   try {
@@ -3287,7 +3295,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       <div>
                         Public discovery:{" "}
                         <span className={discoveryFreeListingAllowed ? "text-emerald-300" : "text-amber-300"}>
-                          {discoveryFreeListingAllowed ? "Ready (free content)" : "Not ready"}
+                          {discoveryFreeListingAllowed ? publicDiscoveryReadyLabel(it) : "Not ready"}
                         </span>
                       </div>
                       {!discoveryFreeListingAllowed ? (
