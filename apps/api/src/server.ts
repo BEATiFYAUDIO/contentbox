@@ -26987,6 +26987,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
       select: {
         parentContentId: true,
         childContentId: true,
+        parentSplitVersionId: true,
         requiresApproval: true,
         approvedAt: true
       }
@@ -27009,10 +27010,15 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
 
   const publicIdSet = new Set(contentIds);
   const connectedByContent = new Map<string, number>();
+  const parentLinksByChild = new Map<string, any[]>();
   for (const link of linkRows || []) {
     if (link?.requiresApproval && !link?.approvedAt) continue;
     const parentId = asString(link?.parentContentId || "").trim();
     const childId = asString(link?.childContentId || "").trim();
+    const parentSplitVersionId = asString(link?.parentSplitVersionId || "").trim();
+    if (childId && publicIdSet.has(childId) && parentSplitVersionId) {
+      parentLinksByChild.set(childId, [...(parentLinksByChild.get(childId) || []), link]);
+    }
     if (parentId && childId && publicIdSet.has(parentId) && publicIdSet.has(childId)) {
       connectedByContent.set(parentId, (connectedByContent.get(parentId) || 0) + 1);
       connectedByContent.set(childId, (connectedByContent.get(childId) || 0) + 1);
@@ -27031,27 +27037,58 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
   const contributorsByContent = new Map<string, PublicDiscoverySignalWork["contributors"]>();
 
   await Promise.all(publicRows.map(async (row) => {
+    const contributorPeople: PublicContentContextParticipant[] = [];
     const splitVersionId = asString((row as any).splitVersions?.[0]?.id || "").trim();
-    if (!splitVersionId) return;
-    const snapshots = await getLockedParticipantSnapshotsForSplitVersion(splitVersionId).catch(() => []);
-    const contributors = uniquePublicContentContextParticipants(
-      snapshots
-        .filter((snapshot) => snapshot.acceptedAt && snapshot.verifiedAt)
-        .filter((snapshot) => Math.max(0, Math.round(Number(snapshot?.bps || 0))) > 0)
-        .map((snapshot) => {
-          const role = asString(snapshot.role || "").trim() || null;
-          return publicContentContextParticipantFromLockedSnapshot({
-            snapshot,
-            fallbackOrigin: canonicalOrigin,
-            relationshipLabel: role || "Contributor"
-          });
-        })
-        .filter((person): person is PublicContentContextParticipant => Boolean(person))
-        .filter((person) => {
-          const label = asString(person.displayName || "").trim();
-          return Boolean(label && label !== "Contributor" && !looksLikeInternalUserId(label));
-        })
-    )
+    if (splitVersionId) {
+      const snapshots = await getLockedParticipantSnapshotsForSplitVersion(splitVersionId).catch(() => []);
+      contributorPeople.push(
+        ...snapshots
+          .filter((snapshot) => snapshot.acceptedAt && snapshot.verifiedAt)
+          .filter((snapshot) => Math.max(0, Math.round(Number(snapshot?.bps || 0))) > 0)
+          .map((snapshot) => {
+            const role = asString(snapshot.role || "").trim() || null;
+            return publicContentContextParticipantFromLockedSnapshot({
+              snapshot,
+              fallbackOrigin: canonicalOrigin,
+              relationshipLabel: role || "Contributor"
+            });
+          })
+          .filter((person): person is PublicContentContextParticipant => Boolean(person))
+      );
+    }
+    const upstreamLinks = parentLinksByChild.get(row.id) || [];
+    if (upstreamLinks.length) {
+      const upstreamContext = await resolvePublicContentContextUpstream({
+        contentId: row.id,
+        parentLinks: upstreamLinks,
+        publicOrigin: canonicalOrigin
+      }).catch(() => null);
+      if (upstreamContext?.participants?.length) {
+        contributorPeople.push(...upstreamContext.participants);
+      }
+    }
+    const contributorByPublicIdentity = new Map<string, PublicContentContextParticipant>();
+    for (const person of contributorPeople) {
+      const label = asString(person.displayName || "").trim();
+      if (!label || label === "Contributor" || looksLikeInternalUserId(label)) continue;
+      const key = [
+        asString(person.profileUrl || "").trim(),
+        asString(person.handle || "").trim(),
+        label
+      ].join("|").toLowerCase();
+      if (!key.trim()) continue;
+      const existing = contributorByPublicIdentity.get(key);
+      if (!existing) {
+        contributorByPublicIdentity.set(key, person);
+        continue;
+      }
+      const existingRole = asString(existing.role || "").trim().toLowerCase();
+      const nextRole = asString(person.role || "").trim().toLowerCase();
+      if (existingRole === "creator" && nextRole && nextRole !== "creator") {
+        contributorByPublicIdentity.set(key, person);
+      }
+    }
+    const contributors = Array.from(contributorByPublicIdentity.values())
       .slice(0, 4)
       .map((person) => ({
         displayName: person.displayName,
