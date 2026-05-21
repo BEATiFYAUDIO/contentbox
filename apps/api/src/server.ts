@@ -2946,6 +2946,25 @@ async function resolveParticipantDestinationHandshake(input: {
   const parsedIdentity = parseRemoteIdentityRef(snapshot?.identityRef || null);
   const origin = snapshot?.participantOrigin || parsedIdentity.origin || null;
   const remoteUserId = effectiveUserId || parsedIdentity.userId || null;
+  if (!effectiveUserId && parsedIdentity.userId) {
+    const localFromRemoteIdentity = await resolveParticipantDestinationLocal(parsedIdentity.userId);
+    if (localFromRemoteIdentity?.isVerified) {
+      app.log.info(
+        {
+          participantUserId: parsedIdentity.userId,
+          participantUserIdSource: "remote_identity_local_user_match",
+          splitParticipantId: splitParticipantId || null,
+          participantRef: participantRef || null,
+          identityOrigin: parsedIdentity.origin || null,
+          destinationType: localFromRemoteIdentity.destinationType || null,
+          destinationSource: localFromRemoteIdentity.destinationSource,
+          resolved: true
+        },
+        "payoutDestination.resolve"
+      );
+      return localFromRemoteIdentity;
+    }
+  }
   if (origin && remoteUserId) {
     const remote = await fetchRemoteParticipantPayoutDestination(origin, remoteUserId);
     app.log.info(
@@ -4621,11 +4640,13 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           : intent.payoutStatus === "failed"
             ? "failed"
             : null;
+    const applyIntentLevelPayoutTruth = intent.payoutExecutionMode !== "participant";
     const authoritativePaidFromIntent =
-      Boolean(intent.remittedAt) ||
-      String(intent.payoutStatus || "").trim().toLowerCase() === "paid" ||
-      String(intent.payoutSummaryStatus || "").trim().toLowerCase() === "paid" ||
-      isProviderIntentRemittanceSettled(intent.paymentIntentId);
+      applyIntentLevelPayoutTruth &&
+      (Boolean(intent.remittedAt) ||
+        String(intent.payoutStatus || "").trim().toLowerCase() === "paid" ||
+        String(intent.payoutSummaryStatus || "").trim().toLowerCase() === "paid" ||
+        isProviderIntentRemittanceSettled(intent.paymentIntentId));
 
     for (const allocation of allocations) {
       const existingPayoutRow = await prisma.participantPayout
@@ -4723,7 +4744,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
         ? existingPayoutRow?.remittedAt || (intent.remittedAt ? new Date(intent.remittedAt) : new Date())
         : preserveExecutedState
           ? (existingPayoutRow?.remittedAt || null)
-          : (intent.remittedAt ? new Date(intent.remittedAt) : null);
+          : (applyIntentLevelPayoutTruth && intent.remittedAt ? new Date(intent.remittedAt) : null);
       if (canBypassInviteGate) {
         app.log.warn(
           {
@@ -4758,12 +4779,16 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
             ? String(existingPayoutRow?.payoutReference || "").trim() || intent.payoutReference || null
             : preserveExecutedState
             ? String(existingPayoutRow?.payoutReference || "").trim() || null
-            : intent.payoutReference,
+            : applyIntentLevelPayoutTruth
+            ? intent.payoutReference
+            : null,
           lastError: forcePaidStatus
             ? null
             : preserveExecutedState
             ? String(existingPayoutRow?.lastError || "").trim() || null
-            : intent.payoutLastError,
+            : applyIntentLevelPayoutTruth
+            ? intent.payoutLastError
+            : null,
           blockedReason: forcePaidStatus
             ? null
             : preserveExecutedState
@@ -4802,10 +4827,20 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           attemptId: intent.remittanceAttemptId,
           lockedAt: intent.remittanceLockedAt ? new Date(intent.remittanceLockedAt) : null,
           lastCheckedAt: new Date(),
-          payoutReference: forcePaidStatus ? intent.payoutReference || null : intent.payoutReference,
-          lastError: forcePaidStatus ? null : intent.payoutLastError,
+          payoutReference: forcePaidStatus
+            ? intent.payoutReference || null
+            : applyIntentLevelPayoutTruth
+            ? intent.payoutReference
+            : null,
+          lastError: forcePaidStatus
+            ? null
+            : applyIntentLevelPayoutTruth
+            ? intent.payoutLastError
+            : null,
           blockedReason: forcePaidStatus ? null : readiness.blockedReason,
-          remittedAt: forcePaidStatus ? (intent.remittedAt ? new Date(intent.remittedAt) : new Date()) : (intent.remittedAt ? new Date(intent.remittedAt) : null)
+          remittedAt: forcePaidStatus
+            ? (intent.remittedAt ? new Date(intent.remittedAt) : new Date())
+            : (applyIntentLevelPayoutTruth && intent.remittedAt ? new Date(intent.remittedAt) : null)
           // TODO(certifyd-payout-destination-versioning): snapshot destination rebinding/versioning
           // should support destination updates for future unpaid balances without mutating historical payout rows.
         }
