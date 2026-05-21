@@ -1402,6 +1402,17 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
     return true;
   }
 
+  // Hashed Vite assets must not fall back to index.html. A stale browser chunk
+  // reference should fail as a missing asset, not as HTML masquerading as JS.
+  if (pathname.startsWith("/assets/")) {
+    if (method === "HEAD") {
+      reply.code(404).send();
+      return true;
+    }
+    reply.code(404).send({ error: "Asset not found" });
+    return true;
+  }
+
   reply.type("text/html; charset=utf-8");
   if (method === "HEAD") {
     reply.code(200).send();
