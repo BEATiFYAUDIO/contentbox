@@ -26061,6 +26061,92 @@ type PublicContentContextRelatedWork = {
   relationshipLabel: string;
 };
 
+type PublicRelationshipSummary = {
+  relationshipTypes: string[];
+  splitParticipantCount: number;
+  royaltyRecipientCount: number;
+  upstreamCreatorCount: number;
+  derivedFromCount: number;
+  relatedWorkCount: number;
+  connectedCreatorCount: number;
+  hasLockedSplitSnapshot: boolean;
+  isDerivative: boolean;
+  isFree: boolean;
+  lineageLabel: "original" | "derivative" | "has_derivatives" | "unknown";
+  attributionLabel: "attributed" | "unattributed" | "unknown";
+};
+
+function uniquePublicIdentityCount(rows: Array<{ handle?: string | null; displayName?: string | null; profileUrl?: string | null }>): number {
+  const seen = new Set<string>();
+  for (const row of rows || []) {
+    const key = [
+      asString(row.profileUrl || "").trim(),
+      asString(row.handle || "").trim(),
+      asString(row.displayName || "").trim()
+    ].join("|").toLowerCase();
+    if (key.trim()) seen.add(key);
+  }
+  return seen.size;
+}
+
+function buildPublicRelationshipSummary(input: {
+  contentType?: string | null;
+  priceSats?: number | bigint | string | null;
+  accessMode?: "unlocked" | "locked" | "owned" | string | null;
+  splitParticipantCount?: number;
+  royaltyRecipientCount?: number;
+  upstreamCreatorCount?: number;
+  derivedFromCount?: number;
+  childDerivativeCount?: number;
+  relatedWorkCount?: number;
+  connectedCreatorCount?: number;
+  hasLockedSplitSnapshot?: boolean;
+  creditCount?: number;
+  hasCreatorAttribution?: boolean;
+}): PublicRelationshipSummary {
+  const splitParticipantCount = Math.max(0, Math.floor(Number(input.splitParticipantCount || 0)));
+  const royaltyRecipientCount = Math.max(0, Math.floor(Number(input.royaltyRecipientCount || 0)));
+  const upstreamCreatorCount = Math.max(0, Math.floor(Number(input.upstreamCreatorCount || 0)));
+  const derivedFromCount = Math.max(0, Math.floor(Number(input.derivedFromCount || 0)));
+  const childDerivativeCount = Math.max(0, Math.floor(Number(input.childDerivativeCount || 0)));
+  const relatedWorkCount = Math.max(0, Math.floor(Number(input.relatedWorkCount || 0)));
+  const connectedCreatorCount = Math.max(0, Math.floor(Number(input.connectedCreatorCount || 0)));
+  const contentType = asString(input.contentType || "").trim().toLowerCase();
+  const isDerivative = derivedFromCount > 0 || ["derivative", "remix", "mashup"].includes(contentType);
+  const price = Number(input.priceSats || 0);
+  const accessMode = asString(input.accessMode || "").trim().toLowerCase();
+  const isFree = accessMode === "unlocked" || accessMode === "owned" || price <= 0;
+  const hasLockedSplitSnapshot = Boolean(input.hasLockedSplitSnapshot);
+  const relationshipTypes = [
+    splitParticipantCount > 1 ? "split" : null,
+    splitParticipantCount > 1 || connectedCreatorCount > 1 ? "shared" : null,
+    royaltyRecipientCount > 0 ? "royalty" : null,
+    isDerivative ? "derivative" : null,
+    childDerivativeCount > 0 ? "has_derivatives" : null,
+    relatedWorkCount > 0 ? "related" : null
+  ].filter(Boolean) as string[];
+  const lineageLabel: PublicRelationshipSummary["lineageLabel"] =
+    isDerivative ? "derivative" : childDerivativeCount > 0 ? "has_derivatives" : input.contentType ? "original" : "unknown";
+  const attributionLabel: PublicRelationshipSummary["attributionLabel"] =
+    input.hasCreatorAttribution || hasLockedSplitSnapshot || splitParticipantCount > 0 || Number(input.creditCount || 0) > 0
+      ? "attributed"
+      : "unknown";
+  return {
+    relationshipTypes: Array.from(new Set(relationshipTypes)),
+    splitParticipantCount,
+    royaltyRecipientCount,
+    upstreamCreatorCount,
+    derivedFromCount,
+    relatedWorkCount,
+    connectedCreatorCount,
+    hasLockedSplitSnapshot,
+    isDerivative,
+    isFree,
+    lineageLabel,
+    attributionLabel
+  };
+}
+
 function publicContentContextCreatorFromUser(
   user: { displayName?: string | null; email?: string | null; avatarUrl?: string | null } | null | undefined,
   publicOrigin: string
@@ -26633,6 +26719,22 @@ async function handlePublicContentContext(req: any, reply: any) {
     if (creator && key === `${creator.profileUrl || ""}|${creator.handle || ""}|${creator.displayName || ""}`.toLowerCase()) continue;
     if (!connectedByKey.has(key)) connectedByKey.set(key, upstreamCreator);
   }
+  const connectedCreators = Array.from(connectedByKey.values()).slice(0, 12);
+  const relationshipSummary = buildPublicRelationshipSummary({
+    contentType: asString(content.type || ""),
+    priceSats: content.priceSats != null ? Number(content.priceSats) : 0,
+    accessMode: content.priceSats != null && Number(content.priceSats) > 0 ? "locked" : "unlocked",
+    splitParticipantCount: uniquePublicIdentityCount(splitParticipants),
+    royaltyRecipientCount: uniquePublicIdentityCount(upstreamContext.participants),
+    upstreamCreatorCount: uniquePublicIdentityCount(upstreamContext.connectedCreators),
+    derivedFromCount: parentWorks.length,
+    childDerivativeCount: childWorks.length,
+    relatedWorkCount: relatedByKey.size,
+    connectedCreatorCount: connectedCreators.length,
+    hasLockedSplitSnapshot: Boolean(lockedSplit?.id && splitSnapshots.length > 0),
+    creditCount: creditParticipants.length,
+    hasCreatorAttribution: Boolean(creator)
+  });
 
   const manifestJson = (content.manifest?.json || {}) as any;
   const canonicalOrigin = publicOrigin || resolveCanonicalPublicOrigin(req);
@@ -26655,7 +26757,8 @@ async function handlePublicContentContext(req: any, reply: any) {
     worksThatBuiltOnThis: childWorks,
     moreTheyWorkedOn,
     relatedWorks: Array.from(relatedByKey.values()).slice(0, 12),
-    connectedCreators: Array.from(connectedByKey.values()).slice(0, 12),
+    connectedCreators,
+    relationshipSummary,
     provenance: {
       hasManifest: Boolean(content.manifest?.sha256),
       hasLockedProof: Boolean(content.splitVersions?.[0]?.lockedAt || content.splitVersions?.[0]?.lockedManifestSha256),
@@ -26738,6 +26841,19 @@ type PublicDiscoverySignalWork = {
     profileUrl: string | null;
     role: string | null;
   }[];
+  relationshipSummary?: PublicRelationshipSummary;
+  relationshipTypes?: string[];
+  splitParticipantCount?: number;
+  royaltyRecipientCount?: number;
+  upstreamCreatorCount?: number;
+  derivedFromCount?: number;
+  relatedWorkCount?: number;
+  connectedCreatorCount?: number;
+  hasLockedSplitSnapshot?: boolean;
+  isDerivative?: boolean;
+  isFree?: boolean;
+  lineageLabel?: PublicRelationshipSummary["lineageLabel"];
+  attributionLabel?: PublicRelationshipSummary["attributionLabel"];
 };
 
 type PublicDiscoveryCreatorSignal = {
@@ -27011,6 +27127,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
   const publicIdSet = new Set(contentIds);
   const connectedByContent = new Map<string, number>();
   const parentLinksByChild = new Map<string, any[]>();
+  const childLinksByParent = new Map<string, any[]>();
   for (const link of linkRows || []) {
     if (link?.requiresApproval && !link?.approvedAt) continue;
     const parentId = asString(link?.parentContentId || "").trim();
@@ -27018,6 +27135,9 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     const parentSplitVersionId = asString(link?.parentSplitVersionId || "").trim();
     if (childId && publicIdSet.has(childId) && parentSplitVersionId) {
       parentLinksByChild.set(childId, [...(parentLinksByChild.get(childId) || []), link]);
+    }
+    if (parentId && publicIdSet.has(parentId) && childId) {
+      childLinksByParent.set(parentId, [...(childLinksByParent.get(parentId) || []), link]);
     }
     if (parentId && childId && publicIdSet.has(parentId) && publicIdSet.has(childId)) {
       connectedByContent.set(parentId, (connectedByContent.get(parentId) || 0) + 1);
@@ -27035,16 +27155,24 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     connectedWorkCount: number;
   }>();
   const contributorsByContent = new Map<string, PublicDiscoverySignalWork["contributors"]>();
+  const directSplitParticipantCountByContent = new Map<string, number>();
+  const upstreamCountsByContent = new Map<string, {
+    royaltyRecipientCount: number;
+    upstreamCreatorCount: number;
+    derivedFromCount: number;
+  }>();
 
   await Promise.all(publicRows.map(async (row) => {
     const contributorPeople: PublicContentContextParticipant[] = [];
     const splitVersionId = asString((row as any).splitVersions?.[0]?.id || "").trim();
     if (splitVersionId) {
       const snapshots = await getLockedParticipantSnapshotsForSplitVersion(splitVersionId).catch(() => []);
-      contributorPeople.push(
-        ...snapshots
+      const eligibleSnapshots = snapshots
           .filter((snapshot) => snapshot.acceptedAt && snapshot.verifiedAt)
-          .filter((snapshot) => Math.max(0, Math.round(Number(snapshot?.bps || 0))) > 0)
+          .filter((snapshot) => Math.max(0, Math.round(Number(snapshot?.bps || 0))) > 0);
+      directSplitParticipantCountByContent.set(row.id, eligibleSnapshots.length);
+      contributorPeople.push(
+        ...eligibleSnapshots
           .map((snapshot) => {
             const role = asString(snapshot.role || "").trim() || null;
             return publicContentContextParticipantFromLockedSnapshot({
@@ -27066,6 +27194,11 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
       if (upstreamContext?.participants?.length) {
         contributorPeople.push(...upstreamContext.participants);
       }
+      upstreamCountsByContent.set(row.id, {
+        royaltyRecipientCount: uniquePublicIdentityCount(upstreamContext?.participants || []),
+        upstreamCreatorCount: uniquePublicIdentityCount(upstreamContext?.connectedCreators || []),
+        derivedFromCount: upstreamContext?.parentWorks?.length || upstreamLinks.length
+      });
     }
     const contributorByPublicIdentity = new Map<string, PublicContentContextParticipant>();
     for (const person of contributorPeople) {
@@ -27104,9 +27237,48 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     const work = discoveryPublicWorkFromContent({ row, publicOrigin: canonicalOrigin, originHealth: originHealth.state, originTrust });
     const contributors = contributorsByContent.get(row.id) || [];
     if (contributors.length) work.contributors = contributors;
-    workById.set(row.id, work);
     const acceptedParticipants = ((row as any).splitVersions?.[0]?.participants || []) as any[];
     const creditCount = Array.isArray((row as any).credits) ? (row as any).credits.length : 0;
+    const directSplitParticipantCount = directSplitParticipantCountByContent.get(row.id) || acceptedParticipants.length || 0;
+    const upstreamCounts = upstreamCountsByContent.get(row.id) || {
+      royaltyRecipientCount: 0,
+      upstreamCreatorCount: 0,
+      derivedFromCount: parentLinksByChild.get(row.id)?.length || 0
+    };
+    const childDerivativeCount = childLinksByParent.get(row.id)?.length || 0;
+    const connectedCreatorCount = uniquePublicIdentityCount((contributors || []).map((person) => ({
+      handle: person.handle,
+      displayName: person.displayName,
+      profileUrl: person.profileUrl
+    })));
+    work.relationshipSummary = buildPublicRelationshipSummary({
+      contentType: asString(row.type || ""),
+      priceSats: row.priceSats != null ? Number(row.priceSats) : 0,
+      accessMode: work.accessMode,
+      splitParticipantCount: directSplitParticipantCount,
+      royaltyRecipientCount: upstreamCounts.royaltyRecipientCount,
+      upstreamCreatorCount: upstreamCounts.upstreamCreatorCount,
+      derivedFromCount: upstreamCounts.derivedFromCount,
+      childDerivativeCount,
+      relatedWorkCount: (parentLinksByChild.get(row.id)?.length || 0) + childDerivativeCount,
+      connectedCreatorCount,
+      hasLockedSplitSnapshot: Boolean((row as any).splitVersions?.[0]?.id && directSplitParticipantCount > 0),
+      creditCount,
+      hasCreatorAttribution: Boolean((row as any).owner)
+    });
+    work.relationshipTypes = work.relationshipSummary.relationshipTypes;
+    work.splitParticipantCount = work.relationshipSummary.splitParticipantCount;
+    work.royaltyRecipientCount = work.relationshipSummary.royaltyRecipientCount;
+    work.upstreamCreatorCount = work.relationshipSummary.upstreamCreatorCount;
+    work.derivedFromCount = work.relationshipSummary.derivedFromCount;
+    work.relatedWorkCount = work.relationshipSummary.relatedWorkCount;
+    work.connectedCreatorCount = work.relationshipSummary.connectedCreatorCount;
+    work.hasLockedSplitSnapshot = work.relationshipSummary.hasLockedSplitSnapshot;
+    work.isDerivative = work.relationshipSummary.isDerivative;
+    work.isFree = work.relationshipSummary.isFree;
+    work.lineageLabel = work.relationshipSummary.lineageLabel;
+    work.attributionLabel = work.relationshipSummary.attributionLabel;
+    workById.set(row.id, work);
     const collaboratorCount = Math.max(0, creditCount + acceptedParticipants.length);
     const connectedWorkCount = connectedByContent.get(row.id) || 0;
     const saleCount = salesByContent.get(row.id) || 0;
@@ -27256,6 +27428,9 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
         fastestMovingScore: scores.fastestMovingScore
       },
       labels: [
+        work.relationshipSummary?.relationshipTypes.includes("split") ? "Split attribution" : null,
+        work.relationshipSummary?.relationshipTypes.includes("royalty") ? "Royalty network" : null,
+        work.relationshipSummary?.relationshipTypes.includes("derivative") ? "Derivative work" : null,
         scores.collaboratorCount > 1 ? "Collaborative release" : null,
         scores.connectedWorkCount > 0 ? "Connected work" : null,
         supportCount > 0 ? "Supported" : null,
@@ -27361,7 +27536,22 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         : {})
     } as any,
     include: {
-      owner: { select: { displayName: true, email: true, avatarUrl: true } }
+      owner: { select: { displayName: true, email: true, avatarUrl: true } },
+      credits: { select: { id: true } },
+      splitVersions: {
+        where: { status: "locked" as any },
+        orderBy: [{ versionNumber: "desc" }],
+        take: 1,
+        include: {
+          participants: {
+            where: {
+              acceptedAt: { not: null },
+              verifiedAt: { not: null }
+            } as any,
+            select: { id: true, bps: true }
+          }
+        }
+      }
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit + 1
@@ -27377,6 +27567,50 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
     });
     entitlements.forEach((row) => entitlementByContentId.set(row.contentId, true));
   }
+
+  const pageContentIds = pageRows.map((row) => row.id);
+  const pageLinkRows = pageContentIds.length
+    ? await prisma.contentLink.findMany({
+        where: {
+          OR: [
+            { parentContentId: { in: pageContentIds } },
+            { childContentId: { in: pageContentIds } }
+          ]
+        } as any,
+        select: {
+          parentContentId: true,
+          childContentId: true,
+          parentSplitVersionId: true,
+          requiresApproval: true,
+          approvedAt: true
+        }
+      }).catch(() => [] as any[])
+    : [];
+  const pageParentLinksByChild = new Map<string, any[]>();
+  const pageChildLinksByParent = new Map<string, any[]>();
+  const parentSplitIds = new Set<string>();
+  for (const link of pageLinkRows || []) {
+    if (link?.requiresApproval && !link?.approvedAt) continue;
+    const parentId = asString(link?.parentContentId || "").trim();
+    const childId = asString(link?.childContentId || "").trim();
+    const parentSplitVersionId = asString(link?.parentSplitVersionId || "").trim();
+    if (childId && pageContentIds.includes(childId)) {
+      pageParentLinksByChild.set(childId, [...(pageParentLinksByChild.get(childId) || []), link]);
+      if (parentSplitVersionId) parentSplitIds.add(parentSplitVersionId);
+    }
+    if (parentId && pageContentIds.includes(parentId) && childId) {
+      pageChildLinksByParent.set(parentId, [...(pageChildLinksByParent.get(parentId) || []), link]);
+    }
+  }
+  const royaltyRecipientCountByParentSplitId = new Map<string, number>();
+  await Promise.all(Array.from(parentSplitIds).slice(0, 50).map(async (splitVersionId) => {
+    const snapshots = await getLockedParticipantSnapshotsForSplitVersion(splitVersionId).catch(() => []);
+    const count = snapshots
+      .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
+      .filter((snapshot) => Math.max(0, Math.round(Number(snapshot?.bps || 0))) > 0)
+      .length;
+    royaltyRecipientCountByParentSplitId.set(splitVersionId, count);
+  }));
 
   const items = pageRows
     .filter((row) => isSaleable(row as any) && !isArchivedPublished(row as any))
@@ -27400,6 +27634,29 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
       const previewUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(row.id)}/preview-file`);
       const buyUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/buy/${encodeURIComponent(row.id)}`);
       const offerUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/buy/content/${encodeURIComponent(row.id)}/offer`);
+      const parentLinks = pageParentLinksByChild.get(row.id) || [];
+      const childLinks = pageChildLinksByParent.get(row.id) || [];
+      const splitParticipants = (((row as any).splitVersions?.[0]?.participants || []) as any[])
+        .filter((participant) => Math.max(0, Math.round(Number(participant?.bps || 0))) > 0);
+      const royaltyRecipientCount = parentLinks.reduce((sum, link) => {
+        const splitVersionId = asString(link?.parentSplitVersionId || "").trim();
+        return sum + (splitVersionId ? (royaltyRecipientCountByParentSplitId.get(splitVersionId) || 0) : 0);
+      }, 0);
+      const relationshipSummary = buildPublicRelationshipSummary({
+        contentType: asString(row.type || ""),
+        priceSats,
+        accessMode,
+        splitParticipantCount: splitParticipants.length,
+        royaltyRecipientCount,
+        upstreamCreatorCount: parentLinks.length,
+        derivedFromCount: parentLinks.length,
+        childDerivativeCount: childLinks.length,
+        relatedWorkCount: parentLinks.length + childLinks.length,
+        connectedCreatorCount: Math.max(0, splitParticipants.length + royaltyRecipientCount),
+        hasLockedSplitSnapshot: Boolean((row as any).splitVersions?.[0]?.id && splitParticipants.length > 0),
+        creditCount: Array.isArray((row as any).credits) ? (row as any).credits.length : 0,
+        hasCreatorAttribution: Boolean((row as any).owner)
+      });
       return {
         contentId: row.id,
         title: row.title,
@@ -27422,7 +27679,20 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
           publicOrigin: canonicalOrigin
         }),
         originTrust,
-        originHealth: originHealth.state
+        originHealth: originHealth.state,
+        relationshipSummary,
+        relationshipTypes: relationshipSummary.relationshipTypes,
+        splitParticipantCount: relationshipSummary.splitParticipantCount,
+        royaltyRecipientCount: relationshipSummary.royaltyRecipientCount,
+        upstreamCreatorCount: relationshipSummary.upstreamCreatorCount,
+        derivedFromCount: relationshipSummary.derivedFromCount,
+        relatedWorkCount: relationshipSummary.relatedWorkCount,
+        connectedCreatorCount: relationshipSummary.connectedCreatorCount,
+        hasLockedSplitSnapshot: relationshipSummary.hasLockedSplitSnapshot,
+        isDerivative: relationshipSummary.isDerivative,
+        isFree: relationshipSummary.isFree,
+        lineageLabel: relationshipSummary.lineageLabel,
+        attributionLabel: relationshipSummary.attributionLabel
       };
     })
     .filter((item) => {
