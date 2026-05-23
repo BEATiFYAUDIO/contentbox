@@ -10042,6 +10042,7 @@ function getPublicStatus() {
     tunnelName: namedCfg?.tunnelName || null,
     namedTokenStored: Boolean(getNamedTunnelToken()),
     namedConfigured,
+    quickModeWithNamedConfig: state.mode === "quick" && namedConfigured,
     namedDisabled: isNamedTunnelDisabled(),
     transport: {
       activeMode: state.mode,
@@ -17549,6 +17550,10 @@ app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, rep
 async function detectConfiguredNamedTunnel() {
   const cfg = getNamedTunnelConfig();
   const fallback = getPublicOriginConfig();
+  const configuredPublicOrigin = normalizeOrigin(
+    String(cfg?.publicOrigin || fallback.publicOrigin || process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim()
+  );
+  const configuredDomain = String(fallback.domain || "").trim();
   const configuredTunnelName =
     String(cfg?.tunnelName || "").trim() ||
     (String(fallback?.provider || "").trim() === "cloudflare" ? String(fallback?.tunnelName || "").trim() : "") ||
@@ -17559,6 +17564,7 @@ async function detectConfiguredNamedTunnel() {
       configuredTunnelName: null,
       namedTunnelDetected: false,
       discoveredTunnelName: null,
+      verifiedPublicOrigin: null,
       reason: "tunnel_name_not_configured",
       tunnels: [] as any[]
     };
@@ -17570,18 +17576,48 @@ async function detectConfiguredNamedTunnel() {
       configuredTunnelName,
       namedTunnelDetected: false,
       discoveredTunnelName: null,
+      verifiedPublicOrigin: null,
       reason: "provider_not_cloudflare",
       tunnels: [] as any[]
     };
   }
 
+  const probeConfiguredPublicOrigin = async () => {
+    const candidates = Array.from(
+      new Set(
+        [
+          configuredPublicOrigin,
+          normalizeOrigin(configuredDomain),
+          configuredDomain && !configuredDomain.includes("://") ? normalizeOrigin(`certifyd.${configuredDomain}`) : null,
+          configuredDomain && !configuredDomain.includes("://") ? normalizeOrigin(`public.${configuredDomain}`) : null
+        ].filter(Boolean) as string[]
+      )
+    );
+    for (const origin of candidates) {
+      const base = origin.replace(/\/+$/, "");
+      for (const probePath of ["/.well-known/contentbox", "/health", "/public/ping"]) {
+        try {
+          const res = await fetchWithTimeout(
+            `${base}${probePath}`,
+            { method: "GET", headers: { Accept: "application/json" } as any } as any,
+            2500
+          );
+          if (res.ok) return { ok: true, origin: base, probePath };
+        } catch {}
+      }
+    }
+    return { ok: false, origin: null as string | null, probePath: null as string | null };
+  };
+
   const cloudflaredCmd = resolveCloudflaredCmd();
   if (!cloudflaredCmd) {
+    const probe = await probeConfiguredPublicOrigin();
     return {
       configuredTunnelName,
-      namedTunnelDetected: false,
-      discoveredTunnelName: null,
-      reason: "cloudflared_not_available",
+      namedTunnelDetected: probe.ok,
+      discoveredTunnelName: probe.ok ? configuredTunnelName : null,
+      verifiedPublicOrigin: probe.origin,
+      reason: probe.ok ? "origin_probe_ok_cloudflared_unavailable" : "cloudflared_not_available",
       tunnels: [] as any[]
     };
   }
@@ -17600,15 +17636,18 @@ async function detectConfiguredNamedTunnel() {
       configuredTunnelName,
       namedTunnelDetected: Boolean(match),
       discoveredTunnelName: match ? String(match?.name || match?.id || "") : null,
+      verifiedPublicOrigin: null,
       reason: match ? null : "not_found",
       tunnels
     };
   } catch (e: any) {
+    const probe = await probeConfiguredPublicOrigin();
     return {
       configuredTunnelName,
-      namedTunnelDetected: false,
-      discoveredTunnelName: null,
-      reason: String(e?.message || "list_failed"),
+      namedTunnelDetected: probe.ok,
+      discoveredTunnelName: probe.ok ? configuredTunnelName : null,
+      verifiedPublicOrigin: probe.origin,
+      reason: probe.ok ? "origin_probe_ok_list_failed" : String(e?.message || "list_failed"),
       tunnels: [] as any[]
     };
   }

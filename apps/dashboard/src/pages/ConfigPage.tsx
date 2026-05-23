@@ -1605,6 +1605,11 @@ export default function ConfigPage({
                 Temporary route is fallback-only in sovereign posture when named routing is configured.
               </div>
             ) : null}
+            {publicStatus?.mode === "quick" && publicStatus?.namedConfigured ? (
+              <div style={{ fontSize: 12, color: "#facc15", alignSelf: "center" }}>
+                Named tunnel configured, but local runtime is still in quick mode.
+              </div>
+            ) : null}
             {uiTunnelMode === "existing_named" && !cloudflaredAvailable ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 cloudflared is unavailable on this machine, so local named-tunnel launch is disabled.

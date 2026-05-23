@@ -85,6 +85,10 @@ kill_pid_from_file() {
 
 kill_stale_repo_processes() {
   local matches
+  if ! ps -eo pid=,cmd= >/dev/null 2>&1; then
+    echo "[dev-runtime] Process scan unsupported on this shell; skipping stale repo cleanup."
+    return 0
+  fi
   matches="$(ps -eo pid=,cmd= | awk -v root="${ROOT_DIR}" '
     $0 ~ root && ($0 ~ /apps\/api/ || $0 ~ /apps\/dashboard/ || $0 ~ /vite/ || $0 ~ /tsx watch/) { print $1 }
   ')"
@@ -191,7 +195,17 @@ show_status() {
     echo "[dev-runtime] Dashboard: n/a (served by API build on :4000)"
   fi
   echo "[dev-runtime] Watchers on ports:"
-  ss -ltnp 2>/dev/null | rg -n ":(4000|4010|5173)\\b" || true
+  if command -v ss >/dev/null 2>&1; then
+    if command -v rg >/dev/null 2>&1; then
+      ss -ltnp 2>/dev/null | rg -n ":(4000|4010|5173)\\b" || true
+    else
+      ss -ltnp 2>/dev/null | grep -En ":(4000|4010|5173)\\b" || true
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ano 2>/dev/null | grep -En ":(4000|4010|5173)\\b" || true
+  else
+    echo "[dev-runtime] No port-listing tool available."
+  fi
 }
 
 stop_all() {

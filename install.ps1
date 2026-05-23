@@ -96,7 +96,8 @@ $rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-
 $rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
 $rootVal = $rootVal.Trim('"')
 if (-not $rootVal) { $rootVal = Join-Path $HOME "contentbox-data" }
-$sqliteUrl = "file:$rootVal/contentbox.db"
+$sqlitePath = (Join-Path $rootVal "contentbox.db") -replace "\\", "/"
+$sqliteUrl = "file:$sqlitePath"
 Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
 Write-Output "[install] Using SQLite for basic mode."
 

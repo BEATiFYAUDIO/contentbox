@@ -4517,6 +4517,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     {publicStatus?.mode === "quick" ? (
                                       <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
                                     ) : null}
+                                    {publicStatus?.mode === "quick" && publicStatus?.namedConfigured ? (
+                                      <div className="text-xs text-amber-300">
+                                        Named tunnel configured, but local runtime is still in quick mode.
+                                      </div>
+                                    ) : null}
                                     <button
                                       type="button"
                                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
