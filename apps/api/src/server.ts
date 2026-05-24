@@ -6960,6 +6960,105 @@ async function requestDelegatedProviderPaymentIntent(input: {
   }
 }
 
+async function requestDelegatedProviderPublish(input: {
+  creatorNodeId: string;
+  creatorNodePubKey: string | null;
+  creatorDisplayName: string | null;
+  contentId: string;
+  title: string | null;
+  contentType: string | null;
+  manifestHash: string;
+  visibility: "DISABLED" | "UNLISTED" | "LISTED" | null;
+  primaryFile: string | null;
+  publishedAt: string | null;
+}): Promise<{
+  delegatedPublish: ProviderDelegatedPublishRecord | null;
+  receipt: {
+    id: string;
+    type: "content_publish";
+    payload: ReturnType<typeof buildContentPublishReceiptPayload>;
+  } | null;
+}> {
+  const providerCfg = getNetworkProviderConfig();
+  let providerTrust = evaluateProviderExecutionTrustReadiness();
+  if (!providerTrust.allowed && hasProviderPaymentTarget(providerCfg)) {
+    try {
+      const refreshed = await verifyConfiguredProvider(providerCfg);
+      persistProviderVerificationPosture(refreshed);
+      providerTrust = getProviderExecutionTrustReadiness(getProviderVerificationStatus(providerCfg));
+    } catch {}
+  }
+  const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "");
+  if (!isNetworkProviderConfigured(providerCfg) || !providerTrust.allowed || !providerUrl) {
+    const err: any = new Error("provider_not_ready");
+    err.code = "PROVIDER_NOT_READY";
+    throw err;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(`${providerUrl}/api/network/provider/delegated-publish`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        creatorNodeId: input.creatorNodeId,
+        creatorNodePubKey: input.creatorNodePubKey,
+        creatorDisplayName: input.creatorDisplayName,
+        contentId: input.contentId,
+        title: input.title,
+        contentType: input.contentType,
+        manifestHash: input.manifestHash,
+        visibility: input.visibility || "UNLISTED",
+        primaryFile: input.primaryFile,
+        publishedAt: input.publishedAt || new Date().toISOString()
+      }),
+      signal: controller.signal
+    } as any);
+    const text = await res.text().catch(() => "");
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    if (!res.ok) {
+      const err: any = new Error(String(json?.message || json?.error || text || `delegated_publish_http_${res.status}`));
+      err.code = String(json?.error || json?.code || "").trim() || `PROVIDER_HTTP_${res.status || "UNKNOWN"}`;
+      err.status = res.status;
+      err.body = json || text || null;
+      throw err;
+    }
+    return {
+      delegatedPublish: json?.delegatedPublish || null,
+      receipt:
+        json?.receipt && typeof json.receipt.id === "string" && json.receipt.type === "content_publish" && json.receipt.payload
+          ? {
+              id: json.receipt.id,
+              type: "content_publish",
+              payload: json.receipt.payload as ReturnType<typeof buildContentPublishReceiptPayload>
+            }
+          : null
+    };
+  } catch (e: any) {
+    app.log.warn(
+      {
+        route: "/api/network/provider/delegated-publish",
+        delegatedProviderUrl: providerUrl,
+        creatorNodeId: input.creatorNodeId,
+        contentId: input.contentId,
+        providerErrorCode: String(e?.code || "PROVIDER_UNREACHABLE"),
+        providerStatus: Number(e?.status || 0) || null,
+        providerErrorMessage: String(e?.message || "provider_publish_request_failed")
+      },
+      "delegatedProviderPublish.failed"
+    );
+    throw e;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchDelegatedProviderPaymentIntentStatus(paymentIntentId: string): Promise<{
   paid: boolean;
   paidAt: string | null;
@@ -34659,7 +34758,6 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         if (serviceProfile.needsProviderInvoicing && !payoutDestination.valid) {
           lightningReason = "CREATOR_PAYOUT_DESTINATION_REQUIRED";
         } else {
-        try {
           const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
           let delegatedAllocationBlueprint:
             | {
@@ -34687,49 +34785,97 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               "delegatedProviderPaymentIntent.allocation_blueprint_failed"
             );
           }
-          const delegated = await requestDelegatedProviderPaymentIntent({
-            creatorNodeId: creatorIdentity.nodeId,
-            contentId,
-            amountSats: amountSats.toString(),
-            paymentIntentId: intent.id,
-            buyerSessionId: buyerSession?.id || null,
-            needsProviderInvoicing: serviceProfile.needsProviderInvoicing,
-            needsDurablePublicHosting: serviceProfile.needsDurablePublicHosting,
-            payoutDestinationType: payoutDestination.effectiveDestinationType,
-            payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
-            providerRemitMode: payoutDestination.providerRemitMode,
-            splitVersionId: delegatedAllocationBlueprint?.splitVersionId || null,
-            participantAllocations: delegatedAllocationBlueprint?.participants || []
-          });
-          lightning = {
-            bolt11: delegated.bolt11,
-            providerId: `providerpi:${delegated.paymentIntentId}`,
-            expiresAt: delegated.expiresAt || null
+          const requestProviderInvoice = () =>
+            requestDelegatedProviderPaymentIntent({
+              creatorNodeId: creatorIdentity.nodeId,
+              contentId,
+              amountSats: amountSats.toString(),
+              paymentIntentId: intent.id,
+              buyerSessionId: buyerSession?.id || null,
+              needsProviderInvoicing: serviceProfile.needsProviderInvoicing,
+              needsDurablePublicHosting: serviceProfile.needsDurablePublicHosting,
+              payoutDestinationType: payoutDestination.effectiveDestinationType,
+              payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
+              providerRemitMode: payoutDestination.providerRemitMode,
+              splitVersionId: delegatedAllocationBlueprint?.splitVersionId || null,
+              participantAllocations: delegatedAllocationBlueprint?.participants || []
+            });
+          const applyDelegatedInvoice = (delegated: Awaited<ReturnType<typeof requestDelegatedProviderPaymentIntent>>) => {
+            lightning = {
+              bolt11: delegated.bolt11,
+              providerId: `providerpi:${delegated.paymentIntentId}`,
+              expiresAt: delegated.expiresAt || null
+            };
+            delegatedProviderInvoiceRef = String(delegated.providerInvoiceRef || "").trim() || null;
+            lightningReason = null;
           };
-          delegatedProviderInvoiceRef = String(delegated.providerInvoiceRef || "").trim() || null;
-          lightningReason = null;
-          intentLog.delegatedLightning = "provider_invoice_issued";
-        } catch (e: any) {
-          const providerCode = String(e?.code || "").trim().toUpperCase();
-          intentLog.delegatedLightning = providerCode || String(e?.message || "provider_unavailable");
-          if (providerCode === "DELEGATED_PUBLISH_REQUIRED") {
-            lightningReason = "PROVIDER_DELEGATED_PUBLISH_REQUIRED";
-          } else if (providerCode === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED") {
-            lightningReason = "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED";
-          } else if (providerCode === "PROVIDER_NOT_READY") {
-            lightningReason = "PROVIDER_NOT_READY";
-          } else if (providerCode === "PROVIDER_NODE_MISMATCH") {
-            lightningReason = "PROVIDER_NODE_MISMATCH";
-          } else if (providerCode === "PROVIDER_DESCRIPTOR_UNAVAILABLE") {
-            lightningReason = "PROVIDER_DESCRIPTOR_UNAVAILABLE";
-          } else if (providerCode === "PROVIDER_ROUTE_MISMATCH" || providerCode === "PROVIDER_HTTP_404" || providerCode === "PROVIDER_HTTP_405") {
-            lightningReason = "PROVIDER_ROUTE_MISMATCH";
-          } else if (providerCode === "PROVIDER_INVALID_RESPONSE") {
-            lightningReason = "PROVIDER_INVALID_RESPONSE";
-          } else if (!lightningReason) {
-            lightningReason = "PROVIDER_UNREACHABLE";
+          try {
+            applyDelegatedInvoice(await requestProviderInvoice());
+            intentLog.delegatedLightning = "provider_invoice_issued";
+          } catch (initialProviderError: any) {
+            let providerError = initialProviderError;
+            let providerCode = String(providerError?.code || "").trim().toUpperCase();
+            if (providerCode === "DELEGATED_PUBLISH_REQUIRED") {
+              const publishProof = findLatestContentPublishProofForContent(contentId, manifestSha256);
+              if (publishProof?.manifestHash === manifestSha256) {
+                try {
+                  const owner = await prisma.user.findUnique({
+                    where: { id: content.ownerUserId },
+                    select: { displayName: true, email: true }
+                  });
+                  const manifestJson = (manifest.json || {}) as any;
+                  await requestDelegatedProviderPublish({
+                    creatorNodeId: creatorIdentity.nodeId,
+                    creatorNodePubKey: creatorIdentity.nodePubKey || null,
+                    creatorDisplayName:
+                      String(owner?.displayName || "").trim() || String(owner?.email || "").trim() || null,
+                    contentId,
+                    title: String((manifestJson as any)?.title || content.title || "").trim() || null,
+                    contentType: String((manifestJson as any)?.type || content.type || "").trim() || null,
+                    manifestHash: manifestSha256,
+                    visibility:
+                      content.storefrontStatus === "DISABLED" ||
+                      content.storefrontStatus === "LISTED" ||
+                      content.storefrontStatus === "UNLISTED"
+                        ? content.storefrontStatus
+                        : "UNLISTED",
+                    primaryFile: String((manifestJson as any)?.primaryFile || "").trim() || null,
+                    publishedAt: publishProof.publishedAt || new Date().toISOString()
+                  });
+                  applyDelegatedInvoice(await requestProviderInvoice());
+                  intentLog.delegatedLightning = "provider_invoice_issued_after_publish_sync";
+                  providerError = null;
+                  providerCode = "";
+                } catch (repairError: any) {
+                  providerError = repairError;
+                  providerCode = String(providerError?.code || "").trim().toUpperCase();
+                  intentLog.delegatedPublishRepair = providerCode || String(providerError?.message || "publish_sync_failed");
+                }
+              }
+            }
+            if (!providerError) {
+              // Invoice was created after repairing the provider delegated-publish record.
+            } else {
+              intentLog.delegatedLightning = providerCode || String(providerError?.message || "provider_unavailable");
+              if (providerCode === "DELEGATED_PUBLISH_REQUIRED") {
+                lightningReason = "PROVIDER_DELEGATED_PUBLISH_REQUIRED";
+              } else if (providerCode === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED") {
+                lightningReason = "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED";
+              } else if (providerCode === "PROVIDER_NOT_READY") {
+                lightningReason = "PROVIDER_NOT_READY";
+              } else if (providerCode === "PROVIDER_NODE_MISMATCH") {
+                lightningReason = "PROVIDER_NODE_MISMATCH";
+              } else if (providerCode === "PROVIDER_DESCRIPTOR_UNAVAILABLE") {
+                lightningReason = "PROVIDER_DESCRIPTOR_UNAVAILABLE";
+              } else if (providerCode === "PROVIDER_ROUTE_MISMATCH" || providerCode === "PROVIDER_HTTP_404" || providerCode === "PROVIDER_HTTP_405") {
+                lightningReason = "PROVIDER_ROUTE_MISMATCH";
+              } else if (providerCode === "PROVIDER_INVALID_RESPONSE") {
+                lightningReason = "PROVIDER_INVALID_RESPONSE";
+              } else if (!lightningReason) {
+                lightningReason = "PROVIDER_UNREACHABLE";
+              }
+            }
           }
-        }
         }
       } else if (!lightningReason) {
         lightningReason = hasProviderPaymentTarget(providerCfg) ? "PROVIDER_NOT_READY" : "PROVIDER_NOT_CONFIGURED";
