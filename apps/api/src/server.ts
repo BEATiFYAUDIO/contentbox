@@ -524,7 +524,9 @@ async function probeDiscoveryOriginHealth(origin: string): Promise<{ ok: boolean
   const localOrigin = normalizePublicOriginBase(getPublicStatusCached().canonicalOrigin || "");
   if (localOrigin && localOrigin === normalized) {
     const state = getPublicStatusCached();
-    return { ok: state.status === "online", detail: state.status === "online" ? "online" : "offline" };
+    if (state.status === "online") return { ok: true, detail: "online" };
+    // Local named status can lag behind a restarted service-managed tunnel.
+    // Fall through to the public ping probe before suppressing discovery.
   }
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), DISCOVERY_HEALTH_TIMEOUT_MS);
