@@ -17559,6 +17559,11 @@ async function detectConfiguredNamedTunnel() {
     (String(fallback?.provider || "").trim() === "cloudflare" ? String(fallback?.tunnelName || "").trim() : "") ||
     String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
 
+  const shouldDeriveNamedTunnelOrigin = () => {
+    const domainHost = String(configuredDomain || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
+    return Boolean(configuredTunnelName && domainHost && domainHost.split(".").filter(Boolean).length === 2);
+  };
+
   if (!configuredTunnelName) {
     return {
       configuredTunnelName: null,
@@ -17587,6 +17592,9 @@ async function detectConfiguredNamedTunnel() {
       new Set(
         [
           configuredPublicOrigin,
+          configuredDomain && shouldDeriveNamedTunnelOrigin()
+            ? normalizeOrigin(`${configuredTunnelName}.${configuredDomain}`)
+            : null,
           normalizeOrigin(configuredDomain),
           configuredDomain && !configuredDomain.includes("://") ? normalizeOrigin(`certifyd.${configuredDomain}`) : null,
           configuredDomain && !configuredDomain.includes("://") ? normalizeOrigin(`public.${configuredDomain}`) : null

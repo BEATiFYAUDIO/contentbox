@@ -64,9 +64,47 @@ const normalizeOrigin = (value: string | null | undefined): string | null => {
   return `https://${raw.replace(/\/+$/, "")}`;
 };
 
+const originHost = (value: string | null | undefined): string | null => {
+  const normalized = normalizeOrigin(value);
+  if (!normalized) return null;
+  try {
+    return new URL(normalized).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+};
+
+const isBareRegistrableDomain = (host: string): boolean => host.split(".").filter(Boolean).length === 2;
+
+const isTunnelPrefixedDuplicate = (
+  publicOrigin: string | null | undefined,
+  tunnelName: string | null | undefined,
+  domain: string | null | undefined
+): boolean => {
+  const publicHost = originHost(publicOrigin);
+  const domainHost = originHost(domain);
+  const name = String(tunnelName || "").trim().toLowerCase();
+  if (!publicHost || !domainHost || !name) return false;
+  return publicHost === `${name}.${domainHost}` && !isBareRegistrableDomain(domainHost);
+};
+
 // Canonical origin must remain exactly what the node owner configured.
 // Tunnel name is transport metadata and must not rewrite host identity.
 const applyTunnelSubdomain = (origin: string | null, _tunnelName: string | null | undefined): string | null => origin;
+
+const deriveOriginFromNamedTunnelConfig = (
+  provider: string | null | undefined,
+  tunnelName: string | null | undefined,
+  domain: string | null | undefined
+): string | null => {
+  if (String(provider || "").trim().toLowerCase() !== "cloudflare") return null;
+  const rawName = String(tunnelName || "").trim().toLowerCase();
+  const rawDomain = String(domain || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
+  if (!rawName || !rawDomain) return null;
+  if (!isBareRegistrableDomain(rawDomain)) return null;
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(rawName)) return null;
+  return normalizeOrigin(`${rawName}.${rawDomain}`);
+};
 
 export const computePublicLinkState = (input: PublicLinkStateInput): PublicLinkState => {
   const envMode = normalizeMode(input.publicModeEnv);
@@ -82,9 +120,13 @@ export const computePublicLinkState = (input: PublicLinkStateInput): PublicLinkS
 
   const envNamedOrigin = applyTunnelSubdomain(normalizeOrigin(input.namedEnv.publicOrigin || null), input.namedEnv.tunnelName);
   const envTunnel = String(input.namedEnv.tunnelName || "").trim();
-  const cfgPublicOrigin = normalizeOrigin(input.config.publicOrigin || null);
+  const cfgPublicOriginRaw = normalizeOrigin(input.config.publicOrigin || null);
+  const cfgPublicOrigin = isTunnelPrefixedDuplicate(cfgPublicOriginRaw, input.config.tunnelName, input.config.domain)
+    ? null
+    : cfgPublicOriginRaw;
   const cfgDomainOrigin = applyTunnelSubdomain(normalizeOrigin(input.config.domain || null), input.config.tunnelName);
-  const canonicalNamedOrigin = envNamedOrigin || cfgPublicOrigin || cfgDomainOrigin || null;
+  const cfgDerivedOrigin = deriveOriginFromNamedTunnelConfig(input.config.provider, input.config.tunnelName, input.config.domain);
+  const canonicalNamedOrigin = envNamedOrigin || cfgPublicOrigin || cfgDerivedOrigin || cfgDomainOrigin || null;
   const namedConfigured = Boolean(canonicalNamedOrigin);
 
   if (envMode === "named" && namedConfigured) {
@@ -124,10 +166,14 @@ export const getNamedTunnelConfig = () => {
   const cfg = getPublicOriginConfig();
   const envTunnel = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
   const envOrigin = applyTunnelSubdomain(normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN || ""), envTunnel);
-  const cfgPublicOrigin = normalizeOrigin(cfg.publicOrigin || "");
   const cfgTunnel = String(cfg.tunnelName || "").trim();
+  const cfgPublicOriginRaw = normalizeOrigin(cfg.publicOrigin || "");
+  const cfgPublicOrigin = isTunnelPrefixedDuplicate(cfgPublicOriginRaw, cfgTunnel, cfg.domain)
+    ? null
+    : cfgPublicOriginRaw;
   const cfgDomainOrigin = applyTunnelSubdomain(normalizeOrigin(cfg.domain || ""), cfgTunnel);
-  const canonicalOrigin = envOrigin || cfgPublicOrigin || cfgDomainOrigin;
+  const cfgDerivedOrigin = deriveOriginFromNamedTunnelConfig(cfg.provider, cfgTunnel, cfg.domain);
+  const canonicalOrigin = envOrigin || cfgPublicOrigin || cfgDerivedOrigin || cfgDomainOrigin;
   if (!canonicalOrigin) return null;
   const effectiveTunnel = envTunnel || cfgTunnel || null;
   return { tunnelName: effectiveTunnel, publicOrigin: canonicalOrigin };

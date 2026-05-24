@@ -133,3 +133,54 @@ test("canonical origin never rewrites root domain to tunnel subdomain", () => {
   });
   assert.equal(state.canonicalOrigin, "https://darrylhillock.com");
 });
+
+test("domain-only named config derives tunnel subdomain", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: null, publicOrigin: null },
+    config: {
+      provider: "cloudflare",
+      domain: "blessedrthe.fyi",
+      tunnelName: "certifyd",
+      publicOrigin: null
+    },
+    quick: { status: "STOPPED", publicOrigin: null },
+    namedHealthOk: true
+  });
+  assert.equal(state.canonicalOrigin, "https://certifyd.blessedrthe.fyi");
+});
+
+test("full host named config does not prepend tunnel name", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: null, publicOrigin: null },
+    config: {
+      provider: "cloudflare",
+      domain: "certifyd.beatifygroup.com",
+      tunnelName: "beatifygroup",
+      publicOrigin: null
+    },
+    quick: { status: "STOPPED", publicOrigin: null },
+    namedHealthOk: true
+  });
+  assert.equal(state.canonicalOrigin, "https://certifyd.beatifygroup.com");
+});
+
+test("stale tunnel-prefixed public origin is ignored when domain is already full host", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: null, publicOrigin: null },
+    config: {
+      provider: "cloudflare",
+      domain: "certifyd.beatifygroup.com",
+      tunnelName: "beatifygroup",
+      publicOrigin: "https://beatifygroup.certifyd.beatifygroup.com"
+    },
+    quick: { status: "STOPPED", publicOrigin: null },
+    namedHealthOk: true
+  });
+  assert.equal(state.canonicalOrigin, "https://certifyd.beatifygroup.com");
+});

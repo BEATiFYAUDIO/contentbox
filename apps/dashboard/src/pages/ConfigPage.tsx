@@ -164,6 +164,30 @@ function safeHost(value: string): string {
   }
 }
 
+function deriveNamedPublicOrigin(tunnelName: string, domain: string): string {
+  const name = String(tunnelName || "").trim().toLowerCase();
+  const host = String(domain || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
+  if (!name || !host) return "";
+  if (host.split(".").filter(Boolean).length !== 2) return "";
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return "";
+  return normalizeOrigin(`${name}.${host}`);
+}
+
+function sanitizeNamedPublicOrigin(publicOrigin: string, tunnelName: string, domain: string): string {
+  const normalized = normalizeOrigin(publicOrigin);
+  const name = String(tunnelName || "").trim().toLowerCase();
+  const host = String(domain || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
+  if (!normalized || !name || !host || host.split(".").filter(Boolean).length <= 2) return normalized;
+  try {
+    const originHost = new URL(normalized).hostname.toLowerCase();
+    if (originHost === `${name}.${host}`) return "";
+  } catch {
+    return normalized;
+  }
+  return normalized;
+}
+
+
 export default function ConfigPage({
   showAdvanced,
   onOpenPayments,
@@ -699,6 +723,7 @@ export default function ConfigPage({
       : "token_bootstrap";
   const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const namedTunnelManageableLocally = Boolean(cloudflaredAvailable && (publicStatus?.namedTokenStored || namedTunnelDetected));
+  const namedTunnelConfiguredLocally = Boolean(configuredTunnelName || publicStatus?.namedConfigured);
   const startActionLabel =
     uiTunnelMode === "existing_named"
       ? "Start named tunnel"
@@ -709,7 +734,7 @@ export default function ConfigPage({
     publicBusy ||
     publicStatus?.status === "starting" ||
     publicStatus?.status === "online" ||
-    (uiTunnelMode === "token_bootstrap" ? quickDisabled : !namedTunnelManageableLocally);
+    (uiTunnelMode === "token_bootstrap" ? quickDisabled : !cloudflaredAvailable || (!namedTunnelManageableLocally && !namedTunnelConfiguredLocally));
   const selectedMode =
     (modeInfo?.selectedMode || modeInfo?.nodeMode) === "lan"
       ? { label: "Sovereign Node", description: "Creator-hosted storefront with local invoice + commerce stack." }
@@ -1154,13 +1179,18 @@ export default function ConfigPage({
     setTunnelActionMsg(null);
     setTunnelLoading(true);
     try {
+      const normalizedPublicOrigin =
+        sanitizeNamedPublicOrigin(publicOrigin, tunnelName, tunnelDomain) ||
+        deriveNamedPublicOrigin(tunnelName, tunnelDomain) ||
+        normalizeOrigin(tunnelDomain);
       const res = await fetch(`${apiBase}/api/public/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           provider: tunnelProvider,
           domain: tunnelDomain,
-          tunnelName
+          tunnelName,
+          publicOrigin: normalizedPublicOrigin
         })
       });
       const json = await res.json();
@@ -1168,6 +1198,7 @@ export default function ConfigPage({
       setTunnelProvider(json?.provider || "cloudflare");
       setTunnelDomain(json?.domain || "");
       setTunnelName(json?.tunnelName || "");
+      setPublicOrigin(String(json?.publicOrigin || normalizedPublicOrigin || ""));
       setTunnelActionMsg("Tunnel config saved.");
       await refreshPublicStatus({ silent: true, discover: true });
     } catch (e: any) {
