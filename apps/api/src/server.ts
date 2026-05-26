@@ -10324,6 +10324,16 @@ async function warmStartupRuntimeCaches() {
 async function triggerPublicStartBestEffort() {
   const state = getPublicLinkState();
   if (state.mode === "quick") {
+    const defer = shouldDeferNamedTunnelToServiceControl();
+    const namedConfigured = Boolean(getNamedTunnelConfig());
+    if (namedConfigured || defer.shouldDefer) {
+      if (defer.shouldDefer) reconcileNamedTunnelOwnership(true);
+      app.log.info(
+        { namedConfigured, shouldDefer: defer.shouldDefer, mode: defer.tunnelControl.mode },
+        "public.quick.autostart_suppressed_named_authority"
+      );
+      return;
+    }
     const prep = await tunnelManager.ensureBinary();
     if (!prep.ok) return;
     tunnelManager.startQuick().catch(() => {});
@@ -16541,6 +16551,12 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
   const state = getPublicLinkState();
   const nodeMode = getNodeMode();
   if (state.mode === "quick" && nodeMode === "basic") {
+    const defer = shouldDeferNamedTunnelToServiceControl();
+    const namedConfigured = Boolean(getNamedTunnelConfig());
+    if (namedConfigured || defer.shouldDefer) {
+      if (defer.shouldDefer) reconcileNamedTunnelOwnership();
+      return reply.send(getPublicStatusCached());
+    }
     const consent = getPublicSharingConsent();
     const consentGranted = consent.granted || consent.dontAskAgain;
     if (consentGranted && getPublicSharingAutoStart()) {
@@ -46472,10 +46488,16 @@ async function start() {
     if (autoStart) {
       triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
     } else if (state.mode === "quick") {
+      const defer = shouldDeferNamedTunnelToServiceControl();
+      const namedConfigured = Boolean(getNamedTunnelConfig());
+      if (namedConfigured || defer.shouldDefer) {
+        if (defer.shouldDefer) reconcileNamedTunnelOwnership();
+      } else {
       const consent = getPublicSharingConsent();
       const consentGranted = consent.granted || consent.dontAskAgain;
       if (consentGranted) {
         tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
+      }
       }
     }
   }
