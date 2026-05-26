@@ -711,7 +711,11 @@ export default function ConfigPage({
   const namedTunnelDetected = serviceManagedTokenMode
     ? Boolean(namedTunnelDetectedRaw)
     : Boolean(cloudflaredAvailable && namedTunnelDetectedRaw);
-  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
+  // Bootstrap/token flow should be required only when no named tunnel is discovered.
+  // Do not gate this on local cloudflared manageability, otherwise service-managed
+  // or temporarily-undetected control modes can incorrectly re-prompt for token input.
+  const namedTunnelDetectedForBootstrap = Boolean(namedTunnelDetectedRaw);
+  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetectedForBootstrap ? "existing_named" : "token_bootstrap";
   // Tunnel controls are posture-driven:
   // - Basic defaults to temporary links
   // - Sovereign postures default to named routing controls
@@ -893,8 +897,8 @@ export default function ConfigPage({
   };
 
   useEffect(() => {
-    setTokenBootstrapRequiredState(!namedTunnelDetected);
-  }, [namedTunnelDetected]);
+    setTokenBootstrapRequiredState(!namedTunnelDetectedForBootstrap);
+  }, [namedTunnelDetectedForBootstrap]);
 
   const refreshPublicStatus = async (opts?: { silent?: boolean; discover?: boolean }) => {
     if (!token) {
