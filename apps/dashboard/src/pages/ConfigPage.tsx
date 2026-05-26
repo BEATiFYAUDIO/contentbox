@@ -680,11 +680,12 @@ export default function ConfigPage({
   const modeLocked = Boolean(modeInfo?.tierLocked);
   const namedOriginCandidate = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
   const namedTunnelOnline =
-    publicStatus?.mode === "named" &&
-    publicStatus?.status === "online" &&
-    !publicStatus?.namedDisabled &&
-    Boolean(namedOriginCandidate) &&
-    !isTemporaryPublicOrigin(namedOriginCandidate);
+    Boolean((publicStatus as any)?.transport?.named?.online) ||
+    (publicStatus?.mode === "named" &&
+      publicStatus?.status === "online" &&
+      !publicStatus?.namedDisabled &&
+      Boolean(namedOriginCandidate) &&
+      !isTemporaryPublicOrigin(namedOriginCandidate));
   const configuredTunnelName = String(tunnelName || publicStatus?.tunnelName || "").trim();
   const discoveredTunnel = tunnelList.find((t) => {
     const candidateName = String(t?.name || "").trim().toLowerCase();
@@ -731,6 +732,7 @@ export default function ConfigPage({
         ? "Start temporary link (fallback)"
         : "Start temporary link";
   const startActionDisabled =
+    !token ||
     publicBusy ||
     publicStatus?.status === "starting" ||
     publicStatus?.status === "online" ||
@@ -895,7 +897,10 @@ export default function ConfigPage({
   }, [namedTunnelDetected]);
 
   const refreshPublicStatus = async (opts?: { silent?: boolean; discover?: boolean }) => {
-    if (!token) return;
+    if (!token) {
+      if (!opts?.silent) setPublicMsg("Sign in again to manage tunnel routing.");
+      return;
+    }
     const silent = Boolean(opts?.silent);
     try {
       const res = await fetch(`${apiBase}/api/public/status`, {
@@ -988,7 +993,10 @@ export default function ConfigPage({
   ]);
 
   const startPublicLink = async () => {
-    if (!token) return;
+    if (!token) {
+      setPublicMsg("Sign in again to start tunnel routing.");
+      return;
+    }
     setPublicBusy(true);
     setPublicMsg(null);
     try {
@@ -1050,7 +1058,10 @@ export default function ConfigPage({
   };
 
   const setNamedOverride = async (disabled: boolean) => {
-    if (!token) return;
+    if (!token) {
+      setPublicMsg("Sign in again to change tunnel override.");
+      return;
+    }
     setPublicBusy(true);
     setPublicMsg(null);
     try {
@@ -1070,7 +1081,10 @@ export default function ConfigPage({
   };
 
   const stopPublicLink = async () => {
-    if (!token) return;
+    if (!token) {
+      setPublicMsg("Sign in again to stop tunnel routing.");
+      return;
+    }
     setPublicBusy(true);
     setPublicMsg(null);
     try {
@@ -1669,20 +1683,20 @@ export default function ConfigPage({
                 </button>
               </div>
             ) : null}
-            <button
-              onClick={stopPublicLink}
-              disabled={publicBusy || publicStatus?.status !== "online"}
-              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-            >
-              {stopActionLabel}
-            </button>
-            <button
-              onClick={() => refreshPublicStatus({ discover: true })}
-              disabled={publicBusy}
-              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-            >
-              {refreshRoutingLabel}
-            </button>
+              <button
+                onClick={stopPublicLink}
+                disabled={!token || publicBusy || publicStatus?.status !== "online"}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                {stopActionLabel}
+              </button>
+              <button
+                onClick={() => refreshPublicStatus({ discover: true })}
+                disabled={!token || publicBusy}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                {refreshRoutingLabel}
+              </button>
           </div>
         ) : null}
         {publicStatus ? (

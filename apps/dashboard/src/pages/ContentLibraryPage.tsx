@@ -452,12 +452,12 @@ export default function ContentLibraryPage({
     capabilityReasons?.clearance ||
     "You can prepare this action, but a permanent named link must be online to perform it.";
   const networkPublishAllowed = capabilities?.publishToNetwork ?? capabilities?.publish ?? true;
-  const canPublishFromLibrary = isBasicTier ? true : networkPublishAllowed;
+  const canPublishFromLibraryBase = isBasicTier ? true : networkPublishAllowed;
   const crossNodeAllowed = capabilities?.requestClearance ?? true;
   const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
   const derivativesAllowed = capabilities?.useDerivatives ?? canDerivatives;
   const discoveryPublishAllowed = capabilities?.publishToDiscovery ?? capabilities?.publicShare ?? canPublicShare;
-  const discoveryFreeListingAllowed = isBasicTier || discoveryPublishAllowed;
+  const discoveryFreeListingAllowedBase = isBasicTier || discoveryPublishAllowed;
   const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
@@ -595,6 +595,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
   const [shareLinkByContent, setShareLinkByContent] = React.useState<Record<string, any | null>>({});
   const [publicStatus, setPublicStatus] = React.useState<any | null>(null);
+  const publicRoutingOnline = String(publicStatus?.status || "").toLowerCase() === "online";
+  const canPublishFromLibrary = canPublishFromLibraryBase && publicRoutingOnline;
+  const discoveryFreeListingAllowed = discoveryFreeListingAllowedBase && publicRoutingOnline;
+  const routingOfflineReason = "Public routing is offline. Start or restore tunnel sharing in Tunnel & routing.";
+  const networkPublishReasonResolved = publicRoutingOnline ? networkPublishReason : routingOfflineReason;
+  const discoveryPublishReasonResolved = publicRoutingOnline ? discoveryPublishReason : routingOfflineReason;
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
   const [publicAdvancedOpen, setPublicAdvancedOpen] = React.useState(false);
@@ -1395,7 +1401,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       }
     }
     if (!canPublishFromLibrary) {
-      setPublishMsg((m) => ({ ...m, [contentId]: networkPublishReason }));
+      setPublishMsg((m) => ({ ...m, [contentId]: networkPublishReasonResolved }));
       return;
     }
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
@@ -1805,7 +1811,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
   async function updateStorefrontStatus(contentId: string, storefrontStatus: "DISABLED" | "UNLISTED" | "LISTED") {
     if (storefrontStatus !== "DISABLED" && !discoveryFreeListingAllowed) {
-      setError(discoveryPublishReason);
+      setError(discoveryPublishReasonResolved);
       return;
     }
     setBusyAction((m) => ({ ...m, [contentId]: true }));
@@ -1830,7 +1836,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         prev.map((it) => (it.id === contentId ? { ...it, storefrontStatus: previousStatus } : it))
       );
       if (e?.message && String(e.message).includes("public_discovery_not_allowed")) {
-        setError(discoveryPublishReason);
+        setError(discoveryPublishReasonResolved);
       } else if (e?.message && String(e.message).includes("DISCOVERY_PAID_REQUIRES_COMMERCE")) {
         setError("Paid Discovery listing requires commerce-capable posture. Keep this content free (0 sats) to list in Discovery as Basic.");
       } else {
@@ -3034,7 +3040,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     : !allowPublish
                       ? "Already published"
                       : !canPublishFromLibrary
-                        ? networkPublishReason
+                        ? networkPublishReasonResolved
                         : "Publish this content";
 
               return (
@@ -3276,7 +3282,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     </div>
                     {!canPublishFromLibrary ? (
                       <div className="w-full text-[11px] text-amber-300">
-                        {networkPublishReason}{" "}
+                        {networkPublishReasonResolved}{" "}
                         <button
                           type="button"
                           onClick={() => {
@@ -3297,7 +3303,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </span>
                       </div>
                       {!canPublishFromLibrary ? (
-                        <div className="text-amber-300">{networkPublishReason}</div>
+                        <div className="text-amber-300">{networkPublishReasonResolved}</div>
                       ) : null}
                       <div>
                         Public discovery:{" "}
@@ -3306,7 +3312,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </span>
                       </div>
                       {!discoveryFreeListingAllowed ? (
-                        <div className="text-amber-300">{discoveryPublishReason}</div>
+                        <div className="text-amber-300">{discoveryPublishReasonResolved}</div>
                       ) : paidDiscoveryBlocked ? (
                         <div className="text-amber-300">
                           Basic creators can receive tips, but paid unlocks require commerce-ready setup. Set price to 0 to publish this as a free drop with tips enabled.
