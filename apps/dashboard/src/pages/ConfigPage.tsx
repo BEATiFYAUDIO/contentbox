@@ -228,7 +228,7 @@ export default function ConfigPage({
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
   const [discoveredTunnelNameState, setDiscoveredTunnelNameState] = useState<string | null>(null);
   const [namedTunnelDetectedState, setNamedTunnelDetectedState] = useState<boolean>(false);
-  const [tokenBootstrapRequiredState, setTokenBootstrapRequiredState] = useState<boolean>(true);
+  const [tokenBootstrapRequiredState, setTokenBootstrapRequiredState] = useState<boolean>(false);
   const [namedTokenInput, setNamedTokenInput] = useState<string>("");
   const [namedTokenBusy, setNamedTokenBusy] = useState<boolean>(false);
   const [namedTokenMsg, setNamedTokenMsg] = useState<string | null>(null);
@@ -707,7 +707,13 @@ export default function ConfigPage({
     Boolean(publicStatus?.namedConfigured) &&
     (Boolean(discoveredTunnelNameFromStatus) || publicStatus?.mode === "named");
   const namedTunnelDetectedRaw =
-    namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList) || namedTunnelDetectedFromStatus;
+    namedTunnelDetectedState ||
+    Boolean(discoveredTunnelNameFromList) ||
+    namedTunnelDetectedFromStatus ||
+    Boolean((publicStatus as any)?.transport?.named?.configured) ||
+    Boolean((publicStatus as any)?.transport?.named?.online) ||
+    Boolean(publicStatus?.namedTokenStored) ||
+    Boolean(publicStatus?.namedConfigured);
   const namedTunnelDetected = serviceManagedTokenMode
     ? Boolean(namedTunnelDetectedRaw)
     : Boolean(cloudflaredAvailable && namedTunnelDetectedRaw);
@@ -741,6 +747,66 @@ export default function ConfigPage({
     publicStatus?.status === "starting" ||
     publicStatus?.status === "online" ||
     (uiTunnelMode === "token_bootstrap" ? quickDisabled : !cloudflaredAvailable || (!namedTunnelManageableLocally && !namedTunnelConfiguredLocally));
+  const startActionDisabledReason = !token
+    ? "Sign in to start routing."
+    : publicBusy
+      ? "Routing action in progress."
+      : publicStatus?.status === "starting"
+        ? "Tunnel is already starting."
+        : publicStatus?.status === "online"
+          ? "Tunnel is already online."
+          : uiTunnelMode === "token_bootstrap" && quickDisabled
+            ? "Temporary links are disabled in this posture while named routing is configured."
+            : uiTunnelMode === "existing_named" && !cloudflaredAvailable
+              ? "cloudflared is unavailable on this machine."
+              : uiTunnelMode === "existing_named" && !namedTunnelManageableLocally && !namedTunnelConfiguredLocally
+                ? "No local named tunnel is discovered/configured yet."
+                : null;
+  const stopActionDisabled = !token || publicBusy || publicStatus?.status !== "online";
+  const stopActionDisabledReason = !token
+    ? "Sign in to stop routing."
+    : publicBusy
+      ? "Routing action in progress."
+      : publicStatus?.status !== "online"
+        ? "Tunnel must be online before it can be stopped."
+        : null;
+  const refreshActionDisabled = !token || publicBusy;
+  const refreshActionDisabledReason = !token
+    ? "Sign in to refresh routing."
+    : publicBusy
+      ? "Routing action in progress."
+      : null;
+  const localRoutingControlsDisabled =
+    serviceManagedTokenMode &&
+    !publicStatus?.namedDisabled &&
+    publicStatus?.mode === "named" &&
+    publicStatus?.status === "online";
+  const saveConfigDisabled = tunnelLoading || !tunnelEnabled || localRoutingControlsDisabled;
+  const saveConfigDisabledReason = tunnelLoading
+    ? "Tunnel settings are loading."
+    : !tunnelEnabled
+      ? "Enable advanced tunnel fields to save config."
+      : localRoutingControlsDisabled
+        ? "Local config is read-only while service-managed authority is active."
+        : null;
+  const discoverDisabled = tunnelLoading || !tunnelEnabled;
+  const discoverDisabledReason = tunnelLoading
+    ? "Tunnel settings are loading."
+    : !tunnelEnabled
+      ? "Enable advanced tunnel fields to discover tunnels."
+      : null;
+  const tokenSetupDisabled = namedTokenBusy || !tunnelEnabled;
+  const tokenSetupDisabledReason = namedTokenBusy
+    ? "Token action in progress."
+    : !tunnelEnabled
+      ? "Enable advanced tunnel fields to manage connector token."
+      : null;
+  const actionBtnStyle = (disabled?: boolean) => ({
+    padding: "8px 10px",
+    borderRadius: 10,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.55 : 1
+  });
   const selectedMode =
     (modeInfo?.selectedMode || modeInfo?.nodeMode) === "lan"
       ? { label: "Sovereign Node", description: "Creator-hosted storefront with local invoice + commerce stack." }
@@ -813,11 +879,6 @@ export default function ConfigPage({
       ? "Stop named tunnel"
       : "Stop temporary link";
   const refreshRoutingLabel = "Refresh routing";
-  const localRoutingControlsDisabled =
-    serviceManagedTokenMode &&
-    !publicStatus?.namedDisabled &&
-    publicStatus?.mode === "named" &&
-    publicStatus?.status === "online";
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
   const showSystemDebugPanels = Boolean(showAdvanced) && devMode;
   const creatorProgressionSteps = useMemo<ProgressStep[]>(() => {
@@ -1645,10 +1706,14 @@ export default function ConfigPage({
               <button
                 onClick={startPublicLink}
                 disabled={startActionDisabled}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                title={startActionDisabledReason || undefined}
+                style={actionBtnStyle(startActionDisabled)}
               >
               {startActionLabel}
             </button>
+            {startActionDisabledReason ? (
+              <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>{startActionDisabledReason}</div>
+            ) : null}
             {uiTunnelMode === "token_bootstrap" && quickDisabled ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 Temporary route is fallback-only in sovereign posture when named routing is configured.
@@ -1689,18 +1754,26 @@ export default function ConfigPage({
             ) : null}
               <button
                 onClick={stopPublicLink}
-                disabled={!token || publicBusy || publicStatus?.status !== "online"}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                disabled={stopActionDisabled}
+                title={stopActionDisabledReason || undefined}
+                style={actionBtnStyle(stopActionDisabled)}
               >
                 {stopActionLabel}
               </button>
               <button
                 onClick={() => refreshPublicStatus({ discover: true })}
-                disabled={!token || publicBusy}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                disabled={refreshActionDisabled}
+                title={refreshActionDisabledReason || undefined}
+                style={actionBtnStyle(refreshActionDisabled)}
               >
                 {refreshRoutingLabel}
               </button>
+              {stopActionDisabledReason ? (
+                <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>{stopActionDisabledReason}</div>
+              ) : null}
+              {refreshActionDisabledReason ? (
+                <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>{refreshActionDisabledReason}</div>
+              ) : null}
           </div>
         ) : null}
         {publicStatus ? (
@@ -1910,43 +1983,51 @@ export default function ConfigPage({
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                   <button
                     onClick={generateNamedToken}
-                    disabled={namedTokenBusy || !tunnelEnabled}
-                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                    disabled={tokenSetupDisabled}
+                    title={tokenSetupDisabledReason || undefined}
+                    style={actionBtnStyle(tokenSetupDisabled)}
                   >
                     Generate token
                   </button>
                   <button
                     onClick={() => saveNamedToken(false)}
-                    disabled={namedTokenBusy || !tunnelEnabled}
-                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                    disabled={tokenSetupDisabled}
+                    title={tokenSetupDisabledReason || undefined}
+                    style={actionBtnStyle(tokenSetupDisabled)}
                   >
                     Save token
                   </button>
                   <button
                     onClick={() => saveNamedToken(true)}
-                    disabled={namedTokenBusy || !tunnelEnabled}
-                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                    disabled={tokenSetupDisabled}
+                    title={tokenSetupDisabledReason || undefined}
+                    style={actionBtnStyle(tokenSetupDisabled)}
                   >
                     Save & start tunnel
                   </button>
                   {publicStatus?.namedTokenStored ? (
                     <button
                       onClick={clearNamedToken}
-                      disabled={namedTokenBusy || !tunnelEnabled}
-                      style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                      disabled={tokenSetupDisabled}
+                      title={tokenSetupDisabledReason || undefined}
+                      style={actionBtnStyle(tokenSetupDisabled)}
                     >
                       Clear saved token
                     </button>
                   ) : null}
                 </div>
+                {tokenSetupDisabledReason ? (
+                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{tokenSetupDisabledReason}</div>
+                ) : null}
                 {namedTokenMsg ? <div style={{ marginTop: 6, color: "#ffb4b4" }}>{namedTokenMsg}</div> : null}
               </div>
             ) : null}
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={saveTunnelConfig}
-                disabled={tunnelLoading || !tunnelEnabled || localRoutingControlsDisabled}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                disabled={saveConfigDisabled}
+                title={saveConfigDisabledReason || undefined}
+                style={actionBtnStyle(saveConfigDisabled)}
               >
                 Save tunnel config
               </button>
@@ -1954,12 +2035,19 @@ export default function ConfigPage({
                 onClick={() => {
                   discoverTunnels().catch(() => {});
                 }}
-                disabled={tunnelLoading || !tunnelEnabled}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                disabled={discoverDisabled}
+                title={discoverDisabledReason || undefined}
+                style={actionBtnStyle(discoverDisabled)}
               >
                 Discover tunnels
               </button>
             </div>
+            {saveConfigDisabledReason ? (
+              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{saveConfigDisabledReason}</div>
+            ) : null}
+            {discoverDisabledReason && discoverDisabledReason !== saveConfigDisabledReason ? (
+              <div style={{ marginTop: 2, fontSize: 12, opacity: 0.75 }}>{discoverDisabledReason}</div>
+            ) : null}
             {tunnelActionMsg ? <div style={{ marginTop: 6, fontSize: 12, color: "#a7f3d0" }}>{tunnelActionMsg}</div> : null}
             {tunnelList.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
