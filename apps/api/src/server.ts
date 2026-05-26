@@ -9708,11 +9708,18 @@ function detectTunnelControlMode() {
   let activeAppManagedTokenProcess = false;
   if (process.platform === "win32") {
     try {
-      const output = runWindowsCloudflaredProcessQuery([
+      let output = runWindowsCloudflaredProcessQuery([
         "-NoProfile",
         "-Command",
         "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Select-Object -ExpandProperty CommandLine"
       ]);
+      if (!String(output || "").trim()) {
+        output = runWindowsCloudflaredProcessQuery([
+          "-NoProfile",
+          "-Command",
+          "Get-WmiObject Win32_Process -Filter \"Name='cloudflared.exe'\" | Select-Object -ExpandProperty CommandLine"
+        ]);
+      }
       for (const line of output.split("\n")) {
         const lower = line.toLowerCase();
         if (!lower.includes("cloudflared")) continue;
@@ -9819,9 +9826,6 @@ function getTunnelControlModeCached(force = false): ReturnType<typeof detectTunn
   }
   if (!force && tunnelControlModeCache && tunnelControlModeCache.staleExpiresAt > now) {
     return tunnelControlModeCache.value;
-  }
-  if (!force) {
-    return tunnelControlModeCache?.value || getTunnelControlModeFallback();
   }
   const value = detectTunnelControlMode();
   tunnelControlModeCache = {
@@ -45753,7 +45757,8 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       reason: "LOCAL_OR_FORWARDED_AUTH_REQUIRED"
     });
   }
-  const verifiedKey = acceptanceAuthMode === "local_auth" ? await hasVerifiedParticipantKey(userId) : true;
+  const requireVerifiedKeyForAccept = acceptanceAuthMode === "local_auth" && getNodeMode() !== "lan";
+  const verifiedKey = requireVerifiedKeyForAccept ? await hasVerifiedParticipantKey(userId) : true;
   if (!verifiedKey) {
     return reply.code(409).send({
       error: "Verified key required before accepting split invite",
