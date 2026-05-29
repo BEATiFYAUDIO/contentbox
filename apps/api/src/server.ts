@@ -148,6 +148,7 @@ import {
   isPublished,
   isSaleable
 } from "./lib/contentLifecycle.js";
+import { hasFullAccess, isFreeContent, shouldShowPreview } from "./lib/contentAccess.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -357,8 +358,7 @@ function resolvePublicAccessMode(input: {
   owned: boolean;
 }): "unlocked" | "locked" | "owned" {
   if (input.owned) return "owned";
-  const price = input.priceSats == null ? 0n : BigInt(input.priceSats);
-  if (price > 0n) return "locked";
+  if (!isFreeContent({ priceSats: input.priceSats })) return "locked";
   return "unlocked";
 }
 
@@ -26096,7 +26096,6 @@ async function handlePublicContentAccess(req: any, reply: any) {
   const manifestSha256 = asString((req.query || {})?.manifestSha256 || "").trim();
   const receiptToken = asString((req.query || {})?.receiptToken || "").trim();
   if (!manifestSha256) return badRequest(reply, "manifestSha256 required");
-  if (!receiptToken) return badRequest(reply, "receiptToken required");
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
@@ -26112,6 +26111,23 @@ async function handlePublicContentAccess(req: any, reply: any) {
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest || manifest.sha256 !== manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
+  const freeContent = isFreeContent({ priceSats: content.priceSats });
+
+  if (freeContent) {
+    const manifestJson = manifest.json as any;
+    return reply.send({
+      ok: true,
+      manifestSha256: manifest.sha256,
+      files: Array.isArray(manifestJson?.files) ? manifestJson.files : [],
+      manifest: manifestJson,
+      isFree: true,
+      isLocked: false,
+      hasFullAccess: true,
+      previewUrl: null
+    });
+  }
+
+  if (!receiptToken) return badRequest(reply, "receiptToken required");
 
   const intent = await prisma.paymentIntent.findFirst({
     where: {
@@ -26130,7 +26146,11 @@ async function handlePublicContentAccess(req: any, reply: any) {
     ok: true,
     manifestSha256: manifest.sha256,
     files: Array.isArray(manifestJson?.files) ? manifestJson.files : [],
-    manifest: manifestJson
+    manifest: manifestJson,
+    isFree: false,
+    isLocked: false,
+    hasFullAccess: true,
+    previewUrl: null
   });
 }
 
@@ -26174,6 +26194,17 @@ async function handlePublicContent(req: any, reply: any) {
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
   const baseUrl = host ? `${proto}://${host}` : "";
+  const freeContent = isFreeContent({ priceSats: content.priceSats });
+  const hasFull = hasFullAccess({
+    isFree: freeContent,
+    hasUnlock: Boolean(gated.entitled)
+  });
+  const accessMode = resolvePublicAccessMode({
+    priceSats: content.priceSats,
+    deliveryMode: (content as any).deliveryMode || null,
+    owned: hasFull
+  });
+  const isLocked = !hasFull;
   const normalizePreview = (value: string | null) => {
     if (!value) return null;
     const v = String(value).trim();
@@ -26181,6 +26212,14 @@ async function handlePublicContent(req: any, reply: any) {
     if (/^https?:\/\//i.test(v)) return v;
     return baseUrl ? `${baseUrl}/public/content/${contentId}/preview-file?objectKey=${encodeURIComponent(v)}` : null;
   };
+  const previewCandidate = normalizePreview((manifest.json as any)?.preview || null);
+  const shouldPreview = shouldShowPreview({
+    isFree: freeContent,
+    priceSats: content.priceSats,
+    hasFullAccess: hasFull,
+    hasPreviewAsset: Boolean(previewCandidate)
+  });
+  const fullMediaUrl = baseUrl ? `${baseUrl}/public/content/${contentId}/preview-file` : null;
 
   return reply.send({
     contentId: content.id,
@@ -26191,16 +26230,18 @@ async function handlePublicContent(req: any, reply: any) {
     creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload(owner?.avatarUrl || null, canonicalOrigin),
     storefrontStatus: content.storefrontStatus,
     tombstoned: gated.tombstoned,
-    owned: gated.entitled,
-    accessMode: resolvePublicAccessMode({
-      priceSats: content.priceSats,
-      deliveryMode: (content as any).deliveryMode || null,
-      owned: Boolean(gated.entitled)
-    }),
+    owned: hasFull,
+    accessMode,
+    isFree: freeContent,
+    isLocked,
+    hasFullAccess: hasFull,
     manifestSha256: manifest.sha256,
     priceSats: commerceAuthority.authority && content.priceSats != null ? content.priceSats.toString() : null,
     cover: normalizePreview((manifest.json as any)?.cover || null),
-    preview: normalizePreview((manifest.json as any)?.preview || null)
+    preview: shouldPreview ? previewCandidate : null,
+    previewUrl: shouldPreview ? previewCandidate : null,
+    fullMediaUrl: hasFull ? fullMediaUrl : null,
+    fullContentUrl: hasFull ? fullMediaUrl : null
   });
 }
 
@@ -34296,6 +34337,7 @@ async function handlePublicOffer(req: any, reply: any) {
 
   const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
   const rawPriceSats = content.priceSats ?? null;
+  const freeContent = isFreeContent({ priceSats: rawPriceSats });
   const hasStoredPrice = rawPriceSats != null && rawPriceSats > 0n;
   const paidCommerceActive = authority.authority;
   const priceSats = hasStoredPrice && paidCommerceActive ? rawPriceSats : null;
@@ -34349,10 +34391,14 @@ async function handlePublicOffer(req: any, reply: any) {
       : providerBackedPaymentAvailable
         ? configuredProviderNodeId || publishProofProviderNodeId
         : null;
+  const hasFull = hasFullAccess({
+    isFree: freeContent,
+    hasUnlock: entitled
+  });
   const paymentAccessProof: PublicPaymentAccessProof = {
     contentId,
-    paymentState: hasPrice ? (entitled ? "owned" : "payment_required") : tipsEnabled ? "tip" : "free",
-    entitlementState: hasPrice ? (entitled ? "entitled" : "locked") : "entitled",
+    paymentState: hasPrice ? (hasFull ? "owned" : "payment_required") : tipsEnabled ? "tip" : "free",
+    entitlementState: hasPrice ? (hasFull ? "entitled" : "locked") : "entitled",
     paymentReceiptId: latestEntitlement?.payment ? asString(latestEntitlement.payment.id || "").trim() || null : null,
     paidAt:
       latestEntitlement?.payment?.paidAt && !Number.isNaN(new Date(latestEntitlement.payment.paidAt).getTime())
@@ -34364,13 +34410,15 @@ async function handlePublicOffer(req: any, reply: any) {
   const accessMode = resolvePublicAccessMode({
     priceSats: rawPriceSats,
     deliveryMode: (content as any).deliveryMode || null,
-    owned: Boolean(gated.entitled)
+    owned: hasFull
   });
 
-  if (!allowDraftPreview) {
-    if (rawPriceSats == null) {
-      return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
-    }
+  if (!allowDraftPreview && rawPriceSats == null && !freeContent) {
+    return reply.code(409).send({
+      code: "PRICE_NOT_SET",
+      message: "Creator has not set a price yet.",
+      note: "Price missing and content is not explicitly marked free."
+    });
   }
 
   const owner = await prisma.user.findUnique({
@@ -34378,6 +34426,19 @@ async function handlePublicOffer(req: any, reply: any) {
     select: { displayName: true, email: true, avatarUrl: true }
   });
   const canonicalOrigin = resolveCanonicalPublicOrigin(req);
+
+  const previewUrl = previewObjectKey
+    ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`
+    : null;
+  const fullMediaUrl = `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/preview-file${
+    primaryFileId ? `?objectKey=${encodeURIComponent(primaryFileId)}` : ""
+  }`;
+  const showPreviewOnly = shouldShowPreview({
+    isFree: freeContent,
+    priceSats: rawPriceSats,
+    hasFullAccess: hasFull,
+    hasPreviewAsset: Boolean(previewUrl)
+  });
 
   return reply.send({
     contentId: content.id,
@@ -34403,7 +34464,13 @@ async function handlePublicOffer(req: any, reply: any) {
     publicOrigin: baseUrl || null,
     deliveryMode: (content as any).deliveryMode || null,
     tombstoned: gated.tombstoned,
-    owned: gated.entitled,
+    owned: hasFull,
+    isFree: freeContent,
+    isLocked: !hasFull,
+    hasFullAccess: hasFull,
+    previewUrl: showPreviewOnly ? previewUrl : null,
+    fullMediaUrl: hasFull ? fullMediaUrl : null,
+    fullContentUrl: hasFull ? fullMediaUrl : null,
     publishProof,
     paymentAccessProof,
     seller: { hostOrigin: baseUrl },
@@ -37272,13 +37339,14 @@ async function handlePublicContentFile(req: any, reply: any) {
   if (!objectKey || !content.repoPath) return notFound(reply, "File not found");
 
   const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
+  const freeContent = isFreeContent({ priceSats: content.priceSats });
   let accessMode: "preview" | "stream" = "stream";
   let preview: { maxBytes: number } | null = null;
   const previewEnabled = String(process.env.PREVIEW_ENABLED || "1") !== "0";
   const buyerSession = await resolveBuyerSession(req, reply);
   const buyerId = buyerSession?.buyer?.id || null;
 
-  if (priceSats > 0n) {
+  if (!freeContent && priceSats > 0n) {
     if (buyerId) {
       await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId: content.id }).catch(() => {});
     }
