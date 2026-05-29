@@ -217,6 +217,8 @@ export class TunnelManager {
   private healthInFlight = false;
   private healthFailures = 0;
   private activeMode: "quick" | "named" | null = null;
+  private lastNamedInput: { publicOrigin: string; tunnelName: string; configPath?: string | null; token?: string | null } | null = null;
+  private namedRestartInFlight = false;
 
   constructor(opts: TunnelManagerOptions) {
     this.opts = {
@@ -284,6 +286,7 @@ export class TunnelManager {
 
   async stop(): Promise<TunnelState> {
     this.stopping = true;
+    this.namedRestartInFlight = false;
     this.clearHealthTimer();
     this.healthFailures = 0;
     if (this.proc?.pid) {
@@ -478,6 +481,7 @@ export class TunnelManager {
       return this.status();
     }
     this.state = { ...this.state, status: "STARTING", lastError: null };
+    this.lastNamedInput = { ...input };
 
     let binPath: string;
     try {
@@ -582,12 +586,38 @@ export class TunnelManager {
           this.healthFailures += 1;
           if (this.healthFailures >= (this.opts.healthFailureThreshold || 2)) {
             if (this.activeMode === "named") {
+              // Named tunnels can appear "stuck starting" when cloudflared is alive but detached.
+              // Recycle the process and relaunch with last known input to self-heal.
               this.state = {
                 ...this.state,
                 status: "STARTING",
                 lastError: "Public link health check failed; retrying"
               };
               this.healthFailures = 0;
+              if (!this.namedRestartInFlight && this.lastNamedInput) {
+                this.namedRestartInFlight = true;
+                (async () => {
+                  try {
+                    if (this.proc?.pid) {
+                      try {
+                        process.kill(this.proc.pid);
+                      } catch {}
+                    }
+                    this.proc = null;
+                    this.activeMode = null;
+                    await new Promise((r) => setTimeout(r, 500));
+                    await this.startNamed(this.lastNamedInput as any);
+                  } catch (e: any) {
+                    this.state = {
+                      ...this.state,
+                      status: "ERROR",
+                      lastError: String(e?.message || e || "named tunnel restart failed")
+                    };
+                  } finally {
+                    this.namedRestartInFlight = false;
+                  }
+                })();
+              }
             } else {
               this.state = { ...this.state, status: "ERROR", lastError: "Public link health check failed" };
               try {
