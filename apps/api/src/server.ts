@@ -33040,10 +33040,16 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderBasicOffer(offer){
     const mime = String(offer.primaryFileMime || "");
-    const preferredPreview = previewFallbackUrl(offer);
+    const hasFullAccess = Boolean(offer?.hasFullAccess || offer?.isFree || offer?.owned);
+    const fullMediaSrc = String(offer?.fullMediaUrl || offer?.fullContentUrl || "").trim();
+    const preferredPreview = hasFullAccess ? null : previewFallbackUrl(offer);
     const primaryPreview = basicPrimaryUrl(offer);
-    const resolvedPreview = resolveRenderablePreview(offer, preferredPreview, primaryPreview);
-    const mediaSrc = resolvedPreview.src || preferredPreview || primaryPreview || "";
+    const resolvedPreview = resolveRenderablePreview(
+      offer,
+      hasFullAccess ? (fullMediaSrc || primaryPreview) : preferredPreview,
+      hasFullAccess ? (primaryPreview || preferredPreview) : primaryPreview
+    );
+    const mediaSrc = resolvedPreview.src || (hasFullAccess ? (fullMediaSrc || primaryPreview) : (preferredPreview || primaryPreview)) || "";
     const previewKind = resolvedPreview.kind;
     const isVideo = previewKind === "video";
     const isAudio = previewKind === "audio";
@@ -33056,7 +33062,7 @@ async function handleBuyPage(req: any, reply: any) {
       "<span class=\\"trust-chip trust-chip--teal\\">Creator verified</span>",
       "<span class=\\"trust-chip trust-chip--green\\">Free access</span>",
       (sellerLightningAddress ? "<span class=\\"trust-chip trust-chip--gold\\">Tips enabled</span>" : ""),
-      (mediaSrc ? "<span class=\\"trust-chip trust-chip--violet\\">Public preview</span>" : "")
+      (!hasFullAccess && mediaSrc ? "<span class=\\"trust-chip trust-chip--violet\\">Public preview</span>" : "")
     ].filter(Boolean).join("");
     const tipBlock = sellerLightningAddress
       ? "<div class=\\"rail\\" style=\\"margin-top:10px;\\">" +
@@ -33123,8 +33129,14 @@ async function handleBuyPage(req: any, reply: any) {
     const tokenStreamSrc = token ? streamUrl(offer, token) : null;
     const fallbackPreviewSrc = previewFallbackUrl(offer);
     const isPreviewEntitlement = entitlement?.status === "preview";
-    const preferredMediaSrc = isPreviewEntitlement ? (fallbackPreviewSrc || tokenStreamSrc) : (tokenStreamSrc || fallbackPreviewSrc);
-    const alternateMediaSrc = isPreviewEntitlement ? (tokenStreamSrc || fallbackPreviewSrc) : (fallbackPreviewSrc || tokenStreamSrc);
+    const hasFullAccess = Boolean(offer?.hasFullAccess || offer?.isFree || already || entitlement?.status === "paid" || entitlement?.status === "bypassed");
+    const fullMediaSrc = String(offer?.fullMediaUrl || offer?.fullContentUrl || "").trim();
+    const preferredMediaSrc = hasFullAccess
+      ? (tokenStreamSrc || fullMediaSrc || fallbackPreviewSrc)
+      : (isPreviewEntitlement ? (fallbackPreviewSrc || tokenStreamSrc) : (tokenStreamSrc || fallbackPreviewSrc));
+    const alternateMediaSrc = hasFullAccess
+      ? (fullMediaSrc || fallbackPreviewSrc || tokenStreamSrc)
+      : (isPreviewEntitlement ? (tokenStreamSrc || fallbackPreviewSrc) : (fallbackPreviewSrc || tokenStreamSrc));
     const resolvedPreview = resolveRenderablePreview(offer, preferredMediaSrc, alternateMediaSrc);
     const mediaSrc = resolvedPreview.src || preferredMediaSrc || alternateMediaSrc || "";
     const previewKind = resolvedPreview.kind;
