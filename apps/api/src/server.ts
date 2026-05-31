@@ -13844,7 +13844,40 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
     createdAt: inv.createdAt.toISOString()
   }));
 
-  return reply.send(out);
+  const dedupedOut = Array.from(
+    out
+      .reduce((acc, row) => {
+        const key = [
+          asString((row as any)?.contentId || "").trim(),
+          asString((row as any)?.targetType || "").trim().toLowerCase(),
+          asString((row as any)?.targetValue || (row as any)?.participantEmail || "").trim().toLowerCase(),
+          asString((row as any)?.role || "").trim().toLowerCase(),
+          asString((row as any)?.percent ?? "").trim()
+        ].join("|");
+        const current = acc.get(key);
+        if (!current) {
+          acc.set(key, row);
+          return acc;
+        }
+        const currentAccepted = String((current as any)?.status || "").toLowerCase() === "accepted";
+        const nextAccepted = String((row as any)?.status || "").toLowerCase() === "accepted";
+        if (currentAccepted !== nextAccepted) {
+          acc.set(key, nextAccepted ? row : current);
+          return acc;
+        }
+        const currentTs = new Date((current as any)?.createdAt || 0).getTime() || 0;
+        const nextTs = new Date((row as any)?.createdAt || 0).getTime() || 0;
+        if (nextTs >= currentTs) acc.set(key, row);
+        return acc;
+      }, new Map<string, any>())
+      .values()
+  ).sort((a: any, b: any) => {
+    const bt = new Date(b?.createdAt || 0).getTime() || 0;
+    const at = new Date(a?.createdAt || 0).getTime() || 0;
+    return bt - at;
+  });
+
+  return reply.send(dedupedOut);
 });
 
 // List invitations received by the authenticated user (matched by participantUserId or email)

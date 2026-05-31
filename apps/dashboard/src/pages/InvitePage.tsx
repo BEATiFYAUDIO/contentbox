@@ -965,14 +965,47 @@ export default function InvitePage({
   const localInviteKeys = new Set(visibleReceivedInvites.map(dedupeKey));
   const dedupedRemoteInvites = visibleRemoteInvites.filter((inv) => !localInviteKeys.has(dedupeKey(inv)));
 
-  const dedupedSentInvites = sortInvitesNewestFirst(Array.from(
-    new Map(
-      (visibleSentInvites || []).map((inv) => [
-        String(inv?.id || `${inv?.contentId || ""}|${inv?.targetType || ""}|${inv?.targetValue || inv?.participantEmail || ""}|${inv?.createdAt || ""}`),
-        inv
-      ])
-    ).values()
-  ));
+  const dedupedSentInvites = React.useMemo(() => {
+    const chooseBetterInvite = (a: any, b: any) => {
+      const aStatus = inviteStatus(a);
+      const bStatus = inviteStatus(b);
+      const aAccepted = aStatus === "accepted";
+      const bAccepted = bStatus === "accepted";
+      if (aAccepted !== bAccepted) return aAccepted ? a : b;
+      const aTs = inviteSortTs(a);
+      const bTs = inviteSortTs(b);
+      if (aTs !== bTs) return aTs >= bTs ? a : b;
+      const aAcceptedAt = new Date(a?.acceptedAt || 0).getTime() || 0;
+      const bAcceptedAt = new Date(b?.acceptedAt || 0).getTime() || 0;
+      return aAcceptedAt >= bAcceptedAt ? a : b;
+    };
+
+    const semanticKey = (inv: any) =>
+      [
+        String(inv?.contentId || "").trim(),
+        String(inv?.targetType || "").trim().toLowerCase(),
+        String(inv?.targetValue || inv?.participantEmail || "").trim().toLowerCase(),
+        String(inv?.role || "").trim().toLowerCase(),
+        String(inv?.percent ?? "").trim()
+      ].join("|");
+
+    const byIdentity = new Map<string, any>();
+    for (const inv of visibleSentInvites || []) {
+      const idKey = String(inv?.id || "").trim();
+      if (!idKey) continue;
+      const existing = byIdentity.get(`id:${idKey}`);
+      byIdentity.set(`id:${idKey}`, existing ? chooseBetterInvite(existing, inv) : inv);
+    }
+
+    const bySemantic = new Map<string, any>();
+    for (const inv of Array.from(byIdentity.values())) {
+      const key = semanticKey(inv);
+      const existing = bySemantic.get(key);
+      bySemantic.set(key, existing ? chooseBetterInvite(existing, inv) : inv);
+    }
+
+    return sortInvitesNewestFirst(Array.from(bySemantic.values()));
+  }, [visibleSentInvites]);
 
   async function acceptRemoteInvite(inv: any) {
     const inviteUrl = String(inv?.inviteUrl || "").trim();
