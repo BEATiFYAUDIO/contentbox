@@ -46234,7 +46234,12 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         userId,
         remoteNodeUrl,
         existingParticipantEmail: inv.splitParticipant?.participantEmail || null,
-        effectiveEmail: effectiveInviteEmail
+        effectiveEmail: effectiveInviteEmail,
+        canonicalLocalTargetUserId:
+          inviteTargetType === "local_user" ||
+          (inviteTargetType === "identity_ref" && looksLikeInternalUserId(inviteTargetValue))
+            ? inviteTargetValue
+            : null
       });
       const acceptedByUserId = identityWrites.acceptedByUserId;
       const acceptedIdentityRef = identityWrites.acceptedIdentityRef;

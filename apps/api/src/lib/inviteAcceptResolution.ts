@@ -98,6 +98,7 @@ export type InviteAcceptanceIdentityWritesInput = {
   remoteNodeUrl?: string | null;
   existingParticipantEmail?: string | null;
   effectiveEmail?: string | null;
+  canonicalLocalTargetUserId?: string | null;
 };
 
 export type InviteAcceptanceIdentityWrites = {
@@ -170,12 +171,17 @@ export function resolveInviteRecipientMatch(input: InviteRecipientMatchInput): I
 export function buildInviteAcceptanceIdentityWrites(input: InviteAcceptanceIdentityWritesInput): InviteAcceptanceIdentityWrites {
   const userId = String(input.userId || "").trim();
   const remoteNodeUrl = String(input.remoteNodeUrl || "").trim().replace(/\/+$/, "");
+  const canonicalLocalTargetUserId = String(input.canonicalLocalTargetUserId || "").trim();
 
   if (input.authMode === "remote_signature") {
+    const participantUserId = looksLikeInternalUserId(canonicalLocalTargetUserId) ? canonicalLocalTargetUserId : "";
     return {
       acceptedByUserId: null,
       acceptedIdentityRef: `remote:${remoteNodeUrl || "unknown"}#user:${userId}`,
-      splitParticipantUpdate: {}
+      splitParticipantUpdate: {
+        ...(participantUserId ? { participantUserId } : {}),
+        ...(normalizeEmail(input.effectiveEmail || input.existingParticipantEmail || "") ? { participantEmail: normalizeEmail(input.effectiveEmail || input.existingParticipantEmail || "") } : {})
+      }
     };
   }
 

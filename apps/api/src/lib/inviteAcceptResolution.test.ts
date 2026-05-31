@@ -208,7 +208,21 @@ test("buildInviteAcceptanceIdentityWrites keeps remote user id out of local FK f
   assert.equal(result.acceptedByUserId, null);
   assert.equal(result.acceptedIdentityRef, "remote:https://certifyd.beatifygroup.com#user:remote-machine-user-id");
   assert.equal(result.splitParticipantUpdate.participantUserId, undefined);
-  assert.equal(result.splitParticipantUpdate.participantEmail, undefined);
+  assert.equal(result.splitParticipantUpdate.participantEmail, "darryl@beatifygroup.com");
+});
+
+test("buildInviteAcceptanceIdentityWrites binds canonical local target id for remote acceptance recovery", () => {
+  const result = buildInviteAcceptanceIdentityWrites({
+    authMode: "remote_signature",
+    userId: "remote-machine-user-id",
+    remoteNodeUrl: "https://certifyd.beatifygroup.com",
+    effectiveEmail: "darryl@beatifygroup.com",
+    canonicalLocalTargetUserId: "cmo8nmh7m0006uvyoxrcvj6ox"
+  });
+  assert.equal(result.acceptedByUserId, null);
+  assert.equal(result.acceptedIdentityRef, "remote:https://certifyd.beatifygroup.com#user:remote-machine-user-id");
+  assert.equal(result.splitParticipantUpdate.participantUserId, "cmo8nmh7m0006uvyoxrcvj6ox");
+  assert.equal(result.splitParticipantUpdate.participantEmail, "darryl@beatifygroup.com");
 });
 
 test("buildInviteAcceptanceIdentityWrites keeps local accept FK behavior", () => {
