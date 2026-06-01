@@ -30061,7 +30061,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
   const safeProfileUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}`);
   const safeBrandLogoSrc = resolveProfileLogoPath()
-    ? escHtml("/logo.png?v=20260413b")
+    ? escHtml("/logo.png?v=20260601c")
     : "";
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p: any) => {
