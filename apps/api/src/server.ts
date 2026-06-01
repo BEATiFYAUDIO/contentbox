@@ -11627,6 +11627,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/profile", handlePublicProfileRedirect);
   appPublic.get("/logo.png", handleProfileLogo);
   appPublic.get("/certifyd-profile-logo.png", handleProfileLogo);
+  appPublic.get("/certifyd-tab-icon.svg", handleTabIcon);
   appPublic.get("/certifyd-tab-icon.png", handleTabIcon);
   appPublic.get("/favicon.ico", handleTabIcon);
   appPublic.get("/favicon.png", handleTabIcon);
@@ -30900,13 +30901,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     try {
       const bytes = fsSync.readFileSync(iconPath);
       if (!bytes || bytes.length === 0) return null;
-      return `data:image/png;base64,${bytes.toString("base64")}`;
+      const ext = path.extname(iconPath).toLowerCase();
+      const mime = ext === ".svg" ? "image/svg+xml" : ext === ".ico" ? "image/x-icon" : "image/png";
+      return `data:${mime};base64,${bytes.toString("base64")}`;
     } catch {
       return null;
     }
   })();
   const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
-  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260404g";
+  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.svg?v=20260601d";
 
   const profileMarkupStartMs = Date.now();
   const html = `<!doctype html>
@@ -30915,8 +30918,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Certifyd Creator Profile</title>
-  <link rel="icon" type="image/png" href="${creatorProfileFaviconHref}" />
-  <link rel="shortcut icon" type="image/png" href="${creatorProfileFaviconHref}" />
+  <link rel="icon" type="image/svg+xml" href="${creatorProfileFaviconHref}" />
+  <link rel="shortcut icon" type="image/svg+xml" href="${creatorProfileFaviconHref}" />
   <link rel="apple-touch-icon" href="${creatorProfileFaviconHref}" />
   <style>
     :root {
@@ -32103,6 +32106,10 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
 
 function resolveTabIconPath(): string | null {
   const candidates = [
+    path.resolve(process.cwd(), "apps/dashboard/public/certifyd-tab-icon.svg"),
+    path.resolve(process.cwd(), "apps/dashboard/public/certifyd-icon.svg"),
+    path.resolve(process.cwd(), "../dashboard/public/certifyd-tab-icon.svg"),
+    path.resolve(process.cwd(), "../dashboard/public/certifyd-icon.svg"),
     path.resolve(process.cwd(), "apps/dashboard/public/certifyd-tab-icon.png"),
     path.resolve(process.cwd(), "apps/dashboard/public/certifyd-icon.png"),
     path.resolve(process.cwd(), "../dashboard/public/certifyd-tab-icon.png"),
@@ -32168,7 +32175,16 @@ async function handleTabIcon(req: any, reply: any) {
   if (!iconPath) return notFound(reply, "Not found");
   try {
     const bytes = await fs.readFile(iconPath);
-    reply.header("content-type", "image/png");
+    const ext = path.extname(iconPath).toLowerCase();
+    if (ext === ".svg") {
+      reply.header("content-type", "image/svg+xml");
+    } else if (ext === ".png") {
+      reply.header("content-type", "image/png");
+    } else if (ext === ".ico") {
+      reply.header("content-type", "image/x-icon");
+    } else {
+      reply.header("content-type", "application/octet-stream");
+    }
     const url = asString(req?.url || "").toLowerCase();
     const isFaviconAlias = url.includes("/favicon.ico") || url.includes("/favicon.png") || url.includes("/apple-touch-icon.png");
     reply.header("cache-control", isFaviconAlias ? "no-store" : "public, max-age=86400");
@@ -32215,9 +32231,8 @@ async function handleBuyPage(req: any, reply: any) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=20260404g" />
-  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
-  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
+  <link rel="icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
+  <link rel="shortcut icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
   <title>Buy</title>
   <style>
     :root { color-scheme: dark; }
@@ -34132,6 +34147,7 @@ async function handleBuyReceiptPage(req: any, reply: any) {
 
 app.get("/logo.png", handleProfileLogo);
 app.get("/certifyd-profile-logo.png", handleProfileLogo);
+app.get("/certifyd-tab-icon.svg", handleTabIcon);
 app.get("/certifyd-tab-icon.png", handleTabIcon);
 app.get("/favicon.ico", handleTabIcon);
 app.get("/favicon.png", handleTabIcon);
