@@ -29030,7 +29030,7 @@ async function handlePublicAttribution(req: any, reply: any) {
   }> = [];
   if (splitState === "active" && lockedSplit?.participants?.length) {
     const snapshots = await getLockedParticipantSnapshotsForSplitVersion(lockedSplit.id);
-    contributors = snapshots
+    const publicContributors = snapshots
       .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
       .map((snapshot) => {
         const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
@@ -29072,11 +29072,16 @@ async function handlePublicAttribution(req: any, reply: any) {
         // Never expose unresolved placeholder invite identities on public attribution pages.
         return hasRealName || hasPublicHandle || hasPublicProfilePath;
       });
+    const totalVisibleBps = publicContributors.reduce((sum, contributor) => sum + Math.max(0, Math.round(Number(contributor.bps || 0))), 0);
+    // Avoid publishing broken partial split math on public pages.
+    contributors = totalVisibleBps === 10000 ? publicContributors : [];
     app.log.info(
       {
         contentId,
         splitVersionId: lockedSplit.id,
-        participantCount: contributors.length
+        participantCount: contributors.length,
+        visibleParticipantCount: publicContributors.length,
+        visibleTotalBps: totalVisibleBps
       },
       "attribution.participant_resolution"
     );
