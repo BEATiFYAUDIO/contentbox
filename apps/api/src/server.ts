@@ -29056,7 +29056,22 @@ async function handlePublicAttribution(req: any, reply: any) {
           verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
         };
       })
-      .filter((c) => c.bps > 0);
+      .filter((c) => {
+        if (c.bps <= 0) return false;
+        const name = asString(c.displayName || "").trim();
+        const lowerName = name.toLowerCase();
+        const normalizedHandle = normalizePublicProfileHandle(c.handle || "");
+        const lowerHandle = normalizedHandle.toLowerCase();
+        const hasPublicHandle = Boolean(normalizedHandle) && !looksLikeInternalUserId(normalizedHandle) && lowerHandle !== "contributor";
+        const hasPublicProfilePath = Boolean(normalizePublicProfileHref(c.profilePath || ""));
+        const hasRealName =
+          Boolean(name) &&
+          !looksLikeInternalUserId(name) &&
+          lowerName !== "contributor" &&
+          lowerName !== "@contributor";
+        // Never expose unresolved placeholder invite identities on public attribution pages.
+        return hasRealName || hasPublicHandle || hasPublicProfilePath;
+      });
     app.log.info(
       {
         contentId,
@@ -32578,8 +32593,17 @@ async function handleBuyPage(req: any, reply: any) {
       Array.isArray(split?.contributors) ? split.contributors :
       [];
     if (split?.state === "active" && contributors.length > 0) {
-      splitHtml = "<div class=\\"muted\\" style=\\"margin-top:8px;font-weight:600;color:#d4d4d8;\\">Contributors and splits</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
-        contributors.map((c) => {
+      const publicContributors = contributors.filter((c) => {
+        const contributorLabel = resolvePublicPersonLabel(c?.displayName || c?.name || "", c?.handle || "", "Contributor");
+        const normalizedHandle = normalizeHandleText(c?.handle || "");
+        const safeProfilePath = resolveSafeProfilePath(String(c?.profilePath || "").trim());
+        const placeholderLabel = String(contributorLabel || "").trim().toLowerCase() === "contributor";
+        const placeholderHandle = String(normalizedHandle || "").trim().toLowerCase() === "contributor";
+        return !(placeholderLabel && placeholderHandle && !safeProfilePath);
+      });
+      if (publicContributors.length > 0) {
+        splitHtml = "<div class=\\"muted\\" style=\\"margin-top:8px;font-weight:600;color:#d4d4d8;\\">Contributors and splits</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
+        publicContributors.map((c) => {
           const contributorLabel = resolvePublicPersonLabel(c?.displayName || c?.name || "", c?.handle || "", "Contributor");
           const cn = esc(contributorLabel);
           const chRaw = String(c?.handle || "").trim();
@@ -32601,7 +32625,8 @@ async function handleBuyPage(req: any, reply: any) {
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
           return "<li>" + contributorNameHtml + role + (pct ? (" - " + pct) : "") + "</li>";
         }).join("") +
-      "</ul>";
+        "</ul>";
+      }
     } else if (split?.state === "draft") {
       splitHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Split update pending (not applied yet).</div>";
     }
