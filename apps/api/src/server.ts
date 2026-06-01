@@ -32122,6 +32122,9 @@ function resolveTabIconPath(): string | null {
 
 function resolveProfileLogoPath(): string | null {
   const candidates = [
+    path.resolve(process.cwd(), "apps/dashboard/src/assets/certifyd_icon_logo_only.svg"),
+    path.resolve(process.cwd(), "../dashboard/src/assets/certifyd_icon_logo_only.svg"),
+    path.resolve(path.dirname(SERVER_FILE), "assets/certifyd_icon_logo_only.svg"),
     path.resolve(path.dirname(SERVER_FILE), "assets/certifyd-profile-logo.png"),
     path.resolve(process.cwd(), "apps/api/src/assets/certifyd-profile-logo.png"),
     path.resolve(process.cwd(), "src/assets/certifyd-profile-logo.png"),
@@ -32143,7 +32146,16 @@ async function handleProfileLogo(_req: any, reply: any) {
   if (!logoPath) return notFound(reply, "Not found");
   try {
     const bytes = await fs.readFile(logoPath);
-    reply.header("content-type", "image/png");
+    const ext = path.extname(logoPath).toLowerCase();
+    if (ext === ".svg") {
+      reply.header("content-type", "image/svg+xml");
+    } else if (ext === ".png") {
+      reply.header("content-type", "image/png");
+    } else if (ext === ".ico") {
+      reply.header("content-type", "image/x-icon");
+    } else {
+      reply.header("content-type", "application/octet-stream");
+    }
     reply.header("cache-control", "public, max-age=86400");
     return reply.send(bytes);
   } catch {
