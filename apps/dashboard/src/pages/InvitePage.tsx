@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, getApiBase } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
@@ -965,7 +965,7 @@ export default function InvitePage({
   const localInviteKeys = new Set(visibleReceivedInvites.map(dedupeKey));
   const dedupedRemoteInvites = visibleRemoteInvites.filter((inv) => !localInviteKeys.has(dedupeKey(inv)));
 
-  const dedupedSentInvites = React.useMemo(() => {
+  const dedupedSentInvites = useMemo(() => {
     const chooseBetterInvite = (a: any, b: any) => {
       const aStatus = inviteStatus(a);
       const bStatus = inviteStatus(b);

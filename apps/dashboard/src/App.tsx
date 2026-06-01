@@ -26,7 +26,7 @@ import { clearToken, getToken } from "./lib/auth";
 import { fetchIdentityDetail, type IdentityDetail } from "./lib/identity";
 import { modeLabel } from "./lib/nodeMode";
 import { PAYOUT_DESTINATIONS_LABEL } from "./lib/terminology";
-import logo from "./assets/certifyd-creator-logo.png";
+import logo from "./assets/certifyd_icon_logo_only.svg";
 import ErrorBoundary from "./components/ErrorBoundary";
 
 const FinancePage = lazy(() => import("./pages/FinancePage"));
