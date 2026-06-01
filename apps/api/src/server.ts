@@ -29061,7 +29061,7 @@ async function handlePublicAttribution(req: any, reply: any) {
         const name = asString(c.displayName || "").trim();
         const lowerName = name.toLowerCase();
         const normalizedHandle = normalizePublicProfileHandle(c.handle || "");
-        const lowerHandle = normalizedHandle.toLowerCase();
+        const lowerHandle = (normalizedHandle || "").toLowerCase();
         const hasPublicHandle = Boolean(normalizedHandle) && !looksLikeInternalUserId(normalizedHandle) && lowerHandle !== "contributor";
         const hasPublicProfilePath = Boolean(normalizePublicProfileHref(c.profilePath || ""));
         const hasRealName =
@@ -39091,12 +39091,16 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
 
   const snapshots: LockedParticipantSnapshotRecord[] = await Promise.all(participants.map(async (participant: any) => {
     const participantUserId = asString(participant?.participantUserId || "").trim() || null;
-    const participantEmail = normalizeEmail(participant?.participantEmail || "") || null;
+    const targetType = normalizeInviteTargetType(participant?.invitation?.targetType || participant?.targetType || null);
+    const targetValue = asString(participant?.invitation?.targetValue || participant?.targetValue || "").trim();
+    const participantEmail =
+      normalizeEmail(
+        participant?.participantEmail ||
+          (targetType === "email" ? targetValue : "")
+      ) || null;
     const acceptedAt = participant?.acceptedAt ? new Date(participant.acceptedAt).toISOString() : null;
     const verifiedAt = participant?.verifiedAt ? new Date(participant.verifiedAt).toISOString() : null;
     const user = participantUserId ? userById.get(participantUserId) || null : null;
-    const targetType = normalizeInviteTargetType(participant?.invitation?.targetType || participant?.targetType || null);
-    const targetValue = asString(participant?.invitation?.targetValue || participant?.targetValue || "").trim();
     const identityRef = inferLockedParticipantIdentityRef(participant);
     const parsedRemoteIdentity = parseRemoteIdentityRef(identityRef || null);
     const remoteDisplayName = await fetchRemotePublicUserDisplayName(parsedRemoteIdentity.origin, parsedRemoteIdentity.userId);
@@ -39246,8 +39250,8 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
       const inferredIdentityRefFromLive = inferLockedParticipantIdentityRef({
         participantUserId: live?.participantUserId || row.participantUserId || null,
         participantEmail: live?.participantEmail || row.participantEmail || null,
-        targetType: live?.targetType || row.participantTopologyMode || null,
-        targetValue: live?.targetValue || null,
+        targetType: live?.targetType || live?.invitation?.targetType || row.participantTopologyMode || null,
+        targetValue: live?.targetValue || live?.invitation?.targetValue || null,
         invitation: live?.invitation || null
       });
       const mergedIdentityRef =
@@ -39272,8 +39276,13 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
               parsedRemoteIdentity.origin,
               asString(live?.invitation?.token || "").trim()
             );
-      const effectiveTargetType = normalizeInviteTargetType(live?.targetType || null);
-      const effectiveTargetValue = asString(live?.targetValue || "").trim();
+      const effectiveTargetType = normalizeInviteTargetType(live?.targetType || live?.invitation?.targetType || null);
+      const effectiveTargetValue = asString(live?.targetValue || live?.invitation?.targetValue || "").trim();
+      const effectiveParticipantEmail = normalizeEmail(
+        live?.participantEmail ||
+          row.participantEmail ||
+          (effectiveTargetType === "email" ? effectiveTargetValue : "")
+      );
       const targetHandleRaw =
         effectiveTargetType === "identity_ref" || effectiveTargetType === "local_user"
           ? extractIdentityHandleFromTarget(effectiveTargetValue)
@@ -39286,7 +39295,7 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
         creatorDisplayName: localHandleDisplayName || remoteDisplayName || remoteInviteDisplayName || null,
         userDisplayName: asString(user?.displayName || "").trim() || null,
         handleHint: targetHandle || null,
-        participantEmail: normalizeEmail(live?.participantEmail || row.participantEmail || ""),
+        participantEmail: effectiveParticipantEmail,
         userEmail: asString(user?.email || "").trim() || null
       });
       const nextHandleRaw = targetHandle || (nextDisplayName ? normalizePublicProfileHandle(nextDisplayName) : null);
@@ -39327,7 +39336,7 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
         return {
           ...row,
           participantUserId: effectiveParticipantUserId,
-          participantEmail: normalizeEmail(live?.participantEmail || row.participantEmail || "") || null,
+          participantEmail: effectiveParticipantEmail || null,
           identityRef: mergedIdentityRef || null,
           displayNameSnapshot: nextDisplayName,
           handleSnapshot: nextHandle,
