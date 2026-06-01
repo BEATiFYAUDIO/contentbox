@@ -29012,6 +29012,26 @@ async function handlePublicAttribution(req: any, reply: any) {
       orderBy: { id: "asc" }
     })
   ]);
+  const lockedSplitWithParticipants = lockedSplit?.id
+    ? await prisma.splitVersion.findUnique({
+        where: { id: lockedSplit.id },
+        include: {
+          participants: {
+            include: {
+              invitation: {
+                select: {
+                  status: true,
+                  acceptedAt: true,
+                  acceptedIdentityRef: true,
+                  targetType: true,
+                  targetValue: true
+                }
+              }
+            }
+          }
+        }
+      })
+    : null;
 
   const splitState: "active" | "draft" | "none" =
     latestSplit?.status === "draft" && (!lockedSplit || (latestSplit.versionNumber > (lockedSplit.versionNumber || 0)))
@@ -29028,9 +29048,53 @@ async function handlePublicAttribution(req: any, reply: any) {
     bps: number;
     verification: { badge: string | null };
   }> = [];
-  if (splitState === "active" && lockedSplit?.participants?.length) {
-    const snapshots = await getLockedParticipantSnapshotsForSplitVersion(lockedSplit.id);
-    const publicContributors = snapshots
+  const normalizePublicAttributionContributor = (row: any) => {
+    const displayName = asString(row?.displayName || row?.name || "").trim();
+    const lowerName = displayName.toLowerCase();
+    const normalizedHandle = normalizePublicProfileHandle(row?.handle || "");
+    const lowerHandle = asString(normalizedHandle || "").toLowerCase();
+    const safeHandle =
+      normalizedHandle && !looksLikeInternalUserId(normalizedHandle) && lowerHandle !== "contributor"
+        ? `@${normalizedHandle}`
+        : null;
+    const rawProfilePath = normalizePublicProfileHref(row?.profilePath || "");
+    const safeProfilePath = rawProfilePath || null;
+    const bps = Math.max(0, Math.round(Number(row?.bps || 0)));
+    const accepted = Boolean(row?.accepted || row?.acceptedAt);
+    const hasPublicHandle = Boolean(safeHandle);
+    const hasPublicProfilePath = Boolean(safeProfilePath);
+    const hasRealName =
+      Boolean(displayName) &&
+      !looksLikeInternalUserId(displayName) &&
+      lowerName !== "contributor" &&
+      lowerName !== "@contributor";
+    const isPlaceholder = !hasRealName && !hasPublicHandle && !hasPublicProfilePath;
+    return {
+      displayName: hasRealName ? displayName : "Contributor",
+      handle: safeHandle,
+      profilePath: safeProfilePath,
+      role: asString(row?.role || "").trim() || null,
+      bps,
+      verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) },
+      accepted,
+      isPlaceholder
+    };
+  };
+  const normalizeAndFilterPublicAttributionContributors = (rows: any[]) =>
+    (rows || [])
+      .map((row) => normalizePublicAttributionContributor(row))
+      .filter((row) => row.bps > 0)
+      .filter((row) => !row.isPlaceholder)
+      .filter((row) => row.accepted || row.handle || row.profilePath);
+  if (splitState === "active" && lockedSplitWithParticipants?.participants?.length) {
+    const participantById = new Map(
+      (lockedSplitWithParticipants?.participants || []).map((participant: any) => [
+        asString(participant?.id || "").trim(),
+        participant
+      ])
+    );
+    const snapshots = await getLockedParticipantSnapshotsForSplitVersion(lockedSplitWithParticipants.id);
+    const localContributors = snapshots
       .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
       .map((snapshot) => {
         const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
@@ -29047,38 +29111,85 @@ async function handlePublicAttribution(req: any, reply: any) {
                 : (normalizedHandle && !looksLikeInternalUserId(normalizedHandle) && canonicalOrigin
                     ? `${canonicalOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
                     : null));
+        const participantLive = participantById.get(asString(snapshot.splitParticipantId || "").trim()) || null;
+        const invitation = (participantLive as any)?.invitation || null;
+        const invitationStatus = asString(invitation?.status || "").trim().toLowerCase();
+        const acceptedAt = invitation?.acceptedAt || (participantLive as any)?.acceptedAt || snapshot.acceptedAt || null;
+        const inviteTargetType = normalizeInviteTargetType(invitation?.targetType || (participantLive as any)?.targetType || null);
+        const inviteTargetValue = asString(invitation?.targetValue || (participantLive as any)?.targetValue || "").trim();
+        const inviteAcceptedIdentityRef = asString(invitation?.acceptedIdentityRef || "").trim();
+        const participantEmail =
+          normalizeEmail((participantLive as any)?.participantEmail || "") ||
+          normalizeEmail(snapshot.participantEmail || "") ||
+          (inviteTargetType === "email" ? normalizeEmail(inviteTargetValue || "") : null) ||
+          null;
+        const effectiveIdentityRef =
+          inviteAcceptedIdentityRef ||
+          asString(snapshot.identityRef || "").trim() ||
+          (inviteTargetType && inviteTargetValue ? `${inviteTargetType}:${inviteTargetValue}` : "") ||
+          (participantEmail ? `email:${participantEmail}` : "");
+        const resolvedOrigin = parseRemoteIdentityRef(effectiveIdentityRef || null).origin || canonicalOrigin || null;
+        const resolvedProfilePath =
+          safeProfilePath ||
+          (normalizedHandle && !looksLikeInternalUserId(normalizedHandle) && resolvedOrigin
+            ? `${resolvedOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
+            : null);
         return {
-          displayName,
+          displayName: displayName || participantEmail || "",
           handle: safeHandle,
-          profilePath: safeProfilePath,
+          profilePath: resolvedProfilePath,
           role: snapshot.role || null,
           bps: Math.max(0, Math.round(Number(snapshot.bps || 0))),
+          accepted: Boolean(
+            acceptedAt ||
+              invitationStatus === "accepted" ||
+              inviteAcceptedIdentityRef ||
+              (participantLive as any)?.participantUserId ||
+              participantEmail
+          ),
           verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
         };
-      })
-      .filter((c) => {
-        if (c.bps <= 0) return false;
-        const name = asString(c.displayName || "").trim();
-        const lowerName = name.toLowerCase();
-        const normalizedHandle = normalizePublicProfileHandle(c.handle || "");
-        const lowerHandle = (normalizedHandle || "").toLowerCase();
-        const hasPublicHandle = Boolean(normalizedHandle) && !looksLikeInternalUserId(normalizedHandle) && lowerHandle !== "contributor";
-        const hasPublicProfilePath = Boolean(normalizePublicProfileHref(c.profilePath || ""));
-        const hasRealName =
-          Boolean(name) &&
-          !looksLikeInternalUserId(name) &&
-          lowerName !== "contributor" &&
-          lowerName !== "@contributor";
-        // Never expose unresolved placeholder invite identities on public attribution pages.
-        return hasRealName || hasPublicHandle || hasPublicProfilePath;
       });
+    const publicContributors = normalizeAndFilterPublicAttributionContributors(localContributors as any[]);
     const totalVisibleBps = publicContributors.reduce((sum, contributor) => sum + Math.max(0, Math.round(Number(contributor.bps || 0))), 0);
-    // Avoid publishing broken partial split math on public pages.
-    contributors = totalVisibleBps === 10000 ? publicContributors : [];
+    const localSplitLooksValid = totalVisibleBps >= 9999 && totalVisibleBps <= 10001;
+    contributors = localSplitLooksValid ? publicContributors : [];
+    // Provider-side fallback: if locked local snapshot cannot resolve a valid public split,
+    // pull the authoritative attribution from the authoring origin and normalize with the same guards.
+    if (!localSplitLooksValid) {
+      const originFromContent = getRemoteOriginFromDescription(asString((content as any)?.description || ""));
+      const localOrigin = resolveCanonicalPublicOrigin(req) || null;
+      const remoteOrigin =
+        originFromContent && (!localOrigin || originFromContent.replace(/\/+$/, "") !== localOrigin.replace(/\/+$/, ""))
+          ? originFromContent
+          : null;
+      if (remoteOrigin) {
+        try {
+          const ctrl = new AbortController();
+          const timeout = setTimeout(() => ctrl.abort(), 3000);
+          const remoteResponse = await fetch(
+            `${remoteOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(contentId)}/attribution`,
+            { signal: ctrl.signal as any }
+          );
+          clearTimeout(timeout);
+          if (remoteResponse.ok) {
+            const payload: any = await remoteResponse.json().catch(() => null);
+            const remoteContributors = normalizeAndFilterPublicAttributionContributors(payload?.contributors || []);
+            const remoteTotalBps = remoteContributors.reduce(
+              (sum, contributor) => sum + Math.max(0, Math.round(Number(contributor.bps || 0))),
+              0
+            );
+            if (remoteTotalBps >= 9999 && remoteTotalBps <= 10001) {
+              contributors = remoteContributors as any;
+            }
+          }
+        } catch {}
+      }
+    }
     app.log.info(
       {
         contentId,
-        splitVersionId: lockedSplit.id,
+        splitVersionId: lockedSplitWithParticipants.id,
         participantCount: contributors.length,
         visibleParticipantCount: publicContributors.length,
         visibleTotalBps: totalVisibleBps
@@ -39221,6 +39332,8 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
             invitation: {
               select: {
                 token: true,
+                status: true,
+                acceptedAt: true,
                 acceptedIdentityRef: true,
                 targetType: true,
                 targetValue: true
