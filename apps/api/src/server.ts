@@ -117,7 +117,6 @@ import {
   resolveLockedSnapshotAttributionLabel,
   resolveLockedSnapshotDisplayLabel
 } from "./lib/lockedParticipantSnapshot.js";
-import { deriveContributorProfilePath } from "./lib/publicAttribution.js";
 import {
   buildInviteAcceptanceIdentityWrites,
   mapRemoteInviteAcceptErrorCode,
@@ -32807,6 +32806,13 @@ async function handleBuyPage(req: any, reply: any) {
       return "/u/" + encodeURIComponent(handle);
     } catch { return ""; }
   }
+  function deriveContributorProfilePathInPage(candidateProfilePath, candidateDisplayName){
+    const explicitPath = resolveSafeProfilePath(candidateProfilePath);
+    if (explicitPath) return explicitPath;
+    const handleFromDisplay = normalizeHandleText(candidateDisplayName);
+    if (!isCleanPublicHandle(handleFromDisplay)) return "";
+    return "/u/" + encodeURIComponent(handleFromDisplay);
+  }
   function heartFor(c){
     if (c?.verification?.badge !== "beatify_heart") return "";
     const tier = (c?.verification?.tier === "gold") ? "gold" : "grey";
@@ -32891,10 +32897,10 @@ async function handleBuyPage(req: any, reply: any) {
           const roleRaw = String(c?.role || "").trim();
           const role = roleRaw ? (" - " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
-          const effectiveProfilePath = profilePathRaw || deriveContributorProfilePath({
-            profilePath: null,
-            displayName: String(c?.displayName || c?.name || "").trim()
-          });
+          const effectiveProfilePath = profilePathRaw || deriveContributorProfilePathInPage(
+            String(c?.profilePath || "").trim(),
+            String(c?.displayName || c?.name || "").trim()
+          );
           const nameLabel = ch ? (cn + " " + ch) : cn;
           const contributorNameHtml = effectiveProfilePath
             ? ("<a href=\\"" + esc(effectiveProfilePath) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\" " + (/^https?:\\/\\//i.test(effectiveProfilePath) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + nameLabel + "</a>")
