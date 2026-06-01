@@ -28987,6 +28987,12 @@ async function handlePublicAttribution(req: any, reply: any) {
   const content = gated.content;
   if (!content) return notFound(reply, "Not found");
   const beatifyNodeStatus = await getBeatifyNodeBadgeStatus(req);
+  const ownerIdentity = content?.ownerUserId
+    ? await prisma.user.findUnique({
+        where: { id: content.ownerUserId },
+        select: { id: true, displayName: true, email: true }
+      })
+    : null;
 
   const primaryCreator = toPublicCreator(content.owner) || {
     displayName: "Creator",
@@ -29048,8 +29054,12 @@ async function handlePublicAttribution(req: any, reply: any) {
     bps: number;
     verification: { badge: string | null };
   }> = [];
+  const ownerEmailHandleFallback =
+    normalizedEmailLocalPart(asString(ownerIdentity?.email || "").trim()) ||
+    normalizePublicProfileHandle(asString(ownerIdentity?.displayName || "").trim()) ||
+    null;
   const normalizePublicAttributionContributor = (row: any) => {
-    const displayName = asString(row?.displayName || row?.name || "").trim();
+    const displayName = asString(row?.displayName || row?.name || row?.fallbackDisplayName || "").trim();
     const lowerName = displayName.toLowerCase();
     const normalizedHandle = normalizePublicProfileHandle(row?.handle || "");
     const lowerHandle = asString(normalizedHandle || "").toLowerCase();
@@ -29097,7 +29107,18 @@ async function handlePublicAttribution(req: any, reply: any) {
     const localContributors = snapshots
       .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
       .map((snapshot) => {
-        const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
+        const participantUserIdRaw = asString(snapshot.participantUserId || "").trim();
+        const persistedProfileSnapshot =
+          participantUserIdRaw ? getPersistedProfilePublicRenderSnapshot(participantUserIdRaw) : null;
+        const persistedDisplayName = asString((persistedProfileSnapshot as any)?.displayName || "").trim() || null;
+        const displayName =
+          resolveLockedSnapshotDisplayLabel({
+            lockedDisplayName: snapshot.displayNameSnapshot || null,
+            handleSnapshot: snapshot.handleSnapshot || null,
+            participantEmail: snapshot.participantEmail || null
+          }) ||
+          persistedDisplayName ||
+          "";
         const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
         const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
         const identityOrigin = parseRemoteIdentityRef(asString(snapshot.identityRef || "").trim() || null).origin;
@@ -29123,6 +29144,9 @@ async function handlePublicAttribution(req: any, reply: any) {
           normalizeEmail(snapshot.participantEmail || "") ||
           (inviteTargetType === "email" ? normalizeEmail(inviteTargetValue || "") : null) ||
           null;
+        const fallbackDisplayName =
+          normalizedEmailLocalPart(participantEmail || "") ||
+          (Boolean(acceptedAt) && ownerEmailHandleFallback ? ownerEmailHandleFallback : null);
         const effectiveIdentityRef =
           inviteAcceptedIdentityRef ||
           asString(snapshot.identityRef || "").trim() ||
@@ -29136,6 +29160,7 @@ async function handlePublicAttribution(req: any, reply: any) {
             : null);
         return {
           displayName: displayName || participantEmail || "",
+          fallbackDisplayName,
           handle: safeHandle,
           profilePath: resolvedProfilePath,
           role: snapshot.role || null,
@@ -29186,6 +29211,66 @@ async function handlePublicAttribution(req: any, reply: any) {
         } catch {}
       }
     }
+    if (contributors.length === 0 && lockedSplitWithParticipants?.participants?.length) {
+      const participantUserIds = Array.from(
+        new Set(
+          (lockedSplitWithParticipants.participants || [])
+            .map((p: any) => asString(p?.participantUserId || "").trim())
+            .filter((id: string) => Boolean(id))
+        )
+      );
+      const participantUsers = participantUserIds.length
+        ? await prisma.user.findMany({
+            where: { id: { in: participantUserIds } },
+            select: { id: true, displayName: true, email: true }
+          })
+        : [];
+      const participantUserById = new Map(participantUsers.map((u) => [u.id, u]));
+      const participantDerived = (lockedSplitWithParticipants.participants || [])
+        .map((participant: any) => {
+          const invitation = participant?.invitation || null;
+          const invitationStatus = asString(invitation?.status || "").trim().toLowerCase();
+          const acceptedAt = invitation?.acceptedAt || participant?.acceptedAt || null;
+          if (!acceptedAt && invitationStatus !== "accepted") return null;
+          const inviteTargetType = normalizeInviteTargetType(invitation?.targetType || participant?.targetType || null);
+          const inviteTargetValue = asString(invitation?.targetValue || participant?.targetValue || "").trim();
+          const participantUserId = asString(participant?.participantUserId || "").trim() || null;
+          const linkedUser = participantUserId ? participantUserById.get(participantUserId) || null : null;
+          const participantEmail =
+            normalizeEmail(participant?.participantEmail || "") ||
+            (inviteTargetType === "email" ? normalizeEmail(inviteTargetValue || "") : null) ||
+            normalizeEmail(asString(linkedUser?.email || "").trim() || "") ||
+            null;
+          const displayName =
+            asString(linkedUser?.displayName || "").trim() ||
+            (participantEmail ? normalizedEmailLocalPart(participantEmail) || "" : "") ||
+            "";
+          const handleRaw =
+            normalizePublicProfileHandle(asString(linkedUser?.displayName || "").trim()) ||
+            (participantEmail ? normalizedEmailLocalPart(participantEmail) : null);
+          const handle = handleRaw && !looksLikeInternalUserId(handleRaw) ? `@${handleRaw}` : null;
+          const profilePath =
+            handleRaw && !looksLikeInternalUserId(handleRaw) ? `/u/${encodeURIComponent(handleRaw)}` : null;
+          return {
+            displayName,
+            handle,
+            profilePath,
+            role: asString(participant?.role || "").trim() || null,
+            bps: Math.max(0, toBps(participant)),
+            accepted: true,
+            verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
+          };
+        })
+        .filter(Boolean) as any[];
+      const normalizedParticipantDerived = normalizeAndFilterPublicAttributionContributors(participantDerived);
+      const derivedTotalBps = normalizedParticipantDerived.reduce(
+        (sum, contributor) => sum + Math.max(0, Math.round(Number(contributor.bps || 0))),
+        0
+      );
+      if (derivedTotalBps >= 9999 && derivedTotalBps <= 10001) {
+        contributors = normalizedParticipantDerived as any;
+      }
+    }
     app.log.info(
       {
         contentId,
@@ -29197,6 +29282,75 @@ async function handlePublicAttribution(req: any, reply: any) {
       "attribution.participant_resolution"
     );
   }
+  if (splitState === "active" && contributors.length === 0) {
+    const fallbackParticipants = (lockedSplitWithParticipants?.participants || latestSplit?.participants || []) as any[];
+    if (fallbackParticipants.length) {
+      const userIds = Array.from(
+        new Set(
+          fallbackParticipants
+            .map((p: any) => asString(p?.participantUserId || "").trim())
+            .filter((id: string) => Boolean(id))
+        )
+      );
+      const users = userIds.length
+        ? await prisma.user.findMany({
+            where: { id: { in: userIds } },
+            select: { id: true, displayName: true, email: true }
+          })
+        : [];
+      const userById = new Map(users.map((u) => [u.id, u]));
+      const fallbackRows = fallbackParticipants
+        .map((p: any) => {
+          const invitation = p?.invitation || null;
+          const accepted = Boolean(invitation?.acceptedAt || p?.acceptedAt || asString(invitation?.status || "").trim().toLowerCase() === "accepted");
+          if (!accepted) return null;
+          const participantUserId = asString(p?.participantUserId || "").trim() || null;
+          const linkedUser = participantUserId ? userById.get(participantUserId) || null : null;
+          const targetType = normalizeInviteTargetType(invitation?.targetType || p?.targetType || null);
+          const targetValue = asString(invitation?.targetValue || p?.targetValue || "").trim();
+          const participantEmail =
+            normalizeEmail(p?.participantEmail || "") ||
+            normalizeEmail(asString(linkedUser?.email || "").trim() || "") ||
+            (targetType === "email" ? normalizeEmail(targetValue || "") : null) ||
+            null;
+          const displayName =
+            asString(linkedUser?.displayName || "").trim() ||
+            (participantEmail ? normalizedEmailLocalPart(participantEmail) || "" : "") ||
+            ownerEmailHandleFallback ||
+            "";
+          const handleRaw =
+            normalizePublicProfileHandle(asString(linkedUser?.displayName || "").trim()) ||
+            (participantEmail ? normalizedEmailLocalPart(participantEmail) : null);
+          const handle = handleRaw && !looksLikeInternalUserId(handleRaw) ? `@${handleRaw}` : null;
+          const profilePath = handleRaw && !looksLikeInternalUserId(handleRaw) ? `/u/${encodeURIComponent(handleRaw)}` : null;
+          return {
+            displayName,
+            handle,
+            profilePath,
+            role: asString(p?.role || "").trim() || null,
+            bps: Math.max(0, toBps(p)),
+            accepted
+          };
+        })
+        .filter(Boolean) as any[];
+      const normalizedFallback = normalizeAndFilterPublicAttributionContributors(fallbackRows);
+      const fallbackTotalBps = normalizedFallback.reduce(
+        (sum, contributor) => sum + Math.max(0, Math.round(Number(contributor.bps || 0))),
+        0
+      );
+      if (fallbackTotalBps >= 9999 && fallbackTotalBps <= 10001) {
+        contributors = normalizedFallback as any;
+      }
+    }
+  }
+  contributors = contributors.map((row: any) => ({
+    displayName: asString(row?.displayName || "").trim() || "Contributor",
+    handle: asString(row?.handle || "").trim() || null,
+    profilePath: asString(row?.profilePath || "").trim() || null,
+    role: asString(row?.role || "").trim() || null,
+    bps: Math.max(0, Math.round(Number(row?.bps || 0))),
+    verification: { badge: asString(row?.verification?.badge || "").trim() || null }
+  }));
 
   let upstream: {
     kind: "derivative";
@@ -39055,7 +39209,14 @@ async function getParentLockedSplitSnapshotForDerivativeApprovals(link: {
               acceptedByUserId: true,
               acceptedIdentityRef: true,
               targetType: true,
-              targetValue: true
+              targetValue: true,
+              acceptedBy: {
+                select: {
+                  id: true,
+                  displayName: true,
+                  email: true
+                }
+              }
             }
           }
         }
@@ -39211,7 +39372,12 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
       ) || null;
     const acceptedAt = participant?.acceptedAt ? new Date(participant.acceptedAt).toISOString() : null;
     const verifiedAt = participant?.verifiedAt ? new Date(participant.verifiedAt).toISOString() : null;
-    const user = participantUserId ? userById.get(participantUserId) || null : null;
+    const acceptedByUser = (participant as any)?.invitation?.acceptedBy || null;
+    const acceptedByUserId = asString(acceptedByUser?.id || "").trim() || null;
+    const user =
+      (participantUserId ? userById.get(participantUserId) || null : null) ||
+      (acceptedByUserId ? userById.get(acceptedByUserId) || null : null) ||
+      acceptedByUser;
     const identityRef = inferLockedParticipantIdentityRef(participant);
     const parsedRemoteIdentity = parseRemoteIdentityRef(identityRef || null);
     const remoteDisplayName = await fetchRemotePublicUserDisplayName(parsedRemoteIdentity.origin, parsedRemoteIdentity.userId);
@@ -39336,7 +39502,14 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
                 acceptedAt: true,
                 acceptedIdentityRef: true,
                 targetType: true,
-                targetValue: true
+                targetValue: true,
+                acceptedBy: {
+                  select: {
+                    id: true,
+                    displayName: true,
+                    email: true
+                  }
+                }
               }
             }
           }
@@ -39379,7 +39552,12 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
           invitation: null
         });
       const effectiveParticipantUserId = asString(live?.participantUserId || row.participantUserId || "").trim() || null;
-      const user = effectiveParticipantUserId ? userById.get(effectiveParticipantUserId) || null : null;
+      const acceptedByUser = (live as any)?.invitation?.acceptedBy || null;
+      const acceptedByUserId = asString(acceptedByUser?.id || "").trim() || null;
+      const user =
+        (effectiveParticipantUserId ? userById.get(effectiveParticipantUserId) || null : null) ||
+        (acceptedByUserId ? userById.get(acceptedByUserId) || null : null) ||
+        acceptedByUser;
       const parsedRemoteIdentity = parseRemoteIdentityRef(mergedIdentityRef || null);
       const remoteDisplayName = await fetchRemotePublicUserDisplayName(parsedRemoteIdentity.origin, parsedRemoteIdentity.userId);
       const remoteInviteDisplayName =
