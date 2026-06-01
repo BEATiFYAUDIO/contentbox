@@ -32841,7 +32841,10 @@ async function handleBuyPage(req: any, reply: any) {
     const creatorLabel = resolvePublicPersonLabel(primary.displayName || primary.name || "", primary.handle || "", "Creator");
     const name = esc(creatorLabel);
     const handleRaw = String(primary.handle || "").trim();
-    const profilePath = resolveSafeProfilePath(handleRaw ? ("/u/" + encodeURIComponent(handleRaw.replace(/^@/, ""))) : "");
+    const primaryProfilePathRaw = resolveSafeProfilePath(String(primary.profilePath || "").trim());
+    const profilePath =
+      primaryProfilePathRaw ||
+      resolveSafeProfilePath(handleRaw ? ("/u/" + encodeURIComponent(handleRaw.replace(/^@/, ""))) : "");
     const nameHtml = profilePath
       ? ("<a href=\\"" + profilePath + "\\" style=\\"text-decoration:underline;\\">" + name + "</a>")
       : name;
