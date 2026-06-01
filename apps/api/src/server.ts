@@ -32890,9 +32890,15 @@ async function handleBuyPage(req: any, reply: any) {
           const roleRaw = String(c?.role || "").trim();
           const role = roleRaw ? (" - " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
+          const derivedHandleFromDisplay = normalizeHandleText(String(c?.displayName || c?.name || "").trim());
+          const fallbackProfilePath =
+            !profilePathRaw && isCleanPublicHandle(derivedHandleFromDisplay)
+              ? ("/u/" + encodeURIComponent(derivedHandleFromDisplay))
+              : "";
+          const effectiveProfilePath = profilePathRaw || fallbackProfilePath;
           const nameLabel = ch ? (cn + " " + ch) : cn;
-          const contributorNameHtml = profilePathRaw
-            ? ("<a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\" " + (/^https?:\\/\\//i.test(profilePathRaw) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + nameLabel + "</a>")
+          const contributorNameHtml = effectiveProfilePath
+            ? ("<a href=\\"" + esc(effectiveProfilePath) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\" " + (/^https?:\\/\\//i.test(effectiveProfilePath) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + nameLabel + "</a>")
             : nameLabel;
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
