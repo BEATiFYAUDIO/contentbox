@@ -30976,7 +30976,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .section-sub { margin-top:6px; color:#a7a094; font-size:13px; }
     .profile-header-grid {
       display:grid;
-      grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(260px, var(--profile-signal-col));
+      grid-template-columns:var(--profile-brand-col) minmax(300px, 420px) minmax(260px, var(--profile-signal-col));
       gap:var(--profile-gap-y) var(--profile-gap-x);
       align-items:center;
       margin-top:14px;
@@ -31172,14 +31172,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         --profile-brand-col: 104px;
         --profile-logo-size: 82px;
         --profile-avatar-size: 94px;
-        --profile-gap-x: 14px;
+        --profile-gap-x: 12px;
         --profile-id-gap: 12px;
         --profile-signal-col: 348px;
-        grid-template-columns: var(--profile-brand-col) minmax(360px, 460px) minmax(320px, var(--profile-signal-col));
-        justify-content: space-between;
+        grid-template-columns: var(--profile-brand-col) minmax(300px, 420px) minmax(320px, var(--profile-signal-col));
+        justify-content: start;
       }
-      body.iframe-embedded .identity-rail { margin-left: 34px; }
-      body.iframe-embedded .signal-rail { margin-left: 8px; }
+      body.iframe-embedded .identity-rail { margin-left: 16px; }
+      body.iframe-embedded .signal-rail { margin-left: 0; }
     }
     @media (min-width: 640px) {
       .featured-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
