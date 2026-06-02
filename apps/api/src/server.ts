@@ -30975,20 +30975,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .section-sub { margin-top:6px; color:#a7a094; font-size:13px; }
     .profile-header-grid {
       display:grid;
-      grid-template-columns:var(--profile-brand-col) minmax(320px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
+      grid-template-columns:minmax(var(--profile-brand-col), 1fr) minmax(320px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
       gap:var(--profile-gap-y) var(--profile-gap-x);
       align-items:center;
-      justify-content:start;
+      justify-content:stretch;
       margin-top:14px;
       padding-inline:18px;
     }
-    .brand-rail { display:flex; align-items:center; justify-content:flex-start; padding:0; min-width:0; }
-    .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:8px; }
+    .brand-rail { display:flex; align-items:center; justify-content:center; justify-self:center; padding:0; min-width:0; }
+    .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; justify-content:center; min-width:0; width:100%; justify-self:center; margin-left:0; }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
-    .hero-meta { min-width:0; flex:1 1 auto; display:block; }
+    .hero-meta { min-width:0; flex:0 0 auto; display:block; }
     .hero-primary { min-width:0; }
     .hero-name { font-weight:650; font-size:27px; line-height:1.08; letter-spacing:-0.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .hero-handle { margin-top:5px; font-size:14px; color:#b5ad9f; }
+    .hero-handle { margin-top:5px; font-size:14px; color:#b5ad9f; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .hero-handle .mono { word-break:normal; overflow-wrap:normal; }
     .signal-rail { border:1px solid #3a3327; border-radius:12px; background:#14110c; padding:12px; justify-self:end; width:min(100%, var(--profile-signal-col)); }
     .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
@@ -31204,7 +31204,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         --profile-avatar-size: 98px;
         --profile-signal-col: 270px;
         --profile-gap-x: 16px;
-        grid-template-columns:var(--profile-brand-col) minmax(290px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
+        grid-template-columns:minmax(var(--profile-brand-col), 1fr) minmax(290px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
         padding-inline:18px;
       }
     }
