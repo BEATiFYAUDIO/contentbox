@@ -31178,11 +31178,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         --profile-gap-x: 24px;
         --profile-id-gap: 12px;
         --profile-signal-col: 320px;
-        grid-template-columns: var(--profile-brand-col) minmax(320px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
-        justify-content: start;
+        grid-template-columns: minmax(var(--profile-brand-col), 1fr) minmax(320px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
+        justify-content: stretch;
         padding-inline:18px;
       }
-      body.iframe-embedded .identity-rail { margin-left: 8px; }
+      body.iframe-embedded .brand-rail { justify-self:center; }
+      body.iframe-embedded .identity-rail { justify-self:center; margin-left: 0; }
       body.iframe-embedded .signal-rail { justify-self:end; margin-left: 0; width:min(100%, var(--profile-signal-col)); }
     }
     @media (min-width: 640px) {
