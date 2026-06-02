@@ -30929,10 +30929,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       --space-4: 16px;
       --space-5: 20px;
       --space-6: 24px;
-      --profile-brand-col: 168px;
+      --profile-brand-col: 128px;
       --profile-gap-x: 18px;
       --profile-gap-y: var(--space-3);
-      --profile-logo-size: 132px;
+      --profile-logo-size: 96px;
       --profile-id-offset: 26px;
       --profile-id-gap: 14px;
       --profile-avatar-size: 124px;
@@ -31159,8 +31159,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     body.iframe-embedded .brand-row { margin-bottom:0; }
     body.iframe-embedded .profile-header-grid {
-      --profile-brand-col: 94px;
-      --profile-logo-size: 78px;
+      --profile-brand-col: 72px;
+      --profile-logo-size: 58px;
       --profile-avatar-size: 92px;
       --profile-id-gap: 12px;
       --profile-gap-x: 12px;
@@ -31169,8 +31169,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body.iframe-embedded .identity-rail { margin-left:0; }
     @media (min-width: 901px) {
       body.iframe-embedded .profile-header-grid {
-        --profile-brand-col: 132px;
-        --profile-logo-size: 120px;
+        --profile-brand-col: 104px;
+        --profile-logo-size: 82px;
         --profile-avatar-size: 94px;
         --profile-gap-x: 14px;
         --profile-id-gap: 12px;
@@ -31193,16 +31193,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 1200px) {
       .profile-header-grid {
-        --profile-brand-col: 126px;
-        --profile-logo-size: 96px;
+        --profile-brand-col: 100px;
+        --profile-logo-size: 76px;
         --profile-avatar-size: 98px;
         --profile-signal-col: 286px;
       }
     }
     @media (max-width: 760px) {
       .profile-header-grid {
-        --profile-brand-col: 96px;
-        --profile-logo-size: 84px;
+        --profile-brand-col: 76px;
+        --profile-logo-size: 60px;
         --profile-avatar-size: 82px;
         --profile-id-gap: 10px;
         --profile-id-offset: 0px;
@@ -31228,11 +31228,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       .profile-header-grid {
-        --profile-brand-col: 88px;
+        --profile-brand-col: 70px;
         --profile-gap-x: 11px;
         --profile-id-offset: 14px;
         --profile-id-gap: 8px;
-        --profile-logo-size: 78px;
+        --profile-logo-size: 56px;
         --profile-avatar-size: 74px;
       }
       body { padding:10px; }
@@ -31262,8 +31262,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     @media (max-width: 640px) {
       body.iframe-embedded .card { padding:12px; }
       body.iframe-embedded .profile-header-grid {
-        --profile-brand-col: 66px;
-        --profile-logo-size: 54px;
+        --profile-brand-col: 54px;
+        --profile-logo-size: 42px;
         --profile-avatar-size: 62px;
         --profile-id-gap: 8px;
         --profile-gap-x: 8px;
