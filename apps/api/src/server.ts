@@ -31239,11 +31239,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       .profile-header-grid {
-        --profile-brand-col: 70px;
+        --profile-brand-col: 56px;
         --profile-gap-x: 11px;
         --profile-id-offset: 14px;
         --profile-id-gap: 8px;
-        --profile-logo-size: 56px;
+        --profile-logo-size: 42px;
         --profile-avatar-size: 74px;
       }
       body { padding:10px; }
@@ -31273,8 +31273,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     @media (max-width: 640px) {
       body.iframe-embedded .card { padding:12px; }
       body.iframe-embedded .profile-header-grid {
-        --profile-brand-col: 54px;
-        --profile-logo-size: 42px;
+        --profile-brand-col: 44px;
+        --profile-logo-size: 34px;
         --profile-avatar-size: 62px;
         --profile-id-gap: 8px;
         --profile-gap-x: 8px;
