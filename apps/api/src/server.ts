@@ -29997,7 +29997,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}...${nodeSha.slice(-8)}` : null;
 
   const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
-  const safeBio = escHtml(asString(user.bio || ""));
   const safeAvatar = asString(user.avatarUrl || "").trim();
   let avatarSrc = "";
   if (safeAvatar.startsWith("/public/avatars/")) {
@@ -30930,7 +30929,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       --space-5: 20px;
       --space-6: 24px;
       --profile-brand-col: 92px;
-      --profile-gap-x: 34px;
+      --profile-identity-col: 380px;
+      --profile-gap-x: 24px;
       --profile-gap-y: var(--space-3);
       --profile-logo-size: 68px;
       --profile-id-offset: 26px;
@@ -30966,7 +30966,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; display:none; }
     .muted { color:#9aa0a6; font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
-    .hero-bio { font-size:14px; line-height:1.35; color:#d2d9e2; margin-top:8px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
     a { color:#9bdcff; text-decoration:none; }
@@ -30976,26 +30975,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .section-sub { margin-top:6px; color:#a7a094; font-size:13px; }
     .profile-header-grid {
       display:grid;
-      grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(250px, var(--profile-signal-col));
+      grid-template-columns:var(--profile-brand-col) minmax(320px, var(--profile-identity-col)) minmax(290px, var(--profile-signal-col));
       gap:var(--profile-gap-y) var(--profile-gap-x);
       align-items:center;
+      justify-content:start;
       margin-top:14px;
     }
     .brand-rail { display:flex; align-items:center; justify-content:flex-start; padding:0; min-width:0; }
-    .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:12px; }
+    .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:8px; }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
-    .hero-meta {
-      min-width:0;
-      flex:1 1 auto;
-      display:grid;
-      grid-template-columns:max-content minmax(240px, 1fr);
-      gap:8px 22px;
-      align-items:center;
-    }
+    .hero-meta { min-width:0; flex:1 1 auto; display:block; }
     .hero-primary { min-width:0; }
-    .hero-name { font-weight:650; font-size:27px; line-height:1.08; letter-spacing:-0.01em; }
+    .hero-name { font-weight:650; font-size:27px; line-height:1.08; letter-spacing:-0.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .hero-handle { margin-top:5px; font-size:14px; color:#b5ad9f; }
-    .hero-bio { max-width:none; margin-top:0; white-space:nowrap; }
+    .hero-handle .mono { word-break:normal; overflow-wrap:normal; }
     .signal-rail { border:1px solid #3a3327; border-radius:12px; background:#14110c; padding:12px; }
     .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
     .signal-compact-score { margin-top:6px; font-size:16px; }
@@ -31178,15 +31171,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     @media (min-width: 901px) {
       body.iframe-embedded .profile-header-grid {
         --profile-brand-col: 76px;
+        --profile-identity-col: 360px;
         --profile-logo-size: 58px;
         --profile-avatar-size: 94px;
         --profile-gap-x: 22px;
         --profile-id-gap: 12px;
         --profile-signal-col: 300px;
-        grid-template-columns: var(--profile-brand-col) minmax(0, 1fr) minmax(280px, var(--profile-signal-col));
-        justify-content: stretch;
+        grid-template-columns: var(--profile-brand-col) minmax(320px, var(--profile-identity-col)) minmax(280px, var(--profile-signal-col));
+        justify-content: start;
       }
-      body.iframe-embedded .identity-rail { margin-left: 18px; }
+      body.iframe-embedded .identity-rail { margin-left: 10px; }
       body.iframe-embedded .signal-rail { margin-left: 0; }
     }
     @media (min-width: 640px) {
@@ -31202,11 +31196,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     @media (max-width: 1200px) {
       .profile-header-grid {
         --profile-brand-col: 72px;
+        --profile-identity-col: 330px;
         --profile-logo-size: 54px;
         --profile-avatar-size: 98px;
         --profile-signal-col: 270px;
         --profile-gap-x: 16px;
-        grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(250px, var(--profile-signal-col));
+        grid-template-columns:var(--profile-brand-col) minmax(290px, var(--profile-identity-col)) minmax(250px, var(--profile-signal-col));
       }
     }
     @media (max-width: 760px) {
@@ -31224,7 +31219,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .brand-rail { grid-area:brand; padding-top:0; padding-left:0; }
       .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
       .hero-meta { display:block; }
-      .hero-bio { margin-top:8px; max-width:56ch; white-space:normal; }
       .signal-rail { grid-area:signal; width:100%; }
       .hero-name { font-size:20px; line-height:1.12; }
       .signal-rail { width:100%; }
@@ -31283,7 +31277,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       body.iframe-embedded .identity-rail { margin-left:0; }
       body.iframe-embedded .hero-name { font-size:17px; line-height:1.1; }
       body.iframe-embedded .hero-handle { font-size:12px; }
-      body.iframe-embedded .hero-bio { font-size:12px; line-height:1.25; }
       body.iframe-embedded .signal-rail { padding:8px 10px; }
       body.iframe-embedded .signal-chip { font-size:10px; padding:1px 7px; }
     }
@@ -31362,7 +31355,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
             ${profilePostureBadgeHtml}
           </div>
-          ${safeBio ? `<div class="line hero-bio">${safeBio}</div>` : ""}
         </div>
       </div>
       <aside class="signal-rail">${creatorSignalCompactHtml}</aside>
