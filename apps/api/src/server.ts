@@ -31216,13 +31216,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         --profile-id-gap: 10px;
         --profile-id-offset: 0px;
         --profile-signal-col: 260px;
-        grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(220px, var(--profile-signal-col));
-        grid-template-areas:"brand identity signal";
+        grid-template-columns:minmax(0, 0.8fr) minmax(0, 1.2fr);
+        grid-template-areas:
+          "brand identity"
+          "signal signal";
         gap:10px 10px;
         padding-inline:0;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-left:0; }
-      .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
+      .brand-rail { grid-area:brand; padding-top:0; padding-left:0; justify-self:center; justify-content:center; width:100%; }
+      .identity-rail { grid-area:identity; align-items:center; justify-content:center; margin-left:0; width:100%; }
       .hero-meta { display:block; }
       .signal-rail { grid-area:signal; width:100%; }
       .hero-name { font-size:20px; line-height:1.12; }
@@ -31230,7 +31232,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 700px) {
       .profile-header-grid {
-        grid-template-columns:auto 1fr;
+        grid-template-columns:minmax(0, 0.8fr) minmax(0, 1.2fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
@@ -31250,15 +31252,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .card { padding:14px; }
       .section { margin-top:14px; padding:12px; }
       .profile-header-grid {
-        grid-template-columns:var(--profile-brand-col) minmax(0, 1fr);
+        grid-template-columns:minmax(0, 0.8fr) minmax(0, 1.2fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
         gap:10px var(--profile-gap-x);
         padding-inline:0;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:0; align-self:center; justify-content:flex-start; }
-      .identity-rail { grid-area:identity; margin-left:14px; align-items:center; gap:var(--profile-id-gap); }
+      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:0; align-self:center; justify-self:center; justify-content:center; width:100%; }
+      .identity-rail { grid-area:identity; margin-left:0; align-items:center; justify-content:center; gap:var(--profile-id-gap); width:100%; }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
