@@ -30932,7 +30932,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       --profile-identity-col: 380px;
       --profile-gap-x: 24px;
       --profile-gap-y: var(--space-3);
-      --profile-logo-size: 68px;
+      --profile-logo-size: 58px;
       --profile-id-offset: 26px;
       --profile-id-gap: 14px;
       --profile-avatar-size: 124px;
@@ -30975,11 +30975,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .section-sub { margin-top:6px; color:#a7a094; font-size:13px; }
     .profile-header-grid {
       display:grid;
-      grid-template-columns:var(--profile-brand-col) minmax(320px, var(--profile-identity-col)) minmax(290px, var(--profile-signal-col));
+      grid-template-columns:var(--profile-brand-col) minmax(320px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
       gap:var(--profile-gap-y) var(--profile-gap-x);
       align-items:center;
       justify-content:start;
       margin-top:14px;
+      padding-inline:18px;
     }
     .brand-rail { display:flex; align-items:center; justify-content:flex-start; padding:0; min-width:0; }
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:8px; }
@@ -30989,7 +30990,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .hero-name { font-weight:650; font-size:27px; line-height:1.08; letter-spacing:-0.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .hero-handle { margin-top:5px; font-size:14px; color:#b5ad9f; }
     .hero-handle .mono { word-break:normal; overflow-wrap:normal; }
-    .signal-rail { border:1px solid #3a3327; border-radius:12px; background:#14110c; padding:12px; }
+    .signal-rail { border:1px solid #3a3327; border-radius:12px; background:#14110c; padding:12px; justify-self:end; width:min(100%, var(--profile-signal-col)); }
     .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
     .signal-compact-score { margin-top:6px; font-size:16px; }
     .signal-compact-meter { margin-top:6px; height:6px; }
@@ -31170,18 +31171,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body.iframe-embedded .identity-rail { margin-left:0; }
     @media (min-width: 901px) {
       body.iframe-embedded .profile-header-grid {
-        --profile-brand-col: 76px;
-        --profile-identity-col: 360px;
-        --profile-logo-size: 58px;
+        --profile-brand-col: 92px;
+        --profile-identity-col: 380px;
+        --profile-logo-size: 50px;
         --profile-avatar-size: 94px;
-        --profile-gap-x: 22px;
+        --profile-gap-x: 24px;
         --profile-id-gap: 12px;
-        --profile-signal-col: 300px;
-        grid-template-columns: var(--profile-brand-col) minmax(320px, var(--profile-identity-col)) minmax(280px, var(--profile-signal-col));
+        --profile-signal-col: 320px;
+        grid-template-columns: var(--profile-brand-col) minmax(320px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
         justify-content: start;
+        padding-inline:18px;
       }
-      body.iframe-embedded .identity-rail { margin-left: 10px; }
-      body.iframe-embedded .signal-rail { margin-left: 0; }
+      body.iframe-embedded .identity-rail { margin-left: 8px; }
+      body.iframe-embedded .signal-rail { justify-self:end; margin-left: 0; width:min(100%, var(--profile-signal-col)); }
     }
     @media (min-width: 640px) {
       .featured-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
@@ -31197,11 +31199,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .profile-header-grid {
         --profile-brand-col: 72px;
         --profile-identity-col: 330px;
-        --profile-logo-size: 54px;
+        --profile-logo-size: 48px;
         --profile-avatar-size: 98px;
         --profile-signal-col: 270px;
         --profile-gap-x: 16px;
-        grid-template-columns:var(--profile-brand-col) minmax(290px, var(--profile-identity-col)) minmax(250px, var(--profile-signal-col));
+        grid-template-columns:var(--profile-brand-col) minmax(290px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
+        padding-inline:18px;
       }
     }
     @media (max-width: 760px) {
@@ -31215,6 +31218,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(220px, var(--profile-signal-col));
         grid-template-areas:"brand identity signal";
         gap:10px 10px;
+        padding-inline:0;
       }
       .brand-rail { grid-area:brand; padding-top:0; padding-left:0; }
       .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
