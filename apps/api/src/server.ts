@@ -31216,15 +31216,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         --profile-id-gap: 10px;
         --profile-id-offset: 0px;
         --profile-signal-col: 260px;
-        grid-template-columns:minmax(0, 0.8fr) minmax(0, 1.2fr);
+        grid-template-columns:minmax(52px, 0.46fr) minmax(0, 1.54fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
         gap:10px 10px;
         padding-inline:0;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-left:0; justify-self:center; justify-content:center; width:100%; }
-      .identity-rail { grid-area:identity; align-items:center; justify-content:center; margin-left:0; width:100%; }
+      .brand-rail { grid-area:brand; padding-top:0; padding-left:0; justify-self:start; justify-content:center; width:100%; align-self:start; }
+      .identity-rail { grid-area:identity; align-items:center; justify-content:flex-start; margin-left:0; width:100%; }
       .hero-meta { display:block; }
       .signal-rail { grid-area:signal; width:100%; }
       .hero-name { font-size:20px; line-height:1.12; }
@@ -31232,7 +31232,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 700px) {
       .profile-header-grid {
-        grid-template-columns:minmax(0, 0.8fr) minmax(0, 1.2fr);
+        grid-template-columns:minmax(52px, 0.46fr) minmax(0, 1.54fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
@@ -31241,26 +31241,26 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       .profile-header-grid {
-        --profile-brand-col: 56px;
+        --profile-brand-col: 44px;
         --profile-gap-x: 11px;
         --profile-id-offset: 14px;
         --profile-id-gap: 8px;
-        --profile-logo-size: 42px;
+        --profile-logo-size: 30px;
         --profile-avatar-size: 74px;
       }
       body { padding:10px; }
       .card { padding:14px; }
       .section { margin-top:14px; padding:12px; }
       .profile-header-grid {
-        grid-template-columns:minmax(0, 0.8fr) minmax(0, 1.2fr);
+        grid-template-columns:minmax(44px, 0.42fr) minmax(0, 1.58fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
         gap:10px var(--profile-gap-x);
         padding-inline:0;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:0; align-self:center; justify-self:center; justify-content:center; width:100%; }
-      .identity-rail { grid-area:identity; margin-left:0; align-items:center; justify-content:center; gap:var(--profile-id-gap); width:100%; }
+      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:0; align-self:start; justify-self:start; justify-content:center; width:100%; }
+      .identity-rail { grid-area:identity; margin-left:0; align-items:center; justify-content:flex-start; gap:var(--profile-id-gap); width:100%; }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
@@ -31275,8 +31275,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     @media (max-width: 640px) {
       body.iframe-embedded .card { padding:12px; }
       body.iframe-embedded .profile-header-grid {
-        --profile-brand-col: 44px;
-        --profile-logo-size: 34px;
+        --profile-brand-col: 36px;
+        --profile-logo-size: 26px;
         --profile-avatar-size: 62px;
         --profile-id-gap: 8px;
         --profile-gap-x: 8px;
