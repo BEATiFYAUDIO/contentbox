@@ -38357,6 +38357,7 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
             status: true,
             acceptedAt: true,
             acceptedByUserId: true,
+            acceptedIdentityRef: true,
             token: true,
             expiresAt: true,
             deliveryMethod: true,
@@ -38407,6 +38408,7 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
       const bindNow = prevActive || selfBind;
       const acceptedAt = bindNow ? prev?.acceptedAt || new Date() : null;
       const verifiedAt = bindNow ? prev?.verifiedAt || new Date() : null;
+      const previousAcceptedIdentityRef = asString((prev as any)?.invitation?.acceptedIdentityRef || "").trim();
       const boundUserId = bindNow
         ? prev?.participantUserId || p.participantUserId || (selfBind ? userId : null)
         : null;
@@ -38461,7 +38463,7 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
             bindNow && boundUserId && localUserIds.has(boundUserId)
               ? boundUserId
               : null,
-          acceptedIdentityRef: bindNow && boundUserId ? `user:${boundUserId}` : null
+          acceptedIdentityRef: bindNow ? previousAcceptedIdentityRef || (boundUserId ? `user:${boundUserId}` : null) : null
         } as any
       });
 
