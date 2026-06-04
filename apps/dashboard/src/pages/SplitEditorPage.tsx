@@ -33,6 +33,7 @@ type SplitParticipant = {
   payoutIdentityId?: string | null;
   acceptedAt?: string | null;
   verifiedAt?: string | null;
+  acceptedIdentityRef?: string | null;
 };
 
 type SplitVersion = {
@@ -64,6 +65,7 @@ type Row = {
   targetValue?: string | null;
   acceptedAt?: string | null;
   verifiedAt?: string | null;
+  acceptedIdentityRef?: string | null;
   resolutionKind?: "identity" | "email_invite" | "invalid" | null;
   resolvedUserId?: string | null;
   resolvedDisplay?: string | null;
@@ -72,7 +74,7 @@ type Row = {
 };
 
 function mapParticipantToRow(p: SplitParticipant): Row {
-  const invitationStatus = p.invitationStatus || (p.participantUserId && p.acceptedAt ? "accepted" : null);
+  const invitationStatus = p.invitationStatus || (p.acceptedAt || p.verifiedAt || p.acceptedIdentityRef ? "accepted" : null);
   const canonicalTargetType =
     p.targetType || p.invitationTargetType || (p.participantUserId ? "local_user" : (p.participantEmail ? "email" : null));
   const canonicalTargetValue =
@@ -109,6 +111,7 @@ function mapParticipantToRow(p: SplitParticipant): Row {
     targetValue: canonicalTargetValue,
     acceptedAt: p.acceptedAt || null,
     verifiedAt: p.verifiedAt || null,
+    acceptedIdentityRef: p.acceptedIdentityRef || null,
     resolutionKind,
     resolvedUserId: p.participantUserId || (hasIdentityClaim ? String(canonicalTargetValue) : null),
     resolvedDisplay:
@@ -136,6 +139,12 @@ function participantInputValue(r: Row): string {
   if ((targetType === "local_user" || targetType === "identity_ref") && targetValue) return targetValue;
   if (targetType === "email" && targetValue) return targetValue;
   return "";
+}
+
+function isAcceptedRow(r: Row): boolean {
+  const status = String(r.invitationStatus || "").trim().toLowerCase();
+  if (status && status !== "accepted") return false;
+  return Boolean(r.verifiedAt || r.acceptedAt || r.acceptedIdentityRef);
 }
 
 type ParticipantResolveResponse =
@@ -306,14 +315,7 @@ export default function SplitEditorPage(props: {
     r.targetType === "email" && Boolean(normEmail(String(r.targetValue || r.normalizedEmail || r.participantEmail || "")));
   const hasValidTarget = (r: Row) => hasValidIdentityTarget(r) || hasValidEmailTarget(r);
 
-  const activeRows = rows.filter(
-    (r) =>
-      Boolean(
-        r.participantUserId &&
-          r.verifiedAt &&
-          (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))
-      )
-  );
+  const activeRows = rows.filter(isAcceptedRow);
   const total = round3(activeRows.reduce((s, r) => s + num(r.percent), 0));
   const intendedRows = rows.filter((r) => hasValidTarget(r));
   const intendedTotal = round3(intendedRows.reduce((s, r) => s + num(r.percent), 0));
@@ -321,11 +323,7 @@ export default function SplitEditorPage(props: {
   const candidateTotal = round3(
     rows.reduce((s, r) => {
       const email = normEmail(r.participantEmail || "");
-      const isBoundActive = Boolean(
-        r.participantUserId &&
-          r.verifiedAt &&
-          (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))
-      );
+      const isBoundActive = isAcceptedRow(r);
       const isOwnerCandidate = Boolean(
         !isBoundActive &&
           ((meUserId && r.targetType === "local_user" && r.targetValue === meUserId) || (meEmail && email === meEmail))
@@ -1407,7 +1405,7 @@ export default function SplitEditorPage(props: {
                       <div className="mt-1 text-[11px]">
                         {resolvingByRowKey[rowKey(r, idx)] ? (
                           <span className="text-neutral-400">Resolving…</span>
-                        ) : (r.participantUserId && r.verifiedAt && (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))) ? (
+                        ) : isAcceptedRow(r) ? (
                           <span className="text-emerald-300">Accepted</span>
                         ) : ((r.targetType === "local_user" || r.targetType === "identity_ref") && Boolean(r.targetValue)) ? (
                           <span className="text-amber-300">
@@ -1489,11 +1487,7 @@ export default function SplitEditorPage(props: {
                   <td className="py-2 pr-2">
                     <div className="text-xs text-neutral-300">
                       {(() => {
-                        const isBoundActive = Boolean(
-                          r.participantUserId &&
-                            r.verifiedAt &&
-                            (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))
-                        );
+                        const isBoundActive = isAcceptedRow(r);
                         if (isBoundActive) return "Accepted";
                         if (r.invitationStatus === "pending") return "Pending invite";
                         if (r.invitationStatus === "revoked") return "Revoked";

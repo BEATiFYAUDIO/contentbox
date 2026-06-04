@@ -9,9 +9,10 @@ type SplitVersionLike<TParticipant = unknown> = {
 
 type ParticipantLike = {
   participantUserId?: string | null;
+  acceptedIdentityRef?: string | null;
   acceptedAt?: Date | string | null;
   verifiedAt?: Date | string | null;
-  invitation?: { status?: string | null } | null;
+  invitation?: { status?: string | null; acceptedIdentityRef?: string | null } | null;
 };
 
 type DerivativeParentLinkLike = {
@@ -38,8 +39,9 @@ function normalizeInviteStatus(status: string | null | undefined): string {
 
 export function isCommerceEligibleLockedParticipant(participant: ParticipantLike): boolean {
   const inviteStatus = normalizeInviteStatus(participant?.invitation?.status);
+  const acceptedIdentityRef = String(participant?.acceptedIdentityRef || participant?.invitation?.acceptedIdentityRef || "").trim();
   return Boolean(
-    participant?.participantUserId &&
+    (participant?.participantUserId || acceptedIdentityRef) &&
       participant?.acceptedAt &&
       participant?.verifiedAt &&
       (inviteStatus === ACCEPTED_INVITE_STATUS || !inviteStatus)

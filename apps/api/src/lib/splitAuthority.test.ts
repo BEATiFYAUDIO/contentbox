@@ -10,7 +10,7 @@ import {
   requireDerivativeParentSplitSnapshotId
 } from "./splitAuthority.js";
 
-test("commerce participant eligibility requires bound user + accepted + verified", () => {
+test("commerce participant eligibility requires bound identity + accepted + verified", () => {
   assert.equal(
     isCommerceEligibleLockedParticipant({
       participantUserId: "user_1",
@@ -32,6 +32,16 @@ test("commerce participant eligibility requires bound user + accepted + verified
   assert.equal(
     isCommerceEligibleLockedParticipant({
       participantUserId: null,
+      acceptedIdentityRef: "remote:https://node.example#user:user_1",
+      acceptedAt: new Date(),
+      verifiedAt: new Date(),
+      invitation: { status: "accepted" }
+    }),
+    true
+  );
+  assert.equal(
+    isCommerceEligibleLockedParticipant({
+      participantUserId: null,
       acceptedAt: new Date(),
       verifiedAt: new Date(),
       invitation: { status: "accepted" }
@@ -43,13 +53,14 @@ test("commerce participant eligibility requires bound user + accepted + verified
 test("filtering excludes pending/unbound participants from commerce authority set", () => {
   const participants = [
     { id: "active", participantUserId: "u1", acceptedAt: new Date(), verifiedAt: new Date(), invitation: { status: "accepted" } },
+    { id: "remote", participantUserId: null, acceptedAt: new Date(), verifiedAt: new Date(), invitation: { status: "accepted", acceptedIdentityRef: "remote:https://node.example#user:u2" } },
     { id: "pending", participantUserId: null, acceptedAt: null, verifiedAt: null, invitation: { status: "pending" } },
     { id: "unverified", participantUserId: "u2", acceptedAt: new Date(), verifiedAt: null, invitation: { status: "accepted" } }
   ];
   const eligible = filterCommerceEligibleParticipants(participants);
   assert.deepEqual(
     eligible.map((row) => row.id),
-    ["active"]
+    ["active", "remote"]
   );
 });
 

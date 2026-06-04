@@ -38218,6 +38218,7 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
               targetValue: true,
               deliveryMethod: true,
               acceptedAt: true,
+              acceptedIdentityRef: true,
               revokedAt: true,
               expiresAt: true
             }
@@ -38279,7 +38280,8 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
             ? "accepted"
             : "pending",
         invitationTargetType: (p as any)?.invitation?.targetType || null,
-        invitationTargetValue: (p as any)?.invitation?.targetValue || null
+        invitationTargetValue: (p as any)?.invitation?.targetValue || null,
+        acceptedIdentityRef: (p as any)?.invitation?.acceptedIdentityRef || null
       }))
     }))
   );
@@ -38518,7 +38520,18 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
   const latest = await prisma.splitVersion.findFirst({
     where: { contentId },
     orderBy: { versionNumber: "desc" },
-    include: { participants: true }
+    include: {
+      participants: {
+        include: {
+          invitation: {
+            select: {
+              status: true,
+              acceptedIdentityRef: true
+            }
+          }
+        }
+      }
+    }
   });
 
   const nextVersionNumber = latest ? latest.versionNumber + 1 : 1;
@@ -38541,12 +38554,13 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
           (targetType === "email"
             ? normalizeEmail(p.participantEmail)
             : asString(p.participantUserId).trim());
-        const accepted = Boolean(p.participantUserId && p.acceptedAt && p.verifiedAt);
+        const accepted = isActiveLedgerParticipant(p as any);
+        const acceptedIdentityRef = asString((p as any)?.invitation?.acceptedIdentityRef || "").trim();
         const createdParticipant = await tx.splitParticipant.create({
           data: {
             splitVersionId: sv.id,
             participantEmail: p.participantEmail,
-            participantUserId: accepted ? (p.participantUserId || null) : null,
+            participantUserId: accepted && p.participantUserId ? (p.participantUserId || null) : null,
             acceptedAt: accepted ? (p.acceptedAt || new Date()) : null,
             verifiedAt: accepted ? (p.verifiedAt || new Date()) : null,
             targetType,
@@ -38573,8 +38587,8 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
             status: accepted ? "accepted" : "pending",
             expiresAt: new Date(Date.now() + 168 * 60 * 60 * 1000),
             acceptedAt: accepted ? (p.acceptedAt || new Date()) : null,
-            acceptedByUserId: accepted ? (p.participantUserId || null) : null,
-            acceptedIdentityRef: accepted && p.participantUserId ? `user:${p.participantUserId}` : null
+            acceptedByUserId: accepted && p.participantUserId ? (p.participantUserId || null) : null,
+            acceptedIdentityRef: accepted ? acceptedIdentityRef || (p.participantUserId ? `user:${p.participantUserId}` : null) : null
           } as any
         });
         await tx.splitParticipant.update({
