@@ -602,9 +602,8 @@ function mapContentType(type: string | null | undefined): LibraryTypeFilter {
 
 function normalizeRemoteParticipationContentStatus(value: string | null | undefined, inviteStatus?: string | null): string {
   const v = String(value || "").trim().toLowerCase();
-  if (v === "published" || v === "draft") return v;
-  // Accepted remote split participation should surface in Library even when upstream omits status.
   if (String(inviteStatus || "").trim().toLowerCase() === "accepted") return "published";
+  if (v === "published" || v === "draft") return v;
   return "draft";
 }
 
