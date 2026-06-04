@@ -202,7 +202,7 @@ test("resolveInviteRecipientMatch keeps local auth strict for local user ids", (
   assert.equal(result.reason, "target_mismatch");
 });
 
-test("buildInviteAcceptanceIdentityWrites keeps remote user id out of local FK fields", () => {
+test("buildInviteAcceptanceIdentityWrites keeps remote user id and payload email out of local participant fields", () => {
   const result = buildInviteAcceptanceIdentityWrites({
     authMode: "remote_signature",
     userId: "remote-machine-user-id",
@@ -212,7 +212,7 @@ test("buildInviteAcceptanceIdentityWrites keeps remote user id out of local FK f
   assert.equal(result.acceptedByUserId, null);
   assert.equal(result.acceptedIdentityRef, "remote:https://certifyd.beatifygroup.com#user:remote-machine-user-id");
   assert.equal(result.splitParticipantUpdate.participantUserId, undefined);
-  assert.equal(result.splitParticipantUpdate.participantEmail, "darryl@beatifygroup.com");
+  assert.equal(result.splitParticipantUpdate.participantEmail, undefined);
 });
 
 test("buildInviteAcceptanceIdentityWrites binds canonical local target id for remote acceptance recovery", () => {
@@ -226,7 +226,7 @@ test("buildInviteAcceptanceIdentityWrites binds canonical local target id for re
   assert.equal(result.acceptedByUserId, null);
   assert.equal(result.acceptedIdentityRef, "remote:https://certifyd.beatifygroup.com#user:remote-machine-user-id");
   assert.equal(result.splitParticipantUpdate.participantUserId, "cmo8nmh7m0006uvyoxrcvj6ox");
-  assert.equal(result.splitParticipantUpdate.participantEmail, "darryl@beatifygroup.com");
+  assert.equal(result.splitParticipantUpdate.participantEmail, undefined);
 });
 
 test("buildInviteAcceptanceIdentityWrites keeps bare remote IDs out of participantUserId", () => {

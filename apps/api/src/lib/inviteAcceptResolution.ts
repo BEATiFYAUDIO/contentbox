@@ -176,7 +176,7 @@ export function buildInviteAcceptanceIdentityWrites(input: InviteAcceptanceIdent
 
   if (input.authMode === "remote_signature") {
     const participantUserId = looksLikeInternalUserId(canonicalLocalTargetUserId) ? canonicalLocalTargetUserId : "";
-    const participantEmail = normalizeEmail(input.existingParticipantEmail || input.effectiveEmail || "");
+    const participantEmail = normalizeEmail(input.existingParticipantEmail || "");
     return {
       acceptedByUserId: null,
       acceptedIdentityRef: `remote:${remoteNodeUrl || "unknown"}#user:${userId}`,
