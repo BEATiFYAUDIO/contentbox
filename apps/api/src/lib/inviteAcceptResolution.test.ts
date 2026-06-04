@@ -12,6 +12,10 @@ test("mapRemoteInviteAcceptErrorCode keeps explicit code", () => {
   assert.equal(mapRemoteInviteAcceptErrorCode(403, "INVITE_WRONG_RECIPIENT"), "INVITE_WRONG_RECIPIENT");
 });
 
+test("mapRemoteInviteAcceptErrorCode maps upstream unique conflicts", () => {
+  assert.equal(mapRemoteInviteAcceptErrorCode(500, "P2002"), "INVITE_IDENTITY_CONFLICT");
+});
+
 test("mapRemoteInviteAcceptErrorCode maps by status", () => {
   assert.equal(mapRemoteInviteAcceptErrorCode(401), "INVITE_AUTH_REQUIRED");
   assert.equal(mapRemoteInviteAcceptErrorCode(403), "INVITE_REMOTE_ACCEPT_DENIED");
@@ -223,6 +227,30 @@ test("buildInviteAcceptanceIdentityWrites binds canonical local target id for re
   assert.equal(result.acceptedIdentityRef, "remote:https://certifyd.beatifygroup.com#user:remote-machine-user-id");
   assert.equal(result.splitParticipantUpdate.participantUserId, "cmo8nmh7m0006uvyoxrcvj6ox");
   assert.equal(result.splitParticipantUpdate.participantEmail, "darryl@beatifygroup.com");
+});
+
+test("buildInviteAcceptanceIdentityWrites keeps bare remote IDs out of participantUserId", () => {
+  const result = buildInviteAcceptanceIdentityWrites({
+    authMode: "remote_signature",
+    userId: "cmo8nmh7m0006uvyoxrcvj6ox",
+    remoteNodeUrl: "https://certifyd.darrylhillock.com",
+    existingParticipantEmail: "darryl@example.com",
+    effectiveEmail: "darryl@example.com"
+  });
+  assert.equal(result.acceptedByUserId, null);
+  assert.equal(result.acceptedIdentityRef, "remote:https://certifyd.darrylhillock.com#user:cmo8nmh7m0006uvyoxrcvj6ox");
+  assert.equal(result.splitParticipantUpdate.participantUserId, undefined);
+});
+
+test("buildInviteAcceptanceIdentityWrites preserves existing participant email for remote acceptance", () => {
+  const result = buildInviteAcceptanceIdentityWrites({
+    authMode: "remote_signature",
+    userId: "remote-machine-user-id",
+    remoteNodeUrl: "https://certifyd.blessedrthe.fyi",
+    existingParticipantEmail: "split-slot@example.com",
+    effectiveEmail: "darryl@beatifygroup.com"
+  });
+  assert.equal(result.splitParticipantUpdate.participantEmail, "split-slot@example.com");
 });
 
 test("buildInviteAcceptanceIdentityWrites keeps local accept FK behavior", () => {

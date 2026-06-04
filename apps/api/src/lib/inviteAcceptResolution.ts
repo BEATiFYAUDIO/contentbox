@@ -1,5 +1,6 @@
 export function mapRemoteInviteAcceptErrorCode(status: number, existingCode?: string | null): string {
   const explicit = String(existingCode || "").trim();
+  if (explicit === "P2002") return "INVITE_IDENTITY_CONFLICT";
   if (explicit) return explicit;
   if (status === 400) return "INVITE_BAD_REQUEST";
   if (status === 401) return "INVITE_AUTH_REQUIRED";
@@ -175,12 +176,13 @@ export function buildInviteAcceptanceIdentityWrites(input: InviteAcceptanceIdent
 
   if (input.authMode === "remote_signature") {
     const participantUserId = looksLikeInternalUserId(canonicalLocalTargetUserId) ? canonicalLocalTargetUserId : "";
+    const participantEmail = normalizeEmail(input.existingParticipantEmail || input.effectiveEmail || "");
     return {
       acceptedByUserId: null,
       acceptedIdentityRef: `remote:${remoteNodeUrl || "unknown"}#user:${userId}`,
       splitParticipantUpdate: {
         ...(participantUserId ? { participantUserId } : {}),
-        ...(normalizeEmail(input.effectiveEmail || input.existingParticipantEmail || "") ? { participantEmail: normalizeEmail(input.effectiveEmail || input.existingParticipantEmail || "") } : {})
+        ...(participantEmail ? { participantEmail } : {})
       }
     };
   }

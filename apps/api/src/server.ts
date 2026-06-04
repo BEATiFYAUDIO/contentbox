@@ -17491,6 +17491,7 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
         "invite.remote_accept_denied"
       );
     }
+    const replyStatus = !res.ok && asString(payload?.code || "") === "INVITE_IDENTITY_CONFLICT" ? 409 : res.status;
     let mirrorSeedOk: boolean | null = null;
     let mirrorRefreshOk: boolean | null = null;
     let projectedVisible = false;
@@ -17598,7 +17599,7 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
         audienceOrigin,
         authHeaderPresent,
         localUserId: localUserId || null,
-        remoteStatus: res.status,
+        remoteStatus: replyStatus,
         remoteCode: asString(payload?.code || payload?.error || ""),
         remoteReason: asString(payload?.reason || "")
       },
@@ -17609,13 +17610,13 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
         tokenId: safeInviteTokenId(token),
         origin,
         localUserId: localUserId || null,
-        status: res.status,
+        status: replyStatus,
         code: asString(payload?.code || payload?.error || ""),
         reason: asString(payload?.reason || "")
       },
       res.ok ? "invite.remote_accept_result" : "invite.remote_accept_denied"
     );
-    return reply.code(res.status).send(payload);
+    return reply.code(replyStatus).send(payload);
   } catch (e: any) {
     app.log.warn(
       {
@@ -46621,8 +46622,9 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         existingParticipantEmail: inv.splitParticipant?.participantEmail || null,
         effectiveEmail: effectiveInviteEmail,
         canonicalLocalTargetUserId:
-          inviteTargetType === "local_user" ||
-          (inviteTargetType === "identity_ref" && looksLikeInternalUserId(inviteTargetValue))
+          acceptanceAuthMode === "local_auth" &&
+          (inviteTargetType === "local_user" ||
+            (inviteTargetType === "identity_ref" && looksLikeInternalUserId(inviteTargetValue)))
             ? inviteTargetValue
             : null
       });
@@ -46700,6 +46702,27 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       return reply.code(409).send({
         error: "Invite acceptance identity binding failed",
         code: "INVITE_IDENTITY_BIND_FAILED"
+      });
+    }
+    if (String((e as any)?.code || "") === "P2002") {
+      app.log.warn(
+        {
+          tokenId,
+          invitationId: inv.id,
+          splitParticipantId: inv.splitParticipantId,
+          target: (e as any)?.meta?.target || null,
+          acceptedEmail: effectiveInviteEmail || null,
+          acceptedIdentityRef:
+            acceptanceAuthMode === "remote_signature"
+              ? `remote:${remoteNodeUrl || "unknown"}#user:${userId}`
+              : `user:${userId}`
+        },
+        "invite.accept_unique_conflict"
+      );
+      return reply.code(409).send({
+        error: "Invite acceptance conflicts with an existing split participant identity",
+        code: "INVITE_IDENTITY_CONFLICT",
+        reason: "PARTICIPANT_IDENTITY_UNIQUE_CONFLICT"
       });
     }
     throw e;
