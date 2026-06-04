@@ -112,6 +112,7 @@ import {
 import { evaluateParticipantIdentityGate } from "./lib/participantIdentityGate.js";
 import { canHighlightParticipation, isLockedParticipationProjectionEligible } from "./lib/participationProjection.js";
 import {
+  hasResolvedLockedSnapshotPublicIdentity,
   isTopologyNeutralLockedSnapshotEligible,
   resolveLockedSnapshotAccountingState,
   resolveLockedSnapshotAttributionLabel,
@@ -26561,6 +26562,7 @@ function publicContentContextParticipantFromLockedSnapshot(input: {
 }): PublicContentContextParticipant | null {
   const snapshot = input.snapshot;
   if (!isTopologyNeutralLockedSnapshotEligible(snapshot)) return null;
+  if (!hasResolvedLockedSnapshotPublicIdentity(snapshot)) return null;
   const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
   const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
   const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? normalizedHandle : null;
@@ -26852,6 +26854,17 @@ async function handlePublicContentContext(req: any, reply: any) {
 
   const lockedSplit = content.splitVersions?.[0] || null;
   const splitSnapshots = lockedSplit?.id ? await getLockedParticipantSnapshotsForSplitVersion(lockedSplit.id) : [];
+  const unresolvedSplitSnapshotCount = splitSnapshots.filter(
+    (snapshot) =>
+      isTopologyNeutralLockedSnapshotEligible(snapshot) &&
+      !hasResolvedLockedSnapshotPublicIdentity(snapshot)
+  ).length;
+  if (unresolvedSplitSnapshotCount) {
+    app.log.warn(
+      { contentId, splitVersionId: lockedSplit?.id || null, unresolvedSplitSnapshotCount },
+      "publicContext.unresolved_locked_split_snapshot"
+    );
+  }
   const splitParticipants: PublicContentContextParticipant[] = splitSnapshots
     .map((snapshot) => {
       const role = asString(snapshot.role || "").trim() || null;
@@ -41146,53 +41159,185 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
   return { sale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
 }
 
-// Lock a split version (owner only)
-app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: any, reply) => {
-  const userId = (req.user as JwtUser).sub;
-  const splitVersionId = asString((req.params as any).id);
+type SplitLockRouteError = Error & {
+  statusCode?: number;
+  code?: string;
+  payload?: Record<string, unknown>;
+};
 
-  const sv = await prisma.splitVersion.findUnique({
-    where: { id: splitVersionId },
-    include: {
-      content: true,
-      participants: {
-        orderBy: { createdAt: "asc" },
-        include: { invitation: { select: { status: true } } }
+function splitLockRouteError(
+  statusCode: number,
+  code: string,
+  message: string,
+  payload?: Record<string, unknown>
+): SplitLockRouteError {
+  const error = new Error(message) as SplitLockRouteError;
+  error.statusCode = statusCode;
+  error.code = code;
+  error.payload = payload;
+  return error;
+}
+
+function assertResolvedPublicLockedSplitSnapshots(input: {
+  splitVersionId: string;
+  snapshots: LockedParticipantSnapshotRecord[];
+}) {
+  const unresolved = input.snapshots.filter(
+    (snapshot) =>
+      !isTopologyNeutralLockedSnapshotEligible(snapshot) ||
+      !hasResolvedLockedSnapshotPublicIdentity(snapshot)
+  );
+  if (!unresolved.length) return;
+  throw splitLockRouteError(
+    409,
+    "SPLIT_PARTICIPANT_IDENTITY_UNRESOLVED",
+    "Cannot lock split version until every active participant resolves to a real public identity.",
+    {
+      code: "SPLIT_PARTICIPANT_IDENTITY_UNRESOLVED",
+      message: "Cannot lock split version until every active participant resolves to a real public identity.",
+      splitVersionId: input.splitVersionId,
+      unresolvedParticipantIds: unresolved
+        .map((snapshot) => asString(snapshot.splitParticipantId || "").trim())
+        .filter(Boolean)
+    }
+  );
+}
+
+function splitLockParticipantInclude() {
+  return {
+    payoutIdentity: {
+      select: {
+        label: true
+      }
+    },
+    invitation: {
+      select: {
+        token: true,
+        status: true,
+        acceptedAt: true,
+        targetType: true,
+        targetValue: true,
+        acceptedIdentityRef: true,
+        acceptedBy: {
+          select: {
+            id: true,
+            displayName: true,
+            email: true
+          }
+        }
       }
     }
-  });
-  if (!sv) return notFound(reply, "Split version not found");
-  if (sv.content.ownerUserId !== userId) return forbidden(reply);
+  };
+}
+
+async function lockSplitVersionForOwner(input: {
+  userId: string;
+  splitVersionId?: string | null;
+  contentId?: string | null;
+  versionNumber?: number | null;
+}) {
+  const userId = asString(input.userId || "").trim();
+  const splitVersionId = asString(input.splitVersionId || "").trim();
+  const contentId = asString(input.contentId || "").trim();
+  const versionNumber = input.versionNumber || null;
+
+  const sv = splitVersionId
+    ? await prisma.splitVersion.findUnique({
+        where: { id: splitVersionId },
+        include: {
+          content: true,
+          participants: {
+            orderBy: { createdAt: "asc" },
+            include: splitLockParticipantInclude()
+          }
+        }
+      })
+    : await prisma.splitVersion.findFirst({
+        where: { contentId, versionNumber: versionNumber || undefined },
+        include: {
+          content: true,
+          participants: {
+            orderBy: { createdAt: "asc" },
+            include: splitLockParticipantInclude()
+          }
+        }
+      });
+
+  if (!sv) throw splitLockRouteError(404, "SPLIT_VERSION_NOT_FOUND", "Split version not found");
+  if (sv.content.ownerUserId !== userId) throw splitLockRouteError(403, "FORBIDDEN", "Forbidden");
+
   const lockCtx = getCapabilityContext();
-  if (sendAdvancedInactive(reply, lockCtx)) return;
-  if (!canLock(lockCtx)) {
-    return reply.code(403).send({
-      code: "lock_not_allowed",
-      reason: capabilityReason(lockCtx, "lock", capabilityReasonContext(lockCtx))
+  if (isAdvancedInactive(lockCtx)) {
+    const reason = capabilityReason(lockCtx, "publish", capabilityReasonContext(lockCtx));
+    throw splitLockRouteError(403, "advanced_not_active", reason, {
+      error: "FEATURE_LOCKED",
+      code: "advanced_not_active",
+      reason,
+      message: reason
     });
   }
-  if (sv.status !== "draft") return badRequest(reply, "Split version already locked");
-  if (!sv.content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
-  if (!sv.participants?.length) return badRequest(reply, "Split version has no participants");
+  if (!canLock(lockCtx)) {
+    const reason = capabilityReason(lockCtx, "lock", capabilityReasonContext(lockCtx));
+    throw splitLockRouteError(403, "lock_not_allowed", reason, {
+      code: "lock_not_allowed",
+      reason
+    });
+  }
+  if (sv.status !== "draft") {
+    throw splitLockRouteError(400, "SPLIT_VERSION_ALREADY_LOCKED", "Split version already locked");
+  }
+  if (!sv.content.repoPath) {
+    throw splitLockRouteError(500, "CONTENT_REPO_NOT_INITIALIZED", "Content repo not initialized", {
+      error: "Content repo not initialized"
+    });
+  }
+
+  const activeLedgerParticipants = (sv.participants || []).filter((p: any) => isActiveLedgerParticipant(p));
+  if (!activeLedgerParticipants.length) {
+    throw splitLockRouteError(
+      400,
+      "SPLIT_VERSION_NO_ACTIVE_LEDGER_PARTICIPANTS",
+      "Split version has no active ledger participants. Invites must be accepted first."
+    );
+  }
+  const activeTotal = round3(
+    activeLedgerParticipants.reduce((sum: number, p: any) => sum + num(percentToPrimitive(p.percent ?? 0)), 0)
+  );
+  if (activeTotal !== 100) {
+    throw splitLockRouteError(
+      400,
+      "SPLIT_ACTIVE_TOTAL_NOT_100",
+      `Active participant total must be 100. Current total=${activeTotal}`
+    );
+  }
 
   const now = new Date();
-  let proofResult: any;
-  try {
-    proofResult = await buildAndPersistProof({
-      repoPath: sv.content.repoPath,
-      contentId: sv.contentId,
-      splitVersionId,
-      versionNumber: sv.versionNumber,
-      lockedAt: now,
-      participants: sv.participants,
-      creatorId: userId
-    });
-  } catch (e: any) {
-    return reply.code(500).send({ error: String(e?.message || e) });
-  }
+  const splitVersionForSnapshot = {
+    ...sv,
+    participants: activeLedgerParticipants
+  };
+  const snapshotPreview = await buildLockedParticipantSnapshotsForSplitVersion({
+    splitVersion: splitVersionForSnapshot,
+    lockTime: now,
+    persist: false
+  });
+  assertResolvedPublicLockedSplitSnapshots({
+    splitVersionId: sv.id,
+    snapshots: snapshotPreview
+  });
+
+  const proofResult = await buildAndPersistProof({
+    repoPath: sv.content.repoPath,
+    contentId: sv.contentId,
+    splitVersionId: sv.id,
+    versionNumber: sv.versionNumber,
+    lockedAt: now,
+    participants: activeLedgerParticipants,
+    creatorId: userId
+  });
 
   await prisma.splitVersion.update({
-    where: { id: splitVersionId },
+    where: { id: sv.id },
     data: {
       status: "locked",
       lockedAt: now,
@@ -41206,7 +41351,7 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
     const ownerEmail = (owner?.email || "").toLowerCase();
     const res = await prisma.splitParticipant.updateMany({
       where: {
-        splitVersionId,
+        splitVersionId: sv.id,
         OR: [
           { participantUserId: userId },
           ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
@@ -41215,7 +41360,7 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
       data: { participantUserId: userId, acceptedAt: new Date(), verifiedAt: new Date() }
     });
     if (process.env.NODE_ENV !== "production") {
-      app.log.info({ splitVersionId, userId, updated: res.count }, "split.owner.ensure");
+      app.log.info({ splitVersionId: sv.id, userId, updated: res.count }, "split.owner.ensure");
     }
   } catch {}
 
@@ -41224,7 +41369,7 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
       userId,
       action: "split.lock",
       entityType: "SplitVersion",
-      entityId: splitVersionId,
+      entityId: sv.id,
       payloadJson: {
         lockedAt: now,
         proofHash: proofResult.proofHash,
@@ -41253,12 +41398,38 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
     });
   } catch {}
 
-  return reply.send({
+  await buildLockedParticipantSnapshotsForSplitVersion({
+    splitVersion: splitVersionForSnapshot,
+    lockTime: now,
+    persist: true
+  });
+
+  return {
     ok: true,
     proofHash: proofResult.proofHash,
     manifestHash: proofResult.manifestHash,
     splitsHash: proofResult.splitsHash
-  });
+  };
+}
+
+function sendSplitLockError(reply: any, error: unknown) {
+  const err = error as SplitLockRouteError;
+  const status = Number(err?.statusCode) || 500;
+  if (err?.payload) return reply.code(status).send(err.payload);
+  const message = String(err?.message || err || "Split lock failed");
+  if (err?.code) return reply.code(status).send({ code: err.code, message });
+  return reply.code(status).send({ error: message });
+}
+
+// Lock a split version (owner only)
+app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const splitVersionId = asString((req.params as any).id);
+  try {
+    return reply.send(await lockSplitVersionForOwner({ userId, splitVersionId }));
+  } catch (e) {
+    return sendSplitLockError(reply, e);
+  }
 });
 
 /**
@@ -44865,133 +45036,11 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
   const versionParam = asString((req.params as any).version);
   const versionNumber = parseSplitVersionParam(versionParam);
   if (!versionNumber) return badRequest(reply, "Invalid split version");
-
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return notFound(reply, "Content not found");
-  if (content.ownerUserId !== userId) return forbidden(reply);
-  const lockCtx = getCapabilityContext();
-  if (sendAdvancedInactive(reply, lockCtx)) return;
-  if (!canLock(lockCtx)) {
-    return reply.code(403).send({
-      code: "lock_not_allowed",
-      reason: capabilityReason(lockCtx, "lock", capabilityReasonContext(lockCtx))
-    });
-  }
-  if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
-
-  const sv = await prisma.splitVersion.findFirst({
-    where: { contentId, versionNumber },
-    include: {
-      content: true,
-      participants: {
-        orderBy: { createdAt: "asc" },
-        include: {
-          payoutIdentity: {
-            select: {
-              label: true
-            }
-          },
-          invitation: {
-            select: {
-              token: true,
-              status: true,
-              targetType: true,
-              targetValue: true,
-              acceptedIdentityRef: true
-            }
-          }
-        }
-      }
-    }
-  });
-  if (!sv) return notFound(reply, "Split version not found");
-  if (sv.status !== "draft") return badRequest(reply, "Split version already locked");
-  const activeLedgerParticipants = (sv.participants || []).filter((p) => isActiveLedgerParticipant(p));
-  if (!activeLedgerParticipants.length) {
-    return badRequest(reply, "Split version has no active ledger participants. Invites must be accepted first.");
-  }
-  const activeTotal = round3(
-    activeLedgerParticipants.reduce((sum, p: any) => sum + num(percentToPrimitive(p.percent ?? 0)), 0)
-  );
-  if (activeTotal !== 100) {
-    return badRequest(reply, `Active participant total must be 100. Current total=${activeTotal}`);
-  }
-
-  const now = new Date();
-  let proofResult: any;
   try {
-    proofResult = await buildAndPersistProof({
-      repoPath: content.repoPath,
-      contentId,
-      splitVersionId: sv.id,
-      versionNumber: sv.versionNumber,
-      lockedAt: now,
-      participants: activeLedgerParticipants,
-      creatorId: userId
-    });
-  } catch (e: any) {
-    return reply.code(500).send({ error: String(e?.message || e) });
+    return reply.send(await lockSplitVersionForOwner({ userId, contentId, versionNumber }));
+  } catch (e) {
+    return sendSplitLockError(reply, e);
   }
-
-  await prisma.splitVersion.update({
-    where: { id: sv.id },
-    data: {
-      status: "locked",
-      lockedAt: now,
-      lockedFileObjectKey: proofResult.lockedFileObjectKey || null,
-      lockedFileSha256: proofResult.lockedFileSha256 || null
-    }
-  });
-
-  await prisma.auditEvent.create({
-    data: {
-      userId,
-      action: "split.lock",
-      entityType: "SplitVersion",
-      entityId: sv.id,
-      payloadJson: {
-        lockedAt: now,
-        proofHash: proofResult.proofHash,
-        manifestHash: proofResult.manifestHash,
-        splitsHash: proofResult.splitsHash,
-        proofPath: proofRelPath(sv.versionNumber)
-      } as any
-    }
-  });
-
-  try {
-    await prisma.auditEvent.create({
-      data: {
-        userId,
-        action: "content.proof",
-        entityType: "ContentItem",
-        entityId: contentId,
-        payloadJson: {
-          lockedAt: now,
-          proofHash: proofResult.proofHash,
-          manifestHash: proofResult.manifestHash,
-          splitsHash: proofResult.splitsHash,
-          splitVersion: sv.versionNumber
-        } as any
-      }
-    });
-  } catch {}
-
-  await buildLockedParticipantSnapshotsForSplitVersion({
-    splitVersion: {
-      ...sv,
-      participants: activeLedgerParticipants
-    },
-    lockTime: now,
-    persist: true
-  });
-
-  return reply.send({
-    ok: true,
-    proofHash: proofResult.proofHash,
-    manifestHash: proofResult.manifestHash,
-    splitsHash: proofResult.splitsHash
-  });
 });
 
 // Fetch proof.json for a split version (owner only)

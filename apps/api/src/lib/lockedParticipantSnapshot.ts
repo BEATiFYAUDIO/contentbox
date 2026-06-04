@@ -95,6 +95,18 @@ export function resolveLockedSnapshotAttributionLabel(snapshot: LockedParticipan
   return "Contributor";
 }
 
+export function hasResolvedLockedSnapshotPublicIdentity(snapshot: LockedParticipantSnapshotLike & {
+  profilePathSnapshot?: string | null;
+}): boolean {
+  const label = resolveLockedSnapshotAttributionLabel(snapshot).trim().toLowerCase();
+  const handle = String(snapshot?.handleSnapshot || "").trim().replace(/^@+/, "").toLowerCase();
+  const profilePath = String(snapshot?.profilePathSnapshot || "").trim().toLowerCase();
+  if (!label || label === "contributor") return false;
+  if (handle === "contributor") return false;
+  if (/\/u\/contributor(?:[/?#]|$)/i.test(profilePath)) return false;
+  return true;
+}
+
 export function resolveLockedSnapshotAccountingState(snapshot: LockedParticipantSnapshotLike): {
   state: "ready" | "blocked";
   blockedReason: string | null;

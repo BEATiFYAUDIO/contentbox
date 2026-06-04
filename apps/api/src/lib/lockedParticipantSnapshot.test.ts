@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  hasResolvedLockedSnapshotPublicIdentity,
   isTopologyNeutralLockedSnapshotEligible,
   resolveLockedSnapshotAccountingState,
   resolveLockedSnapshotAttributionLabel,
@@ -90,6 +91,42 @@ test("attribution never uses internal user id labels", () => {
       handleSnapshot: "@cmmvmg5xh0006uvh4wvhbhbsg"
     }),
     "Contributor"
+  );
+});
+
+test("public identity invariant rejects generic contributor placeholders", () => {
+  assert.equal(
+    hasResolvedLockedSnapshotPublicIdentity({
+      acceptedAt: new Date().toISOString(),
+      verifiedAt: new Date().toISOString(),
+      identityRef: "remote:https://node.example#user:abc",
+      displayNameSnapshot: null,
+      handleSnapshot: null,
+      profilePathSnapshot: null
+    }),
+    false
+  );
+  assert.equal(
+    hasResolvedLockedSnapshotPublicIdentity({
+      acceptedAt: new Date().toISOString(),
+      verifiedAt: new Date().toISOString(),
+      identityRef: "remote:https://node.example#user:abc",
+      displayNameSnapshot: "Contributor",
+      handleSnapshot: "@contributor",
+      profilePathSnapshot: "/u/contributor"
+    }),
+    false
+  );
+  assert.equal(
+    hasResolvedLockedSnapshotPublicIdentity({
+      acceptedAt: new Date().toISOString(),
+      verifiedAt: new Date().toISOString(),
+      identityRef: "remote:https://node.example#user:darryl",
+      displayNameSnapshot: "Darryl Hillock",
+      handleSnapshot: "@darryl-hillock",
+      profilePathSnapshot: "/u/darryl-hillock"
+    }),
+    true
   );
 });
 
