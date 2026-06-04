@@ -27083,6 +27083,9 @@ type PublicDiscoverySignalWork = {
   title: string;
   contentType: string;
   primaryTopic: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  publishedAt?: string | null;
   creatorHandle: string | null;
   creatorDisplayName: string | null;
   creatorAvatarUrl: string | null;
@@ -27183,11 +27186,16 @@ function discoveryPublicWorkFromContent(input: {
   const row = input.row;
   const creatorHandle = resolveCreatorHandleForDiscoverable(row.owner || null);
   const priceSats = row.priceSats != null ? Number(row.priceSats) : 0;
+  const createdAt = row.createdAt ? new Date(row.createdAt).toISOString() : null;
+  const updatedAt = row.updatedAt ? new Date(row.updatedAt).toISOString() : null;
   return {
     contentId: row.id,
     title: row.title,
     contentType: asString(row.type || ""),
     primaryTopic: normalizePrimaryTopic(row.primaryTopic),
+    createdAt,
+    updatedAt,
+    publishedAt: createdAt,
     creatorHandle,
     creatorDisplayName: asString(row.owner?.displayName || "").trim() || creatorHandle,
     creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload(row.owner?.avatarUrl || null, input.publicOrigin),
@@ -27229,6 +27237,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
         topSelling: [],
         mostSupported: [],
         fastestMoving: [],
+        recentlyAdded: [],
         recentlySupported: [],
         collaborativeReleases: []
       },
@@ -27251,6 +27260,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
         topSelling: [],
         mostSupported: [],
         fastestMoving: [],
+        recentlyAdded: [],
         recentlySupported: [],
         collaborativeReleases: []
       },
@@ -27309,6 +27319,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
         topSelling: [],
         mostSupported: [],
         fastestMoving: [],
+        recentlyAdded: [],
         recentlySupported: [],
         collaborativeReleases: []
       },
@@ -27714,8 +27725,14 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     .sort((a, b) => b.scores.topConnectedScore - a.scores.topConnectedScore)
     .slice(0, 10);
   const recentlySupported = rankedWorks
-    .filter((work) => work.scores.supportMomentumScore > 0)
-    .sort((a, b) => b.scores.supportMomentumScore - a.scores.supportMomentumScore)
+    .sort((a, b) => {
+      const aTime = Date.parse(asString(a.publishedAt || a.createdAt || ""));
+      const bTime = Date.parse(asString(b.publishedAt || b.createdAt || ""));
+      const aSafe = Number.isFinite(aTime) ? aTime : 0;
+      const bSafe = Number.isFinite(bTime) ? bTime : 0;
+      if (aSafe !== bSafe) return bSafe - aSafe;
+      return asString(b.contentId || "").localeCompare(asString(a.contentId || ""));
+    })
     .slice(0, 10);
 
   return reply.send({
@@ -27733,6 +27750,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
       topSelling,
       mostSupported,
       fastestMoving,
+      recentlyAdded: recentlySupported,
       recentlySupported,
       collaborativeReleases
     },
@@ -27919,6 +27937,9 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         contentId: row.id,
         title: row.title,
         description: row.description || null,
+        createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+        updatedAt: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
+        publishedAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
         creatorHandle,
         creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload((row as any).owner?.avatarUrl || null, canonicalOrigin),
         contentType: row.type,
