@@ -11361,6 +11361,7 @@ function shouldShowInviteInActiveLists(inv: {
 function normalizeRemoteInviteStatusForList(inv: {
   status?: unknown;
   acceptedAt?: Date | null;
+  remoteVerified?: boolean | null;
   expiresAt?: Date | null;
   revokedAt?: Date | null;
   tombstonedAt?: Date | null;
@@ -11368,7 +11369,7 @@ function normalizeRemoteInviteStatusForList(inv: {
   let s = normalizeInviteStatus(inv?.status);
   if (inv?.revokedAt) s = "revoked";
   if (inv?.tombstonedAt) s = "tombstoned";
-  if (s === "pending" && inv?.acceptedAt) s = "accepted";
+  if (s === "pending" && (inv?.acceptedAt || inv?.remoteVerified)) s = "accepted";
   if (s === "pending" && inv?.expiresAt && inv.expiresAt.getTime() < Date.now()) s = "expired";
   return s;
 }
@@ -14415,54 +14416,138 @@ async function upsertRemoteInviteMirrorFromPayload(input: {
   const percent = round3(num(splitParticipant?.percent));
   const tokenHash = hashInviteToken(token);
   const inviteUrl = `${remoteOrigin.replace(/\/+$/, "")}/invite/${encodeURIComponent(token)}`;
+  const existing = await prisma.remoteInvite.findUnique({
+    where: { remoteOrigin_tokenHash: { remoteOrigin, tokenHash } },
+    select: {
+      status: true,
+      expiresAt: true,
+      acceptedAt: true,
+      revokedAt: true,
+      tombstonedAt: true,
+      remoteVerified: true,
+      remoteUserId: true,
+      contentId: true,
+      contentTitle: true,
+      contentType: true,
+      contentStatus: true,
+      contentDeletedAt: true,
+      splitVersionNum: true,
+      splitStatus: true,
+      role: true,
+      percent: true,
+      participantEmail: true
+    }
+  });
+  const existingAccepted = existing
+    ? normalizeRemoteInviteStatusForList(existing as any) === "accepted"
+    : false;
+  const existingStatus = existing ? normalizeRemoteInviteStatusForList(existing as any) : null;
+  if (existingStatus && ["revoked", "tombstoned"].includes(existingStatus) && status === "pending") {
+    status = existingStatus;
+  }
+  const preserveExistingAccepted =
+    existingAccepted &&
+    status === "pending" &&
+    !(revokedAt && !Number.isNaN(revokedAt.getTime())) &&
+    !(tombstonedAt && !Number.isNaN(tombstonedAt.getTime()));
+  if (preserveExistingAccepted) status = "accepted";
+  const finalAcceptedAt =
+    acceptedAt && !Number.isNaN(acceptedAt.getTime())
+      ? acceptedAt
+      : (preserveExistingAccepted || status === "accepted") && existing?.acceptedAt
+        ? existing.acceptedAt
+        : null;
+  const finalExpiresAt =
+    expiresAt && !Number.isNaN(expiresAt.getTime())
+      ? expiresAt
+      : existing?.expiresAt || null;
+  const finalRevokedAt =
+    revokedAt && !Number.isNaN(revokedAt.getTime())
+      ? revokedAt
+      : existing?.revokedAt || null;
+  const finalTombstonedAt =
+    tombstonedAt && !Number.isNaN(tombstonedAt.getTime())
+      ? tombstonedAt
+      : existing?.tombstonedAt || null;
+  const finalRemoteUserId =
+    asString(invitation?.acceptedByUserId || "").trim() ||
+    (preserveExistingAccepted ? asString(existing?.remoteUserId || "").trim() : "") ||
+    null;
+  const finalRemoteVerified = Boolean(acceptedAt || input.forceAccepted || (preserveExistingAccepted && existing?.remoteVerified));
+  const preserveMirrorMetadata = preserveExistingAccepted;
+  const finalContentId = asString(content?.id || "").trim() || (preserveMirrorMetadata ? existing?.contentId || null : null);
+  const finalContentTitle = asString(content?.title || "").trim() || (preserveMirrorMetadata ? existing?.contentTitle || null : null);
+  const finalContentType = asString(content?.type || "").trim() || (preserveMirrorMetadata ? existing?.contentType || null : null);
+  const finalContentStatus = asString(content?.status || "").trim() || (preserveMirrorMetadata ? existing?.contentStatus || null : null);
+  const finalContentDeletedAt =
+    contentDeletedAt && !Number.isNaN(contentDeletedAt.getTime())
+      ? contentDeletedAt
+      : preserveMirrorMetadata
+        ? existing?.contentDeletedAt || null
+        : null;
+  const finalSplitVersionNum = Number.isFinite(Number(splitVersion?.versionNumber))
+    ? Number(splitVersion.versionNumber)
+    : preserveMirrorMetadata
+      ? existing?.splitVersionNum ?? null
+      : null;
+  const finalSplitStatus = asString(splitVersion?.status || "").trim() || (preserveMirrorMetadata ? existing?.splitStatus || null : null);
+  const finalRole = asString(splitParticipant?.role || "").trim() || (preserveMirrorMetadata ? existing?.role || null : null);
+  const finalPercent = Number.isFinite(percent) && percent > 0
+    ? percent
+    : preserveMirrorMetadata
+      ? existing?.percent ?? null
+      : null;
+  const finalParticipantEmail =
+    asString(splitParticipant?.participantEmail || "").trim() ||
+    (preserveMirrorMetadata ? existing?.participantEmail || null : null);
 
   await prisma.remoteInvite.upsert({
     where: { remoteOrigin_tokenHash: { remoteOrigin, tokenHash } },
     update: {
       userId,
       inviteUrl,
-      contentId: asString(content?.id || "").trim() || null,
-      contentTitle: asString(content?.title || "").trim() || null,
-      contentType: asString(content?.type || "").trim() || null,
-      contentStatus: asString(content?.status || "").trim() || null,
-      contentDeletedAt: contentDeletedAt && !Number.isNaN(contentDeletedAt.getTime()) ? contentDeletedAt : null,
-      splitVersionNum: Number.isFinite(Number(splitVersion?.versionNumber)) ? Number(splitVersion.versionNumber) : null,
-      splitStatus: asString(splitVersion?.status || "").trim() || null,
-      role: asString(splitParticipant?.role || "").trim() || null,
-      percent: Number.isFinite(percent) && percent > 0 ? percent : null,
-      participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
+      contentId: finalContentId,
+      contentTitle: finalContentTitle,
+      contentType: finalContentType,
+      contentStatus: finalContentStatus,
+      contentDeletedAt: finalContentDeletedAt,
+      splitVersionNum: finalSplitVersionNum,
+      splitStatus: finalSplitStatus,
+      role: finalRole,
+      percent: finalPercent,
+      participantEmail: finalParticipantEmail,
       status,
-      expiresAt: expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : null,
-      acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
-      revokedAt: revokedAt && !Number.isNaN(revokedAt.getTime()) ? revokedAt : null,
-      tombstonedAt: tombstonedAt && !Number.isNaN(tombstonedAt.getTime()) ? tombstonedAt : null,
-      remoteUserId: asString(invitation?.acceptedByUserId || "").trim() || null,
+      expiresAt: finalExpiresAt,
+      acceptedAt: finalAcceptedAt,
+      revokedAt: finalRevokedAt,
+      tombstonedAt: finalTombstonedAt,
+      remoteUserId: finalRemoteUserId,
       remoteNodeUrl: remoteOrigin,
-      remoteVerified: Boolean(acceptedAt || input.forceAccepted)
+      remoteVerified: finalRemoteVerified
     },
     create: {
       userId,
       remoteOrigin,
       tokenHash,
       inviteUrl,
-      contentId: asString(content?.id || "").trim() || null,
-      contentTitle: asString(content?.title || "").trim() || null,
-      contentType: asString(content?.type || "").trim() || null,
-      contentStatus: asString(content?.status || "").trim() || null,
-      contentDeletedAt: contentDeletedAt && !Number.isNaN(contentDeletedAt.getTime()) ? contentDeletedAt : null,
-      splitVersionNum: Number.isFinite(Number(splitVersion?.versionNumber)) ? Number(splitVersion.versionNumber) : null,
-      splitStatus: asString(splitVersion?.status || "").trim() || null,
-      role: asString(splitParticipant?.role || "").trim() || null,
-      percent: Number.isFinite(percent) && percent > 0 ? percent : null,
-      participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
+      contentId: finalContentId,
+      contentTitle: finalContentTitle,
+      contentType: finalContentType,
+      contentStatus: finalContentStatus,
+      contentDeletedAt: finalContentDeletedAt,
+      splitVersionNum: finalSplitVersionNum,
+      splitStatus: finalSplitStatus,
+      role: finalRole,
+      percent: finalPercent,
+      participantEmail: finalParticipantEmail,
       status,
-      expiresAt: expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : null,
-      acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
-      revokedAt: revokedAt && !Number.isNaN(revokedAt.getTime()) ? revokedAt : null,
-      tombstonedAt: tombstonedAt && !Number.isNaN(tombstonedAt.getTime()) ? tombstonedAt : null,
-      remoteUserId: asString(invitation?.acceptedByUserId || "").trim() || null,
+      expiresAt: finalExpiresAt,
+      acceptedAt: finalAcceptedAt,
+      revokedAt: finalRevokedAt,
+      tombstonedAt: finalTombstonedAt,
+      remoteUserId: finalRemoteUserId,
       remoteNodeUrl: remoteOrigin,
-      remoteVerified: Boolean(acceptedAt || input.forceAccepted)
+      remoteVerified: finalRemoteVerified
     }
   });
 }
@@ -14511,9 +14596,35 @@ async function recoverRemoteInviteMirrorsFromAudit(userId: string): Promise<void
     const tokenHash = hashInviteToken(token);
     const existing = await prisma.remoteInvite.findUnique({
       where: { remoteOrigin_tokenHash: { remoteOrigin, tokenHash } },
-      select: { id: true }
+      select: { id: true, status: true, revokedAt: true, tombstonedAt: true }
     });
-    if (existing) continue;
+    if (existing) {
+      if (status === "accepted" && !existing.revokedAt && !existing.tombstonedAt) {
+        await prisma.remoteInvite.update({
+          where: { id: existing.id },
+          data: {
+            inviteUrl: inviteUrlRaw || `${remoteOrigin.replace(/\/+$/, "")}/invite/${encodeURIComponent(token)}`,
+            contentId,
+            contentTitle: asString(payload?.contentTitle || "").trim() || null,
+            contentType: asString(payload?.contentType || "").trim() || null,
+            contentStatus: asString(payload?.contentStatus || "").trim() || null,
+            contentDeletedAt: contentDeletedAt && !Number.isNaN(contentDeletedAt.getTime()) ? contentDeletedAt : null,
+            splitVersionNum: Number.isFinite(Number(payload?.splitVersionNum)) ? Number(payload.splitVersionNum) : null,
+            splitStatus: asString(payload?.splitStatus || "").trim() || null,
+            role: asString(payload?.role || "").trim() || null,
+            percent: Number.isFinite(percent) && percent > 0 ? percent : null,
+            participantEmail: asString(payload?.participantEmail || "").trim() || null,
+            status,
+            expiresAt: expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : null,
+            acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : row.createdAt,
+            remoteUserId: asString(payload?.remoteUserId || "").trim() || null,
+            remoteNodeUrl: remoteOrigin,
+            remoteVerified: true
+          } as any
+        });
+      }
+      continue;
+    }
 
     await prisma.remoteInvite.create({
       data: {
