@@ -602,8 +602,8 @@ function mapContentType(type: string | null | undefined): LibraryTypeFilter {
 
 function normalizeRemoteParticipationContentStatus(value: string | null | undefined, inviteStatus?: string | null): string {
   const v = String(value || "").trim().toLowerCase();
-  if (String(inviteStatus || "").trim().toLowerCase() === "accepted") return "published";
   if (v === "published" || v === "draft") return v;
+  if (String(inviteStatus || "").trim().toLowerCase() === "accepted") return "published";
   return "draft";
 }
 

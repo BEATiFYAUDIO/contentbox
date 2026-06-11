@@ -15056,8 +15056,8 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       }
       const normalizedContentStatus = (() => {
         const v = asString(contentStatus || "").trim().toLowerCase();
-        if (inviteStatus === "accepted" && contentId && !contentDeletedAt) return "published";
         if (v === "published" || v === "draft") return v;
+        if (inviteStatus === "accepted" && contentId && !contentDeletedAt) return "published";
         return null;
       })();
       app.log.info(
