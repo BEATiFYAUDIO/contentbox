@@ -48,6 +48,14 @@ write_pid_file() {
   printf "%s\n" "${pid}" > "${file}"
 }
 
+listener_pid_for_port() {
+  local port="$1"
+  if ! command -v ss >/dev/null 2>&1; then
+    return 1
+  fi
+  ss -ltnp 2>/dev/null | awk -v needle=":${port}" '$4 ~ needle { print }' | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
 rm_pid_file_if_dead() {
   local file="$1"
   if [[ -f "${file}" ]]; then
@@ -133,16 +141,26 @@ start_api() {
     return 0
   fi
   if curl -fsS "${API_URL}" >/dev/null 2>&1; then
+    local responding_pid
+    responding_pid="$(listener_pid_for_port 4000 || true)"
+    if [[ -n "${responding_pid}" ]]; then
+      write_pid_file "${API_PID_FILE}" "${responding_pid}"
+    fi
     echo "[dev-runtime] API already responding on :4000"
     return 0
   fi
   echo "[dev-runtime] Starting API (stable mode)"
-  (cd "${ROOT_DIR}" && nohup npm --prefix apps/api run start:api > "${API_LOG}" 2>&1 & echo $! > "${API_PID_FILE}")
+  (cd "${ROOT_DIR}" && setsid bash -c 'exec npm --prefix apps/api run start:api' > "${API_LOG}" 2>&1 < /dev/null & echo $! > "${API_PID_FILE}")
   wait_for_url "${API_URL}" 45 "API" || {
     echo "[dev-runtime] API log tail:"
     tail -n 60 "${API_LOG}" || true
     return 1
   }
+  local listener_pid
+  listener_pid="$(listener_pid_for_port 4000 || true)"
+  if [[ -n "${listener_pid}" ]]; then
+    write_pid_file "${API_PID_FILE}" "${listener_pid}"
+  fi
 }
 
 start_dashboard() {
@@ -158,21 +176,38 @@ start_dashboard() {
     return 0
   fi
   if curl -fsS "${DASH_URL}" >/dev/null 2>&1; then
+    local responding_pid
+    responding_pid="$(listener_pid_for_port 5173 || true)"
+    if [[ -n "${responding_pid}" ]]; then
+      write_pid_file "${DASH_PID_FILE}" "${responding_pid}"
+    fi
     echo "[dev-runtime] Dashboard already responding on :5173"
     return 0
   fi
   echo "[dev-runtime] Starting dashboard watcher"
-  (cd "${ROOT_DIR}" && nohup npm --prefix apps/dashboard run dev -- --host 0.0.0.0 --port 5173 > "${DASH_LOG}" 2>&1 & echo $! > "${DASH_PID_FILE}")
+  (cd "${ROOT_DIR}" && setsid bash -c 'exec npm --prefix apps/dashboard run dev -- --host 0.0.0.0 --port 5173' > "${DASH_LOG}" 2>&1 < /dev/null & echo $! > "${DASH_PID_FILE}")
   wait_for_url "${DASH_URL}" 45 "Dashboard" || {
     echo "[dev-runtime] Dashboard log tail:"
     tail -n 60 "${DASH_LOG}" || true
     return 1
   }
+  local listener_pid
+  listener_pid="$(listener_pid_for_port 5173 || true)"
+  if [[ -n "${listener_pid}" ]]; then
+    write_pid_file "${DASH_PID_FILE}" "${listener_pid}"
+  fi
 }
 
 show_status() {
   rm_pid_file_if_dead "${API_PID_FILE}"
   rm_pid_file_if_dead "${DASH_PID_FILE}"
+  if [[ ! -f "${API_PID_FILE}" ]] && curl -fsS "${API_URL}" >/dev/null 2>&1; then
+    local responding_pid
+    responding_pid="$(listener_pid_for_port 4000 || true)"
+    if [[ -n "${responding_pid}" ]]; then
+      write_pid_file "${API_PID_FILE}" "${responding_pid}"
+    fi
+  fi
   local api_pid dash_pid
   api_pid="$(read_pid_file "${API_PID_FILE}" || true)"
   dash_pid="$(read_pid_file "${DASH_PID_FILE}" || true)"

@@ -9851,6 +9851,7 @@ const namedHealthCache: { ok: boolean | null; checkedAt: number | null; inflight
   checkedAt: null,
   inflight: false
 };
+let namedHealthRefreshPromise: Promise<boolean> | null = null;
 let lastNamedOwnershipReconcileAt = 0;
 const TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS = Math.max(
   15_000,
@@ -9928,20 +9929,37 @@ function reconcileNamedTunnelOwnership(force = false) {
   }
 }
 
-async function refreshNamedHealth(origin: string) {
-  if (namedHealthCache.inflight) return;
-  namedHealthCache.inflight = true;
-  try {
-    const defer = shouldDeferNamedTunnelToServiceControl();
-    const localOk = defer.shouldDefer ? true : await checkLocalPublicHealth();
-    const publicOk = await checkPublicPing(origin);
-    const namedConnectedOk = publicOk ? true : await checkNamedTunnelConnected().catch(() => false);
-    const ok = Boolean(localOk && (publicOk || namedConnectedOk));
-    namedHealthCache.ok = ok;
-    namedHealthCache.checkedAt = Date.now();
-  } finally {
-    namedHealthCache.inflight = false;
+async function refreshNamedHealth(origin: string): Promise<boolean> {
+  if (namedHealthRefreshPromise) return namedHealthRefreshPromise;
+  namedHealthRefreshPromise = (async () => {
+    namedHealthCache.inflight = true;
+    try {
+      const defer = shouldDeferNamedTunnelToServiceControl();
+      const localOk = defer.shouldDefer ? true : await checkLocalPublicHealth();
+      const publicOk = await checkPublicPing(origin);
+      const namedConnectedOk = publicOk ? true : await checkNamedTunnelConnected().catch(() => false);
+      // A successful canonical public-origin probe proves the configured named tunnel
+      // is serving, even when that hostname routes to the API port instead of the
+      // public-file port. Only require local public health for the weaker
+      // cloudflared-connection fallback.
+      const ok = Boolean(publicOk || (localOk && namedConnectedOk));
+      namedHealthCache.ok = ok;
+      namedHealthCache.checkedAt = Date.now();
+      return ok;
+    } finally {
+      namedHealthCache.inflight = false;
+      namedHealthRefreshPromise = null;
+    }
+  })();
+  return namedHealthRefreshPromise;
+}
+
+async function ensureNamedHealthFresh(origin: string, force = false): Promise<boolean> {
+  const checkedAt = namedHealthCache.checkedAt || 0;
+  if (!force && checkedAt && Date.now() - checkedAt <= NAMED_HEALTH_REFRESH_INTERVAL_MS) {
+    return namedHealthCache.ok === true;
   }
+  return refreshNamedHealth(origin);
 }
 
 function getPublicLinkState(): PublicLinkState {
@@ -10350,6 +10368,11 @@ async function triggerPublicStartBestEffort() {
         { mode: defer.tunnelControl.mode, activeProcessToken: defer.tunnelControl.activeProcessToken },
         "public.named.defer_to_service_control"
       );
+      return;
+    }
+    const alreadyOnline = await ensureNamedHealthFresh(cfg.publicOrigin, true);
+    if (alreadyOnline) {
+      app.log.info({ publicOrigin: cfg.publicOrigin }, "public.named.autostart_adopted_existing_tunnel");
       return;
     }
     const cur = tunnelManager.status();
@@ -16696,6 +16719,10 @@ registerWitnessRoutes(app, { prisma, requireAuth });
 // Public exposure control
 app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const state = getPublicLinkState();
+  if (state.mode === "named" && state.canonicalOrigin) {
+    await ensureNamedHealthFresh(state.canonicalOrigin, true).catch(() => false);
+    return reply.send(getPublicStatusCached(true));
+  }
   const nodeMode = getNodeMode();
   if (state.mode === "quick" && nodeMode === "basic") {
     const defer = shouldDeferNamedTunnelToServiceControl();
@@ -20763,6 +20790,13 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       return reply.code(409).send({
         ...getPublicStatus(),
         lastError: "missing_named_tunnel_config"
+      });
+    }
+    const alreadyOnline = await ensureNamedHealthFresh(cfg.publicOrigin, true);
+    if (alreadyOnline) {
+      return reply.send({
+        ...getPublicStatusCached(true),
+        message: "Named tunnel is already online."
       });
     }
     const namedToken = getNamedTunnelToken();
