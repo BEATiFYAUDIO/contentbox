@@ -2185,6 +2185,94 @@ type PublicNodePresence = {
   };
 };
 
+type NetworkMapStatus = "ready" | "limited" | "disabled" | "offline" | "unknown";
+type NetworkMapReasonCode =
+  | "PROVIDER_ROLE_DISABLED"
+  | "PUBLIC_ENDPOINT_UNREACHABLE"
+  | "NON_PERSISTENT_PUBLIC_ORIGIN"
+  | "IDENTITY_UNAVAILABLE"
+  | "LIGHTNING_UNCONFIGURED"
+  | "LIGHTNING_UNREACHABLE"
+  | "CHAIN_NOT_SYNCED"
+  | "GRAPH_NOT_SYNCED"
+  | "RECEIVE_NOT_READY"
+  | "NO_ACTIVE_CHANNELS"
+  | "LOW_ROUTE_DIVERSITY"
+  | "LOW_INBOUND_LIQUIDITY"
+  | "LOW_OUTBOUND_LIQUIDITY"
+  | "PENDING_CHANNELS"
+  | "COMMERCE_LIMITED"
+  | "SETTLEMENT_LIMITED"
+  | "PROOFS_LIMITED"
+  | "LOW_PROOF_ACTIVITY"
+  | "NEW_NODE";
+type NetworkMapServiceStatus = {
+  status: NetworkMapStatus;
+  message?: string;
+  reasonCodes?: NetworkMapReasonCode[];
+  score?: number | null;
+};
+type NetworkMapSignalStatus = {
+  status: NetworkMapStatus;
+  message?: string;
+  reasonCodes?: NetworkMapReasonCode[];
+  score?: number | null;
+};
+type NetworkMapNode = {
+  nodeId: string;
+  displayName: string;
+  operator?: string;
+  roles: Array<"creator" | "identity" | "content" | "commerce" | "settlement" | "proof">;
+  location?: {
+    region?: string;
+    country?: string;
+    lat?: number;
+    lng?: number;
+  };
+  overallStatus: NetworkMapStatus;
+  services: {
+    identity: NetworkMapServiceStatus;
+    content: NetworkMapServiceStatus;
+    commerce: NetworkMapServiceStatus;
+    settlement: NetworkMapServiceStatus;
+    proofs: NetworkMapServiceStatus;
+  };
+  readiness: {
+    provisioned: NetworkMapSignalStatus;
+    durable: NetworkMapSignalStatus;
+    reachable: NetworkMapSignalStatus;
+  };
+  trust: {
+    operatorVerified: boolean;
+    proofCapable: boolean;
+    proofCount?: number;
+    trustScore?: number;
+  };
+  history?: {
+    nodeAgeDays?: number | null;
+    reliability30d?: number | null;
+    reliability90d?: number | null;
+    successfulPayments30d?: number | null;
+  };
+  connect: {
+    providerNodeId: string;
+    providerPublicKey: string;
+    providerProfileId: string | null;
+    providerCanonicalUrl: string;
+    capabilities: {
+      identity: boolean;
+      content: boolean;
+      commerce: boolean;
+      settlement: boolean;
+      proofs: boolean;
+    };
+  };
+  technical: {
+    version?: string;
+    network?: string;
+  };
+};
+
 type RuntimeStatusReason =
   | "normal_start"
   | "manual_restart"
@@ -7948,6 +8036,416 @@ function verifyStablePayloadSignature(nodePubKey: string, payload: unknown, sign
   }
 }
 
+function networkMapService(
+  status: NetworkMapStatus,
+  message?: string,
+  input?: { reasonCodes?: NetworkMapReasonCode[]; score?: number | null }
+): NetworkMapServiceStatus {
+  const out: NetworkMapServiceStatus = message ? { status, message } : { status };
+  if (input?.reasonCodes?.length) out.reasonCodes = [...new Set(input.reasonCodes)];
+  if (input && "score" in input) out.score = input.score ?? null;
+  return out;
+}
+
+function networkMapSignal(
+  status: NetworkMapStatus,
+  message?: string,
+  input?: { reasonCodes?: NetworkMapReasonCode[]; score?: number | null }
+): NetworkMapSignalStatus {
+  const out: NetworkMapSignalStatus = message ? { status, message } : { status };
+  if (input?.reasonCodes?.length) out.reasonCodes = [...new Set(input.reasonCodes)];
+  if (input && "score" in input) out.score = input.score ?? null;
+  return out;
+}
+
+function deriveNetworkNodeOverallStatus(input: {
+  reachable: NetworkMapStatus;
+  durable: NetworkMapStatus;
+  provisioned: NetworkMapStatus;
+  commerce: NetworkMapStatus;
+}): NetworkMapStatus {
+  if (input.reachable === "offline") return "offline";
+  if (input.provisioned === "disabled") return "disabled";
+  if (
+    input.reachable === "ready" &&
+    input.durable === "ready" &&
+    input.provisioned === "ready" &&
+    input.commerce === "ready"
+  ) {
+    return "ready";
+  }
+  if (input.reachable === "unknown") return "unknown";
+  return "limited";
+}
+
+function boundedNetworkMapScore(score: number): number {
+  if (!Number.isFinite(score)) return 0;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function networkMapStatusFromScore(score: number, readyAt = 80): NetworkMapStatus {
+  if (score >= readyAt) return "ready";
+  if (score > 0) return "limited";
+  return "offline";
+}
+
+function clampNetworkMapScoreForStatus(status: NetworkMapStatus, score: number): number {
+  const bounded = boundedNetworkMapScore(score);
+  if (status === "ready") return Math.max(85, bounded);
+  if (status === "limited") return Math.min(84, Math.max(50, bounded));
+  if (status === "disabled" || status === "offline") return Math.min(49, bounded);
+  return bounded;
+}
+
+async function evaluateNetworkMapCommerceReadiness(input: {
+  providerCapable: boolean;
+  sovereignReadiness: LocalSovereignReadiness | null;
+}): Promise<{
+  commerceStatus: NetworkMapStatus;
+  settlementStatus: NetworkMapStatus;
+  score: number;
+  reasonCodes: NetworkMapReasonCode[];
+}> {
+  if (!input.providerCapable) {
+    return {
+      commerceStatus: "disabled",
+      settlementStatus: "disabled",
+      score: 0,
+      reasonCodes: ["PROVIDER_ROLE_DISABLED"]
+    };
+  }
+
+  const [readiness, capacity] = await Promise.all([
+    getLightningReadiness(prisma as any).catch(() => null),
+    getLightningReceiveCapacity(prisma as any).catch(() => null)
+  ]);
+  const reasonCodes: NetworkMapReasonCode[] = [];
+  let score = 20; // Provider role is explicitly advertised.
+
+  if (!input.sovereignReadiness?.localLndReady) reasonCodes.push("LIGHTNING_UNREACHABLE");
+  if (!readiness?.configured) reasonCodes.push("LIGHTNING_UNCONFIGURED");
+  if (!readiness?.nodeReachable) reasonCodes.push("LIGHTNING_UNREACHABLE");
+  if (readiness?.wallet?.syncedToChain === false) reasonCodes.push("CHAIN_NOT_SYNCED");
+  if (readiness?.wallet?.syncedToGraph === false) reasonCodes.push("GRAPH_NOT_SYNCED");
+  if (!readiness?.receiveReady) reasonCodes.push("RECEIVE_NOT_READY");
+
+  if (input.sovereignReadiness?.localLndReady && readiness?.nodeReachable) score += 20;
+  if (readiness?.wallet?.syncedToChain) score += 8;
+  if (readiness?.wallet?.syncedToGraph) score += 8;
+  if (readiness?.receiveReady) score += 12;
+
+  const activeChannels = Math.max(0, Number(capacity?.channels?.active || 0));
+  const pendingChannels = Math.max(0, Number(capacity?.channels?.pending || 0));
+  const inboundSats = Math.max(0, Number(capacity?.inboundSats || 0));
+  const outboundSats = Math.max(0, Number(capacity?.outboundSats || 0));
+
+  if (activeChannels <= 0) reasonCodes.push("NO_ACTIVE_CHANNELS");
+  else score += Math.min(12, activeChannels * 6);
+
+  if (activeChannels > 0 && activeChannels < 2) reasonCodes.push("LOW_ROUTE_DIVERSITY");
+  if (activeChannels >= 2) score += 8;
+
+  if (inboundSats < 100_000) reasonCodes.push("LOW_INBOUND_LIQUIDITY");
+  else if (inboundSats >= 1_000_000) score += 12;
+  else score += 7;
+
+  if (outboundSats < 50_000) reasonCodes.push("LOW_OUTBOUND_LIQUIDITY");
+  else if (outboundSats >= 500_000) score += 10;
+  else score += 6;
+
+  if (pendingChannels > 0) reasonCodes.push("PENDING_CHANNELS");
+  else if (activeChannels > 0) score += 2;
+
+  const boundedScore = boundedNetworkMapScore(score);
+  const hardLimited = reasonCodes.some((code) =>
+    [
+      "LIGHTNING_UNCONFIGURED",
+      "LIGHTNING_UNREACHABLE",
+      "CHAIN_NOT_SYNCED",
+      "GRAPH_NOT_SYNCED",
+      "NO_ACTIVE_CHANNELS",
+      "LOW_ROUTE_DIVERSITY",
+      "LOW_INBOUND_LIQUIDITY",
+      "LOW_OUTBOUND_LIQUIDITY"
+    ].includes(code)
+  );
+  const commerceStatus: NetworkMapStatus = !input.sovereignReadiness?.localLndReady
+    ? "limited"
+    : !hardLimited && boundedScore >= 80
+      ? "ready"
+      : "limited";
+  return {
+    commerceStatus,
+    settlementStatus: commerceStatus === "ready" ? "ready" : "limited",
+    score: clampNetworkMapScoreForStatus(commerceStatus, boundedScore),
+    reasonCodes: [...new Set(reasonCodes)]
+  };
+}
+
+function evaluateNetworkMapDurability(input: {
+  endpointActive: boolean;
+  endpointStable: boolean;
+  commerceStatus: NetworkMapStatus;
+  proofCount: number;
+  nodeAgeDays: number | null;
+}): { status: NetworkMapStatus; score: number; reasonCodes: NetworkMapReasonCode[] } {
+  const reasonCodes: NetworkMapReasonCode[] = [];
+  let score = 0;
+  if (input.endpointActive) score += 25;
+  else reasonCodes.push("PUBLIC_ENDPOINT_UNREACHABLE");
+
+  if (input.endpointStable) score += 25;
+  else reasonCodes.push("NON_PERSISTENT_PUBLIC_ORIGIN");
+
+  if (input.commerceStatus === "ready") score += 20;
+  else if (input.commerceStatus === "limited") {
+    score += 8;
+    reasonCodes.push("COMMERCE_LIMITED");
+  }
+
+  if (input.proofCount > 0) score += Math.min(10, 4 + input.proofCount);
+  else reasonCodes.push("LOW_PROOF_ACTIVITY");
+
+  if (input.nodeAgeDays == null) {
+    reasonCodes.push("NEW_NODE");
+  } else if (input.nodeAgeDays >= 30) {
+    score += 20;
+  } else if (input.nodeAgeDays >= 7) {
+    score += 10;
+    reasonCodes.push("NEW_NODE");
+  } else {
+    score += 4;
+    reasonCodes.push("NEW_NODE");
+  }
+
+  const boundedScore = boundedNetworkMapScore(score);
+  const status = networkMapStatusFromScore(boundedScore, 75);
+  return {
+    status,
+    score: clampNetworkMapScoreForStatus(status, boundedScore),
+    reasonCodes: [...new Set(reasonCodes)]
+  };
+}
+
+function evaluateNetworkMapProvisioning(input: {
+  identityStatus: NetworkMapStatus;
+  contentStatus: NetworkMapStatus;
+  commerceStatus: NetworkMapStatus;
+  settlementStatus: NetworkMapStatus;
+  proofsReady: boolean;
+}): { status: NetworkMapStatus; score: number; reasonCodes: NetworkMapReasonCode[] } {
+  const reasonCodes: NetworkMapReasonCode[] = [];
+  let score = 0;
+  if (input.identityStatus === "ready") score += 20;
+  else reasonCodes.push("IDENTITY_UNAVAILABLE");
+  if (input.contentStatus === "ready") score += 20;
+  else reasonCodes.push("PUBLIC_ENDPOINT_UNREACHABLE");
+  if (input.commerceStatus === "ready") score += 25;
+  else reasonCodes.push("COMMERCE_LIMITED");
+  if (input.settlementStatus === "ready") score += 25;
+  else reasonCodes.push("SETTLEMENT_LIMITED");
+  if (input.proofsReady) score += 10;
+  else reasonCodes.push("PROOFS_LIMITED");
+  const boundedScore = boundedNetworkMapScore(score);
+  const status = boundedScore >= 90 ? "ready" : boundedScore > 0 ? "limited" : "disabled";
+  return {
+    status,
+    score: clampNetworkMapScoreForStatus(status, boundedScore),
+    reasonCodes: [...new Set(reasonCodes)]
+  };
+}
+
+async function buildLocalNetworkNode(): Promise<NetworkMapNode | null> {
+  const identity = await buildLocalNodeIdentityDoc();
+  const presence = await buildNodePresence();
+  const publicStatus = getPublicStatusCached();
+  const sovereignReadiness = await getLocalSovereignReadinessCached().catch(() => null);
+  const runtimeStatus = getRuntimeHealthStatus();
+  const profileId = identity.profileId || null;
+  const operator = profileId
+    ? await prisma.user
+        .findUnique({
+          where: { id: profileId },
+          select: { displayName: true, createdAt: true }
+        })
+        .then((user) =>
+          user
+            ? {
+                displayName: String(user.displayName || "").trim() || null,
+                createdAt: user.createdAt
+              }
+            : null
+        )
+        .catch(() => null)
+    : null;
+  const operatorName = operator?.displayName || null;
+  const nodeAgeDays = operator?.createdAt
+    ? Math.max(0, Math.floor((Date.now() - new Date(operator.createdAt).getTime()) / 86_400_000))
+    : null;
+  const [proofCount, witnessIdentity] = profileId
+    ? await Promise.all([
+        prisma.proofRecord
+          .count({
+            where: {
+              userId: profileId,
+              status: "verified",
+              revokedAt: null
+            }
+          })
+          .catch(() => 0),
+        prisma.witnessIdentity
+          .findUnique({
+            where: { userId: profileId },
+            select: { id: true, revokedAt: true }
+          })
+          .catch(() => null)
+      ])
+    : [0, null];
+
+  const canonicalUrl = normalizePublicOriginBase(
+    String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || presence.endpoint.url || "").trim()
+  );
+  const endpointActive = Boolean(presence.endpoint.active && canonicalUrl);
+  const endpointStable = presence.endpoint.stability === "stable" || publicStatus.mode === "named";
+  const providerCapable = Boolean(identity.serviceRoles.invoiceProvider);
+  const proofsReady = Boolean(witnessIdentity && !witnessIdentity.revokedAt);
+  const reachableStatus: NetworkMapStatus = endpointActive
+    ? "ready"
+    : runtimeStatus.runtime.status === "running"
+      ? "limited"
+      : "offline";
+  const contentStatus: NetworkMapStatus = endpointActive ? "ready" : "limited";
+  const identityStatus: NetworkMapStatus = identity.nodePubKey === "ed25519:unavailable" ? "limited" : "ready";
+  const commerceReadiness = await evaluateNetworkMapCommerceReadiness({
+    providerCapable,
+    sovereignReadiness
+  });
+  const commerceStatus = commerceReadiness.commerceStatus;
+  const settlementStatus = commerceReadiness.settlementStatus;
+  const durability = evaluateNetworkMapDurability({
+    endpointActive,
+    endpointStable,
+    commerceStatus,
+    proofCount,
+    nodeAgeDays
+  });
+  const durableStatus = durability.status;
+  const provisioning = evaluateNetworkMapProvisioning({
+    identityStatus,
+    contentStatus,
+    commerceStatus,
+    settlementStatus,
+    proofsReady
+  });
+  const provisionedStatus = provisioning.status;
+  const overallStatus = deriveNetworkNodeOverallStatus({
+    reachable: reachableStatus,
+    durable: durableStatus,
+    provisioned: provisionedStatus,
+    commerce: commerceStatus
+  });
+  const roles: NetworkMapNode["roles"] = ["creator", "identity", "content"];
+  if (providerCapable) {
+    roles.push("commerce", "settlement");
+  }
+  if (proofsReady || proofCount > 0) {
+    roles.push("proof");
+  }
+
+  return {
+    nodeId: identity.nodeId,
+    displayName: operatorName || "Certifyd Node",
+    operator: operatorName || undefined,
+    roles,
+    overallStatus,
+    services: {
+      identity: networkMapService(
+        identityStatus,
+        identityStatus === "ready" ? undefined : "Node public key is unavailable.",
+        { reasonCodes: identityStatus === "ready" ? [] : ["IDENTITY_UNAVAILABLE"] }
+      ),
+      content: networkMapService(contentStatus, endpointActive ? undefined : "Public content endpoint is not fully reachable."),
+      commerce: networkMapService(
+        commerceStatus,
+        providerCapable
+          ? commerceStatus === "ready"
+            ? undefined
+            : "Provider role is advertised but commerce readiness is degraded."
+          : "Node does not advertise provider commerce capability.",
+        { reasonCodes: commerceReadiness.reasonCodes, score: commerceReadiness.score }
+      ),
+      settlement: networkMapService(
+        settlementStatus,
+        providerCapable
+          ? settlementStatus === "ready"
+            ? undefined
+            : "Settlement readiness is degraded."
+          : "Node does not advertise settlement capability.",
+        {
+          reasonCodes:
+            settlementStatus === "ready"
+              ? []
+              : commerceReadiness.reasonCodes.length
+                ? commerceReadiness.reasonCodes
+                : ["SETTLEMENT_LIMITED"],
+          score: commerceReadiness.score
+        }
+      ),
+      proofs: networkMapService(proofsReady || proofCount > 0 ? "ready" : "limited")
+    },
+    readiness: {
+      provisioned: networkMapSignal(
+        provisionedStatus,
+        provisionedStatus === "ready" ? undefined : "Node is not fully ready to provision creators.",
+        { reasonCodes: provisioning.reasonCodes, score: provisioning.score }
+      ),
+      durable: networkMapSignal(
+        durableStatus,
+        durableStatus === "ready" ? undefined : "Durability is limited by endpoint, commerce, proof, or age signals.",
+        { reasonCodes: durability.reasonCodes, score: durability.score }
+      ),
+      reachable: networkMapSignal(
+        reachableStatus,
+        reachableStatus === "ready" ? undefined : "Public endpoint is not reporting fully reachable.",
+        { reasonCodes: reachableStatus === "ready" ? [] : ["PUBLIC_ENDPOINT_UNREACHABLE"] }
+      )
+    },
+    trust: {
+      operatorVerified: proofCount > 0,
+      proofCapable: proofsReady,
+      proofCount,
+      trustScore: undefined
+    },
+    history: {
+      nodeAgeDays,
+      reliability30d: null,
+      reliability90d: null,
+      successfulPayments30d: null
+    },
+    connect: {
+      providerNodeId: identity.nodeId,
+      providerPublicKey: identity.nodePubKey,
+      providerProfileId: identity.profileId || null,
+      providerCanonicalUrl: canonicalUrl || "",
+      capabilities: {
+        identity: true,
+        content: endpointActive,
+        commerce: providerCapable,
+        settlement: providerCapable,
+        proofs: proofsReady || proofCount > 0
+      }
+    },
+    technical: {
+      version: "network-map-v1"
+    }
+  };
+}
+
+async function listNetworkNodes(): Promise<NetworkMapNode[]> {
+  const localNode = await buildLocalNetworkNode();
+  return localNode ? [localNode] : [];
+}
+
 function buildProviderAcknowledgmentPayload(input: {
   provider: ProviderAcknowledgmentResponse["provider"];
   client: ProviderAcknowledgmentResponse["client"];
@@ -11659,6 +12157,12 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/apple-touch-icon.png", handleTabIcon);
   appPublic.get("/.well-known/certifyd-node", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("GET", "/.well-known/certifyd-node", req, reply)
+  );
+  appPublic.get("/api/network/nodes", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", "/api/network/nodes", req, reply)
+  );
+  appPublic.get("/api/network/nodes/:nodeId", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", `/api/network/nodes/${encodeURIComponent(String((req.params as any)?.nodeId || ""))}`, req, reply)
   );
   appPublic.get("/api/network/provider/capabilities", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("GET", "/api/network/provider/capabilities", req, reply)
@@ -18830,6 +19334,28 @@ app.get("/api/network/presence", { preHandler: requireAuth }, async (req: any, r
   const userId = (req.user as JwtUser).sub;
   const presence = await buildNodePresence(userId);
   return reply.send(presence);
+});
+
+app.get("/api/network/nodes", async (_req: any, reply: any) => {
+  const nodes = await listNetworkNodes();
+  return reply.send({
+    schema: "certifyd.network.nodes.v1",
+    generatedAt: new Date().toISOString(),
+    items: nodes
+  });
+});
+
+app.get("/api/network/nodes/:nodeId", async (req: any, reply: any) => {
+  const nodeId = String((req.params as any)?.nodeId || "").trim();
+  if (!nodeId) return badRequest(reply, "nodeId required");
+  const nodes = await listNetworkNodes();
+  const node = nodes.find((item) => item.nodeId === nodeId);
+  if (!node) return notFound(reply, "Network node not found");
+  return reply.send({
+    schema: "certifyd.network.node.v1",
+    generatedAt: new Date().toISOString(),
+    node
+  });
 });
 
 app.get("/api/network/provider/capabilities", async (_req: any, reply: any) => {
