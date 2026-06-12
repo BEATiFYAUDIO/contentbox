@@ -4,6 +4,17 @@ import { fileURLToPath } from "node:url";
 import { resolveContentboxRoot } from "./contentboxRoot.js";
 
 export type PublicOriginMode = "external" | "temporary";
+export type PublicLocationPrecision = "country" | "region" | "city";
+export type PublicLocationSource = "operator_declared" | "browser_confirmed";
+
+export type PublicLocationConfig = {
+  country?: string | null;
+  region?: string | null;
+  city?: string | null;
+  displayLocation?: string | null;
+  precision?: PublicLocationPrecision | null;
+  source?: PublicLocationSource | null;
+};
 
 export type PublicOriginRecord = {
   publicOrigin: string;
@@ -113,6 +124,7 @@ export type PublicOriginConfig = {
   publicOriginFallback?: string | null;
   publicBuyOriginFallback?: string | null;
   publicStudioOriginFallback?: string | null;
+  publicLocation?: PublicLocationConfig | null;
   updatedAt?: string | null;
 };
 
@@ -177,6 +189,10 @@ export function setPublicOriginConfig(config: PublicOriginConfig) {
       config.publicStudioOriginFallback !== undefined
         ? config.publicStudioOriginFallback || null
         : current.publicStudioOriginFallback || null,
+    publicLocation:
+      config.publicLocation !== undefined
+        ? config.publicLocation || null
+        : current.publicLocation || null,
     updatedAt: new Date().toISOString()
   });
 }

@@ -59,7 +59,13 @@ import {
   testLightningNodeConnection
 } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
-import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
+import {
+  getPublicOriginConfig,
+  setPublicOriginConfig,
+  type PublicLocationConfig,
+  type PublicLocationPrecision,
+  type PublicLocationSource
+} from "./lib/publicOriginStore.js";
 import {
   computePublicLinkState,
   getNamedTunnelConfig,
@@ -2224,10 +2230,12 @@ type NetworkMapNode = {
   operator?: string;
   roles: Array<"creator" | "identity" | "content" | "commerce" | "settlement" | "proof">;
   location?: {
-    region?: string;
     country?: string;
-    lat?: number;
-    lng?: number;
+    region?: string;
+    city?: string;
+    displayLocation?: string;
+    precision?: PublicLocationPrecision;
+    source?: PublicLocationSource;
   };
   overallStatus: NetworkMapStatus;
   services: {
@@ -2272,6 +2280,57 @@ type NetworkMapNode = {
     network?: string;
   };
 };
+
+function sanitizePublicLocationText(value: unknown, maxLength = 120): string | null {
+  const text = asString(value || "").trim().replace(/\s+/g, " ");
+  if (!text) return null;
+  const clipped = text.slice(0, maxLength).trim();
+  if (!clipped) return null;
+  if (/^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(clipped)) return null;
+  if (/\b(lat|lng|longitude|latitude|gps|coordinates?)\b/i.test(clipped)) return null;
+  if (/^\d+\s+\S+/.test(clipped)) return null;
+  if (/\b(street|st\.|road|rd\.|avenue|ave\.|drive|dr\.|lane|ln\.|court|ct\.|boulevard|blvd\.|unit|apt|apartment|suite)\b/i.test(clipped)) {
+    return null;
+  }
+  return clipped;
+}
+
+function normalizePublicLocationConfig(input: unknown): PublicLocationConfig | null {
+  if (!input || typeof input !== "object") return null;
+  const raw = input as Record<string, unknown>;
+  const precisionRaw = asString(raw.precision || "").trim();
+  const sourceRaw = asString(raw.source || "").trim();
+  const precision: PublicLocationPrecision =
+    precisionRaw === "country" || precisionRaw === "region" || precisionRaw === "city" ? precisionRaw : "region";
+  const source: PublicLocationSource = sourceRaw === "browser_confirmed" ? "browser_confirmed" : "operator_declared";
+  const country = sanitizePublicLocationText(raw.country, 80);
+  const region = sanitizePublicLocationText(raw.region, 100);
+  const city = sanitizePublicLocationText(raw.city, 100);
+  const displayLocation = sanitizePublicLocationText(raw.displayLocation, 140);
+  const hasAllowedPrecisionValue =
+    precision === "country" ? Boolean(country) : precision === "region" ? Boolean(country || region) : Boolean(country || region || city);
+  if (!hasAllowedPrecisionValue && !displayLocation) return null;
+
+  const normalized: PublicLocationConfig = { precision, source };
+  if (country) normalized.country = country;
+  if (precision !== "country" && region) normalized.region = region;
+  if (precision === "city" && city) normalized.city = city;
+  if (displayLocation) normalized.displayLocation = displayLocation;
+  return normalized;
+}
+
+function publicNetworkMapLocation(): NetworkMapNode["location"] | undefined {
+  const location = normalizePublicLocationConfig(getPublicOriginConfig().publicLocation || null);
+  if (!location) return undefined;
+  const result: NonNullable<NetworkMapNode["location"]> = {};
+  if (location.country) result.country = location.country;
+  if (location.region) result.region = location.region;
+  if (location.city) result.city = location.city;
+  if (location.displayLocation) result.displayLocation = location.displayLocation;
+  if (location.precision) result.precision = location.precision;
+  if (location.source) result.source = location.source;
+  return Object.keys(result).length ? result : undefined;
+}
 
 type RuntimeStatusReason =
   | "normal_start"
@@ -8351,12 +8410,14 @@ async function buildLocalNetworkNode(): Promise<NetworkMapNode | null> {
   if (proofsReady || proofCount > 0) {
     roles.push("proof");
   }
+  const location = publicNetworkMapLocation();
 
   return {
     nodeId: identity.nodeId,
     displayName: operatorName || "Certifyd Node",
     operator: operatorName || undefined,
     roles,
+    ...(location ? { location } : {}),
     overallStatus,
     services: {
       identity: networkMapService(
@@ -18295,6 +18356,7 @@ app.get("/api/public/config", { preHandler: requireAuth }, async (_req: any, rep
     publicOriginFallback: config.publicOriginFallback || null,
     publicBuyOriginFallback: config.publicBuyOriginFallback || null,
     publicStudioOriginFallback: config.publicStudioOriginFallback || null,
+    publicLocation: normalizePublicLocationConfig(config.publicLocation || null),
     updatedAt: config.updatedAt || null
   });
 });
@@ -18310,6 +18372,7 @@ app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, rep
     publicOriginFallback?: string;
     publicBuyOriginFallback?: string;
     publicStudioOriginFallback?: string;
+    publicLocation?: unknown;
   };
   const provider = String(body.provider || "").trim();
   const domain = String(body.domain || "").trim();
@@ -18329,7 +18392,8 @@ app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, rep
     publicStudioOrigin: body.publicStudioOrigin !== undefined ? publicStudioOrigin || null : undefined,
     publicOriginFallback: body.publicOriginFallback !== undefined ? publicOriginFallback || null : undefined,
     publicBuyOriginFallback: body.publicBuyOriginFallback !== undefined ? publicBuyOriginFallback || null : undefined,
-    publicStudioOriginFallback: body.publicStudioOriginFallback !== undefined ? publicStudioOriginFallback || null : undefined
+    publicStudioOriginFallback: body.publicStudioOriginFallback !== undefined ? publicStudioOriginFallback || null : undefined,
+    publicLocation: body.publicLocation !== undefined ? normalizePublicLocationConfig(body.publicLocation) : undefined
   });
   const config = getPublicOriginConfig();
   return reply.send({
@@ -18343,6 +18407,7 @@ app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, rep
     publicOriginFallback: config.publicOriginFallback || null,
     publicBuyOriginFallback: config.publicBuyOriginFallback || null,
     publicStudioOriginFallback: config.publicStudioOriginFallback || null,
+    publicLocation: normalizePublicLocationConfig(config.publicLocation || null),
     updatedAt: config.updatedAt || null
   });
 });
