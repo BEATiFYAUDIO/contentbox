@@ -240,7 +240,7 @@ export default function ProfilePage({
       () => {
         setPublicLocationSource("browser_confirmed");
         setPublicLocationMsg(
-          "Browser location permission granted. Exact coordinates were not saved. Enter the public country, region, city, and display location manually."
+          "Browser permission granted. Exact coordinates were not saved or published. Review and save only the approximate public area you want shown."
         );
       },
       () => {
@@ -436,8 +436,9 @@ export default function ProfilePage({
             <div id="public-location" className="rounded-lg border border-neutral-800 bg-neutral-900/30 p-3">
               <div className="text-sm font-medium">Public Location</div>
               <div className="mt-1 text-xs text-neutral-500">
-                This public location may be used for profile discovery and, if your node is eligible, on the Certifyd Network Map.
-                Use an approximate area only. Never enter a street address or exact private location.
+                This is your approximate public display location. It may be used for profile discovery and, if your node is eligible,
+                on the Certifyd Network Map. Never enter a street address, postal code, phone number, URL, email, exact coordinates,
+                or private location.
               </div>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
                 <label className="text-xs text-neutral-400" htmlFor="public-location-country">
@@ -477,7 +478,7 @@ export default function ProfilePage({
                   />
                 </label>
                 <label className="text-xs text-neutral-400" htmlFor="public-location-display">
-                  Display Location
+                  Public Display Location
                   <input
                     id="public-location-display"
                     name="publicLocationDisplay"
@@ -517,7 +518,7 @@ export default function ProfilePage({
                   disabled={publicLocationSaving}
                   className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
                 >
-                  {publicLocationSaving ? "Saving…" : "Save public location"}
+                  {publicLocationSaving ? "Saving…" : "Save approximate public location"}
                 </button>
                 <button
                   type="button"
@@ -532,8 +533,8 @@ export default function ProfilePage({
                 </span>
               </div>
               <div className="mt-2 text-xs text-neutral-500">
-                The browser helper never saves exact coordinates. If no safe reverse-geocoding helper exists, enter country, region,
-                and city manually.
+                The browser helper only confirms permission. It never saves exact coordinates or publishes browser coordinates.
+                You must manually review and save the approximate public location above.
               </div>
               {publicLocationLoading ? <div className="mt-2 text-xs text-neutral-500">Loading public location…</div> : null}
               {publicLocationMsg ? <div className="mt-2 text-xs text-amber-300">{publicLocationMsg}</div> : null}

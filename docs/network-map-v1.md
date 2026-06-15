@@ -143,6 +143,7 @@ Example saved value:
 ```
 
 When configured, `GET /api/network/nodes` and `GET /api/network/nodes/:nodeId` include it as `node.location`. If unset, `location` is omitted.
+The public DTO does not include `lat`, `lng`, exact coordinates, raw browser coordinates, IP-derived location, or private address fields.
 
 Example public output:
 
@@ -162,6 +163,7 @@ Example public output:
 ```
 
 The browser helper requests geolocation permission only to support operator review. ContentBox does not store exact browser coordinates, does not publish coordinates, does not infer from IP, and does not auto-publish location fields.
+Normal place names such as `St. Louis, Missouri` and names with apostrophes, hyphens, or periods are allowed. Exact addresses, postal codes, phone numbers, URLs, emails, coordinate strings, and location fields that describe GPS/latitude/longitude are rejected.
 
 ## Status Model
 

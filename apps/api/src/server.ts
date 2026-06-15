@@ -2286,12 +2286,22 @@ function sanitizePublicLocationText(value: unknown, maxLength = 120): string | n
   if (!text) return null;
   const clipped = text.slice(0, maxLength).trim();
   if (!clipped) return null;
+  if (/[^\p{L}\p{N}\s,.'’()-]/u.test(clipped)) return null;
+  if (/https?:\/\/|www\.|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(clipped)) return null;
   if (/^-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?$/.test(clipped)) return null;
   if (/\b(lat|lng|longitude|latitude|gps|coordinates?)\b/i.test(clipped)) return null;
-  if (/^\d+\s+\S+/.test(clipped)) return null;
-  if (/\b(street|st\.|road|rd\.|avenue|ave\.|drive|dr\.|lane|ln\.|court|ct\.|boulevard|blvd\.|unit|apt|apartment|suite)\b/i.test(clipped)) {
-    return null;
-  }
+  const digitCount = (clipped.match(/\d/g) || []).length;
+  if (digitCount >= 7) return null;
+  if (/^\d{4,6}$/.test(clipped)) return null;
+  if (/\b[A-Z]\d[A-Z][ -]?\d[A-Z]\d\b/i.test(clipped)) return null;
+  if (/\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/i.test(clipped)) return null;
+  if (/\b\d{5}(?:-\d{4})?\b/.test(clipped)) return null;
+  if (/\b(?:unit|apt|apartment|suite|floor|fl\.|#)\s*\w+/i.test(clipped)) return null;
+  if (
+    /^\d{1,6}\s+[\p{L}\p{N}.'’()-]+(?:\s+[\p{L}\p{N}.'’()-]+){0,5}\s+(?:street|st\.?|road|rd\.?|avenue|ave\.?|drive|dr\.?|lane|ln\.?|court|ct\.?|boulevard|blvd\.?|crescent|cres\.?|circle|cir\.?|way|place|pl\.?)\b/iu.test(
+      clipped
+    )
+  ) return null;
   return clipped;
 }
 
