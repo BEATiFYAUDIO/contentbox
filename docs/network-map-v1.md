@@ -65,10 +65,12 @@ type NetworkNode = {
   operator?: string;
   roles: ("creator" | "identity" | "content" | "commerce" | "settlement" | "proof")[];
   location?: {
-    region?: string;
     country?: string;
-    lat?: number;
-    lng?: number;
+    region?: string;
+    city?: string;
+    displayLocation?: string;
+    precision?: "country" | "region" | "city";
+    source?: "operator_declared" | "browser_confirmed";
   };
   overallStatus: "ready" | "limited" | "disabled" | "offline" | "unknown";
   services: {
@@ -114,6 +116,54 @@ type NetworkNode = {
   };
 };
 ```
+
+## Public Location Metadata
+
+Location is optional and operator-controlled. It is stored in the existing public networking config file:
+
+```text
+${CONTENTBOX_ROOT}/state/public-origin-config.json
+```
+
+The dashboard edits it from Profile → Public Profile (Presentation) → Public Location. The same `/api/public/config` save path persists the `publicLocation` object without duplicating storage.
+
+Example saved value:
+
+```json
+{
+  "publicLocation": {
+    "country": "Canada",
+    "region": "Ontario",
+    "city": "Innisfil",
+    "displayLocation": "Innisfil, Ontario",
+    "precision": "city",
+    "source": "operator_declared"
+  }
+}
+```
+
+When configured, `GET /api/network/nodes` and `GET /api/network/nodes/:nodeId` include it as `node.location`. If unset, `location` is omitted.
+The public DTO does not include `lat`, `lng`, exact coordinates, raw browser coordinates, IP-derived location, or private address fields.
+
+Example public output:
+
+```json
+{
+  "nodeId": "node:...",
+  "displayName": "Innisfil Sovereign Node",
+  "location": {
+    "country": "Canada",
+    "region": "Ontario",
+    "city": "Innisfil",
+    "displayLocation": "Innisfil, Ontario",
+    "precision": "city",
+    "source": "operator_declared"
+  }
+}
+```
+
+The browser helper requests geolocation permission only to support operator review. ContentBox does not store exact browser coordinates, does not publish coordinates, does not infer from IP, and does not auto-publish location fields.
+Normal place names such as `St. Louis, Missouri` and names with apostrophes, hyphens, or periods are allowed. Exact addresses, postal codes, phone numbers, URLs, emails, coordinate strings, and location fields that describe GPS/latitude/longitude are rejected.
 
 ## Status Model
 
@@ -260,6 +310,9 @@ Never expose:
 - Internal REST endpoints
 - Payout destinations
 - Private infrastructure details
+- Street addresses
+- Exact coordinates
+- IP-derived location
 
 Public-safe data:
 
@@ -271,6 +324,7 @@ Public-safe data:
 - Service capability booleans
 - Proof capability/count
 - Operator display name when already public
+- Operator-declared approximate public location
 
 ## Frontend Placement
 

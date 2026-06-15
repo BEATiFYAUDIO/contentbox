@@ -32,6 +32,25 @@ type CreatorSignalBreakdown = {
   };
 };
 
+type PublicLocationPrecision = "country" | "region" | "city";
+type PublicLocationSource = "operator_declared" | "browser_confirmed";
+
+type PublicLocationResponse = {
+  publicLocation?: {
+    country?: string | null;
+    region?: string | null;
+    city?: string | null;
+    displayLocation?: string | null;
+    precision?: PublicLocationPrecision | null;
+    source?: PublicLocationSource | null;
+  } | null;
+};
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 type ProfilePageProps = {
   me: Me | null;
   setMe: (next: Me | null) => void;
@@ -53,6 +72,15 @@ export default function ProfilePage({
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [creatorSignal, setCreatorSignal] = useState<CreatorSignalBreakdown | null>(null);
   const [creatorSignalError, setCreatorSignalError] = useState<string | null>(null);
+  const [publicLocationCountry, setPublicLocationCountry] = useState("");
+  const [publicLocationRegion, setPublicLocationRegion] = useState("");
+  const [publicLocationCity, setPublicLocationCity] = useState("");
+  const [publicLocationDisplay, setPublicLocationDisplay] = useState("");
+  const [publicLocationPrecision, setPublicLocationPrecision] = useState<PublicLocationPrecision>("region");
+  const [publicLocationSource, setPublicLocationSource] = useState<PublicLocationSource>("operator_declared");
+  const [publicLocationMsg, setPublicLocationMsg] = useState<string | null>(null);
+  const [publicLocationLoading, setPublicLocationLoading] = useState(false);
+  const [publicLocationSaving, setPublicLocationSaving] = useState(false);
 
   const loadPayoutSettings = async () => {
     try {
@@ -69,6 +97,37 @@ export default function ProfilePage({
   useEffect(() => {
     loadPayoutSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        setPublicLocationLoading(true);
+        const res = await api<PublicLocationResponse>("/api/public/config", "GET");
+        const location = res?.publicLocation || {};
+        if (!mounted) return;
+        setPublicLocationCountry(String(location.country || ""));
+        setPublicLocationRegion(String(location.region || ""));
+        setPublicLocationCity(String(location.city || ""));
+        setPublicLocationDisplay(String(location.displayLocation || ""));
+        setPublicLocationPrecision(
+          location.precision === "country" || location.precision === "region" || location.precision === "city"
+            ? location.precision
+            : "region"
+        );
+        setPublicLocationSource(location.source === "browser_confirmed" ? "browser_confirmed" : "operator_declared");
+        setPublicLocationMsg(null);
+      } catch (e: unknown) {
+        if (!mounted) return;
+        setPublicLocationMsg(errorMessage(e, "Public location unavailable."));
+      } finally {
+        if (mounted) setPublicLocationLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -152,6 +211,74 @@ export default function ProfilePage({
       setAvatarUploadMsg("Failed to upload profile image.");
     } finally {
       setAvatarUploading(false);
+    }
+  };
+
+  const buildPublicLocationPayload = () => {
+    const country = publicLocationCountry.trim();
+    const region = publicLocationRegion.trim();
+    const city = publicLocationCity.trim();
+    const displayLocation = publicLocationDisplay.trim();
+    if (!country && !region && !city && !displayLocation) return null;
+    return {
+      country,
+      region,
+      city,
+      displayLocation,
+      precision: publicLocationPrecision,
+      source: publicLocationSource
+    };
+  };
+
+  const useApproximateBrowserLocation = () => {
+    setPublicLocationMsg(null);
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setPublicLocationMsg("Browser location is unavailable. Enter country, region, and city manually.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      () => {
+        setPublicLocationSource("browser_confirmed");
+        setPublicLocationMsg(
+          "Browser permission granted. Exact coordinates were not saved or published. Review and save only the approximate public area you want shown."
+        );
+      },
+      () => {
+        setPublicLocationMsg("Browser location was not available. Enter country, region, and city manually.");
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 }
+    );
+  };
+
+  const savePublicLocation = async () => {
+    try {
+      setPublicLocationSaving(true);
+      setPublicLocationMsg(null);
+      await api("/api/public/config", "POST", { publicLocation: buildPublicLocationPayload() });
+      setPublicLocationMsg("Public location saved.");
+    } catch (e: unknown) {
+      setPublicLocationMsg(errorMessage(e, "Failed to save public location."));
+    } finally {
+      setPublicLocationSaving(false);
+    }
+  };
+
+  const clearPublicLocation = async () => {
+    try {
+      setPublicLocationSaving(true);
+      setPublicLocationMsg(null);
+      await api("/api/public/config", "POST", { publicLocation: null });
+      setPublicLocationCountry("");
+      setPublicLocationRegion("");
+      setPublicLocationCity("");
+      setPublicLocationDisplay("");
+      setPublicLocationPrecision("region");
+      setPublicLocationSource("operator_declared");
+      setPublicLocationMsg("Public location cleared.");
+    } catch (e: unknown) {
+      setPublicLocationMsg(errorMessage(e, "Failed to clear public location."));
+    } finally {
+      setPublicLocationSaving(false);
     }
   };
 
@@ -304,6 +431,113 @@ export default function ProfilePage({
                 <div className="text-xs text-neutral-500">Images up to 2MB.</div>
               </div>
               {avatarUploadMsg ? <div className="mt-1 text-xs text-amber-300">{avatarUploadMsg}</div> : null}
+            </div>
+
+            <div id="public-location" className="rounded-lg border border-neutral-800 bg-neutral-900/30 p-3">
+              <div className="text-sm font-medium">Public Location</div>
+              <div className="mt-1 text-xs text-neutral-500">
+                This is your approximate public display location. It may be used for profile discovery and, if your node is eligible,
+                on the Certifyd Network Map. Never enter a street address, postal code, phone number, URL, email, exact coordinates,
+                or private location.
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <label className="text-xs text-neutral-400" htmlFor="public-location-country">
+                  Country
+                  <input
+                    id="public-location-country"
+                    name="publicLocationCountry"
+                    value={publicLocationCountry}
+                    onChange={(e) => setPublicLocationCountry(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                    placeholder="Canada"
+                    autoComplete="country-name"
+                  />
+                </label>
+                <label className="text-xs text-neutral-400" htmlFor="public-location-region">
+                  Region / Province / State
+                  <input
+                    id="public-location-region"
+                    name="publicLocationRegion"
+                    value={publicLocationRegion}
+                    onChange={(e) => setPublicLocationRegion(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                    placeholder="Ontario"
+                    autoComplete="address-level1"
+                  />
+                </label>
+                <label className="text-xs text-neutral-400" htmlFor="public-location-city">
+                  City / Area
+                  <input
+                    id="public-location-city"
+                    name="publicLocationCity"
+                    value={publicLocationCity}
+                    onChange={(e) => setPublicLocationCity(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                    placeholder="Innisfil"
+                    autoComplete="address-level2"
+                  />
+                </label>
+                <label className="text-xs text-neutral-400" htmlFor="public-location-display">
+                  Public Display Location
+                  <input
+                    id="public-location-display"
+                    name="publicLocationDisplay"
+                    value={publicLocationDisplay}
+                    onChange={(e) => setPublicLocationDisplay(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                    placeholder="Innisfil, Ontario"
+                    autoComplete="off"
+                  />
+                </label>
+                <label className="text-xs text-neutral-400" htmlFor="public-location-precision">
+                  Location Precision
+                  <select
+                    id="public-location-precision"
+                    name="publicLocationPrecision"
+                    value={publicLocationPrecision}
+                    onChange={(e) => setPublicLocationPrecision(e.target.value as PublicLocationPrecision)}
+                    className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                  >
+                    <option value="country">Country only</option>
+                    <option value="region">Region / Province / State</option>
+                    <option value="city">City / Area</option>
+                  </select>
+                </label>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={useApproximateBrowserLocation}
+                  className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+                >
+                  Use approximate browser location
+                </button>
+                <button
+                  type="button"
+                  onClick={savePublicLocation}
+                  disabled={publicLocationSaving}
+                  className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
+                >
+                  {publicLocationSaving ? "Saving…" : "Save approximate public location"}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearPublicLocation}
+                  disabled={publicLocationSaving}
+                  className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
+                >
+                  Clear public location
+                </button>
+                <span className="text-xs text-neutral-500">
+                  Source: {publicLocationSource === "browser_confirmed" ? "browser confirmed" : "operator declared"}
+                </span>
+              </div>
+              <div className="mt-2 text-xs text-neutral-500">
+                The browser helper only confirms permission. It never saves exact coordinates or publishes browser coordinates.
+                You must manually review and save the approximate public location above.
+              </div>
+              {publicLocationLoading ? <div className="mt-2 text-xs text-neutral-500">Loading public location…</div> : null}
+              {publicLocationMsg ? <div className="mt-2 text-xs text-amber-300">{publicLocationMsg}</div> : null}
             </div>
           </div>
         </div>
