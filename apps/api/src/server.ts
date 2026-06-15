@@ -2226,6 +2226,10 @@ type NetworkMapSignalStatus = {
 };
 type NetworkMapNode = {
   nodeId: string;
+  providerCanonicalUrl: string;
+  providerNodeId: string;
+  providerPublicKey: string;
+  providerProfileId: string | null;
   displayName: string;
   operator?: string;
   roles: Array<"creator" | "identity" | "content" | "commerce" | "settlement" | "proof">;
@@ -8422,8 +8426,15 @@ async function buildLocalNetworkNode(): Promise<NetworkMapNode | null> {
   }
   const location = publicNetworkMapLocation();
 
+  const providerCanonicalUrl = canonicalUrl || "";
+  const providerProfileId = identity.profileId || null;
+
   return {
     nodeId: identity.nodeId,
+    providerCanonicalUrl,
+    providerNodeId: identity.nodeId,
+    providerPublicKey: identity.nodePubKey,
+    providerProfileId,
     displayName: operatorName || "Certifyd Node",
     operator: operatorName || undefined,
     roles,
@@ -8496,8 +8507,8 @@ async function buildLocalNetworkNode(): Promise<NetworkMapNode | null> {
     connect: {
       providerNodeId: identity.nodeId,
       providerPublicKey: identity.nodePubKey,
-      providerProfileId: identity.profileId || null,
-      providerCanonicalUrl: canonicalUrl || "",
+      providerProfileId,
+      providerCanonicalUrl,
       capabilities: {
         identity: true,
         content: endpointActive,
