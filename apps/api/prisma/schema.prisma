@@ -285,11 +285,33 @@ model ContentItem {
   settlements    Settlement[] @relation("SettlementContent")
   shareLinks    ShareLink[]
   publishEvents PublishEvent[]
+  externalIdentifiers ContentExternalIdentifier[]
 
   @@index([ownerUserId])
   @@index([previousVersionContentId])
   @@index([repoPath])
   @@index([deletedAt])
+}
+
+model ContentExternalIdentifier {
+  id              String   @id @default(cuid())
+  contentId       String
+  type            String
+  value           String
+  normalizedValue String
+  displayValue    String
+  source          String   @default("manual")
+  issuer          String?
+  publicVisible   Boolean  @default(false)
+  creatorApprovedAt DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  content ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, type, normalizedValue])
+  @@index([contentId])
+  @@index([type, normalizedValue])
 }
 
 model ContentCredit {
