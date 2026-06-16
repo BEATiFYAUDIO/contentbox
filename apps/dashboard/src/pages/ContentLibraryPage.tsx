@@ -159,6 +159,22 @@ type ContentCredit = {
   createdAt?: string;
 };
 
+type ExternalIdentifierType = "ISRC" | "UPC" | "ISWC" | "EIDR" | "ISBN" | "DOI";
+
+type ContentExternalIdentifier = {
+  id: string;
+  contentId: string;
+  type: ExternalIdentifierType;
+  value: string;
+  normalizedValue: string;
+  displayValue: string;
+  issuer?: string | null;
+  source?: string | null;
+  createdAt?: string | null;
+};
+
+const EXTERNAL_IDENTIFIER_TYPES: ExternalIdentifierType[] = ["ISRC", "UPC", "ISWC", "EIDR", "ISBN", "DOI"];
+
 type LibraryParticipation = {
   kind: "local" | "remote";
   contentId: string;
@@ -625,6 +641,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [creditNameDraft, setCreditNameDraft] = React.useState<Record<string, string>>({});
   const [creditRoleDraft, setCreditRoleDraft] = React.useState<Record<string, string>>({});
   const [creditMsg, setCreditMsg] = React.useState<Record<string, string>>({});
+  const [externalIdentifiersByContent, setExternalIdentifiersByContent] = React.useState<Record<string, ContentExternalIdentifier[] | null>>({});
+  const [externalIdentifierLoading, setExternalIdentifierLoading] = React.useState<Record<string, boolean>>({});
+  const [externalIdentifierTypeDraft, setExternalIdentifierTypeDraft] = React.useState<Record<string, ExternalIdentifierType>>({});
+  const [externalIdentifierValueDraft, setExternalIdentifierValueDraft] = React.useState<Record<string, string>>({});
+  const [externalIdentifierMsg, setExternalIdentifierMsg] = React.useState<Record<string, string>>({});
   const [publishBusy, setPublishBusy] = React.useState<Record<string, boolean>>({});
   const [publishMsg, setPublishMsg] = React.useState<Record<string, string>>({});
   const [networkPublishByContent, setNetworkPublishByContent] = React.useState<Record<string, NetworkPublishState | null>>({});
@@ -1770,6 +1791,67 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setCreditsByContent((m) => ({ ...m, [contentId]: [] }));
     } finally {
       setCreditsLoading((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function loadExternalIdentifiers(contentId: string) {
+    setExternalIdentifierLoading((m) => ({ ...m, [contentId]: true }));
+    try {
+      const res = await api<{ items: ContentExternalIdentifier[] }>(
+        `/api/content/${encodeURIComponent(contentId)}/external-identifiers`,
+        "GET"
+      );
+      setExternalIdentifiersByContent((m) => ({ ...m, [contentId]: Array.isArray(res?.items) ? res.items : [] }));
+    } catch (e: any) {
+      setExternalIdentifiersByContent((m) => ({ ...m, [contentId]: [] }));
+      setExternalIdentifierMsg((m) => ({ ...m, [contentId]: e?.message || "Failed to load external identifiers." }));
+    } finally {
+      setExternalIdentifierLoading((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function addExternalIdentifier(contentId: string) {
+    const type = externalIdentifierTypeDraft[contentId] || "ISRC";
+    const value = (externalIdentifierValueDraft[contentId] || "").trim();
+    if (!value) {
+      setExternalIdentifierMsg((m) => ({ ...m, [contentId]: "Identifier value is required." }));
+      return;
+    }
+    setExternalIdentifierLoading((m) => ({ ...m, [contentId]: true }));
+    setExternalIdentifierMsg((m) => ({ ...m, [contentId]: "" }));
+    try {
+      await api<ContentExternalIdentifier>(
+        `/api/content/${encodeURIComponent(contentId)}/external-identifiers`,
+        "POST",
+        { type, value }
+      );
+      setExternalIdentifierValueDraft((m) => ({ ...m, [contentId]: "" }));
+      setExternalIdentifierMsg((m) => ({ ...m, [contentId]: "Identifier added." }));
+      await loadExternalIdentifiers(contentId);
+    } catch (e: any) {
+      setExternalIdentifierMsg((m) => ({ ...m, [contentId]: e?.message || "Failed to add identifier." }));
+    } finally {
+      setExternalIdentifierLoading((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function deleteExternalIdentifier(contentId: string, identifierId: string) {
+    setExternalIdentifierLoading((m) => ({ ...m, [contentId]: true }));
+    setExternalIdentifierMsg((m) => ({ ...m, [contentId]: "" }));
+    try {
+      await api(
+        `/api/content/${encodeURIComponent(contentId)}/external-identifiers/${encodeURIComponent(identifierId)}`,
+        "DELETE"
+      );
+      setExternalIdentifiersByContent((m) => ({
+        ...m,
+        [contentId]: (m[contentId] || []).filter((row) => row.id !== identifierId)
+      }));
+      setExternalIdentifierMsg((m) => ({ ...m, [contentId]: "Identifier deleted." }));
+    } catch (e: any) {
+      setExternalIdentifierMsg((m) => ({ ...m, [contentId]: e?.message || "Failed to delete identifier." }));
+    } finally {
+      setExternalIdentifierLoading((m) => ({ ...m, [contentId]: false }));
     }
   }
 
@@ -3148,6 +3230,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                           parentLinkByContent[it.id] !== undefined ? Promise.resolve() : loadParentLink(it.id),
                                           derivativesByContent[it.id] !== undefined ? Promise.resolve() : loadDerivativesForParent(it.id),
                                           creditsByContent[it.id] !== undefined ? Promise.resolve() : loadCredits(it.id),
+                                          externalIdentifiersByContent[it.id] !== undefined ? Promise.resolve() : loadExternalIdentifiers(it.id),
                                           auditByContent[it.id] !== undefined ? Promise.resolve() : loadAudit(it.id),
                                           shareLinkByContent[it.id] !== undefined ? Promise.resolve() : loadShareLink(it.id),
                                           previewByContent[it.id] !== undefined ? Promise.resolve() : loadPreview(it.id)
@@ -4456,6 +4539,104 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           </div>
                         </div>
                       </div>
+
+                      {isOwner ? (
+                        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                          <div className="text-xs text-neutral-300 font-medium">Industry Identifiers</div>
+                          <div className="mt-1 text-xs text-neutral-400">
+                            Add existing catalog identifiers like ISRC, UPC, ISWC, EIDR, ISBN, or DOI. These are optional compatibility references; the Certifyd Asset ID remains the source of truth.
+                          </div>
+
+                          <div className="mt-3 grid gap-2 md:grid-cols-[140px_1fr_auto]">
+                            <div>
+                              <label className="block text-xs text-neutral-400 mb-1" htmlFor={`externalIdentifierType-${it.id}`}>
+                                Type
+                              </label>
+                              <select
+                                id={`externalIdentifierType-${it.id}`}
+                                name={`externalIdentifierType-${it.id}`}
+                                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
+                                value={externalIdentifierTypeDraft[it.id] || "ISRC"}
+                                onChange={(e) =>
+                                  setExternalIdentifierTypeDraft((m) => ({
+                                    ...m,
+                                    [it.id]: e.target.value as ExternalIdentifierType
+                                  }))
+                                }
+                              >
+                                {EXTERNAL_IDENTIFIER_TYPES.map((identifierType) => (
+                                  <option key={identifierType} value={identifierType}>
+                                    {identifierType}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-xs text-neutral-400 mb-1" htmlFor={`externalIdentifierValue-${it.id}`}>
+                                Value
+                              </label>
+                              <input
+                                id={`externalIdentifierValue-${it.id}`}
+                                name={`externalIdentifierValue-${it.id}`}
+                                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
+                                value={externalIdentifierValueDraft[it.id] || ""}
+                                onChange={(e) =>
+                                  setExternalIdentifierValueDraft((m) => ({
+                                    ...m,
+                                    [it.id]: e.target.value
+                                  }))
+                                }
+                                placeholder="e.g. US-S1Z-99-00001"
+                                autoComplete="off"
+                              />
+                            </div>
+                            <div className="flex items-end">
+                              <button
+                                type="button"
+                                className="w-full rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-60"
+                                disabled={!!externalIdentifierLoading[it.id]}
+                                onClick={() => addExternalIdentifier(it.id)}
+                              >
+                                Add
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 space-y-2 text-xs">
+                            {externalIdentifierLoading[it.id] && externalIdentifiersByContent[it.id] === undefined ? (
+                              <div className="text-neutral-500">Loading identifiers…</div>
+                            ) : null}
+                            {(externalIdentifiersByContent[it.id] || []).length ? (
+                              (externalIdentifiersByContent[it.id] || []).map((identifier) => (
+                                <div
+                                  key={identifier.id}
+                                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2"
+                                >
+                                  <div className="min-w-0">
+                                    <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] text-neutral-300">
+                                      {identifier.type}
+                                    </span>{" "}
+                                    <span className="break-all text-neutral-200">{identifier.displayValue || identifier.value}</span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-800 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900 disabled:opacity-60"
+                                    disabled={!!externalIdentifierLoading[it.id]}
+                                    onClick={() => deleteExternalIdentifier(it.id, identifier.id)}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="text-neutral-500">No external identifiers added.</div>
+                            )}
+                            {externalIdentifierMsg[it.id] ? (
+                              <div className="text-amber-300">{externalIdentifierMsg[it.id]}</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
 
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="flex items-center justify-between gap-2">

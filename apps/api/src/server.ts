@@ -138,6 +138,7 @@ import {
   normalizeManifestForPublish
 } from "./lib/contentPublish.js";
 import { classifyDelegatedPublishFailure } from "./lib/contentPublishDelegation.js";
+import { validateAndNormalizeExternalIdentifier } from "./lib/externalIdentifiers.js";
 import {
   appendLifecycleReceipt,
   getLifecycleReceiptById,
@@ -24142,6 +24143,144 @@ async function handleGetManifest(req: any, reply: any) {
 
 app.get("/api/content/:contentId/manifest", { preHandler: requireAuth }, handleGetManifest);
 app.get("/content/:contentId/manifest", { preHandler: requireAuth }, handleGetManifest);
+
+function serializeContentExternalIdentifier(row: any) {
+  return {
+    id: asString(row?.id || "").trim(),
+    contentId: asString(row?.contentId || "").trim(),
+    type: asString(row?.type || "").trim(),
+    value: asString(row?.value || "").trim(),
+    normalizedValue: asString(row?.normalizedValue || "").trim(),
+    displayValue: asString(row?.displayValue || "").trim(),
+    source: asString(row?.source || "").trim() || "manual",
+    issuer: asString(row?.issuer || "").trim() || null,
+    publicVisible: Boolean(row?.publicVisible),
+    creatorApprovedAt: row?.creatorApprovedAt ? new Date(row.creatorApprovedAt).toISOString() : null,
+    createdAt: row?.createdAt ? new Date(row.createdAt).toISOString() : null,
+    updatedAt: row?.updatedAt ? new Date(row.updatedAt).toISOString() : null
+  };
+}
+
+async function requireOwnedContentForExternalIdentifiers(req: any, reply: any) {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).contentId || "").trim();
+  if (!contentId) {
+    badRequest(reply, "contentId required");
+    return null;
+  }
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    select: { id: true, ownerUserId: true }
+  });
+  if (!content) {
+    notFound(reply, "Content not found");
+    return null;
+  }
+  if (content.ownerUserId !== userId) {
+    forbidden(reply);
+    return null;
+  }
+  return content;
+}
+
+function normalizeExternalIdentifierIssuer(value: unknown): string | null {
+  const issuer = asString(value || "").trim();
+  if (!issuer) return null;
+  return issuer.slice(0, 80);
+}
+
+app.get("/api/content/:contentId/external-identifiers", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const content = await requireOwnedContentForExternalIdentifiers(req, reply);
+  if (!content) return;
+  const rows = await prisma.contentExternalIdentifier.findMany({
+    where: { contentId: content.id },
+    orderBy: [{ type: "asc" }, { createdAt: "asc" }]
+  });
+  return reply.send({ items: rows.map(serializeContentExternalIdentifier) });
+});
+
+app.post("/api/content/:contentId/external-identifiers", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const content = await requireOwnedContentForExternalIdentifiers(req, reply);
+  if (!content) return;
+  const body = (req.body || {}) as { type?: unknown; value?: unknown; displayValue?: unknown; issuer?: unknown };
+  const validated = validateAndNormalizeExternalIdentifier({
+    type: body.type,
+    value: body.value,
+    displayValue: body.displayValue
+  });
+  if (!validated.ok) return badRequest(reply, validated.error);
+  const identifier = validated.identifier;
+  try {
+    const row = await prisma.contentExternalIdentifier.create({
+      data: {
+        contentId: content.id,
+        type: identifier.type,
+        value: identifier.value,
+        normalizedValue: identifier.normalizedValue,
+        displayValue: identifier.displayValue,
+        source: "manual",
+        issuer: normalizeExternalIdentifierIssuer(body.issuer),
+        publicVisible: false,
+        creatorApprovedAt: new Date()
+      }
+    });
+    return reply.code(201).send(serializeContentExternalIdentifier(row));
+  } catch (e: any) {
+    if (String(e?.code || "") === "P2002") {
+      return reply.code(409).send({ code: "EXTERNAL_IDENTIFIER_EXISTS", message: "Identifier already exists for this content item." });
+    }
+    throw e;
+  }
+});
+
+app.patch("/api/content/:contentId/external-identifiers/:identifierId", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const content = await requireOwnedContentForExternalIdentifiers(req, reply);
+  if (!content) return;
+  const identifierId = asString((req.params as any).identifierId || "").trim();
+  if (!identifierId) return badRequest(reply, "identifierId required");
+  const existing = await prisma.contentExternalIdentifier.findFirst({ where: { id: identifierId, contentId: content.id } });
+  if (!existing) return notFound(reply, "Identifier not found");
+  const body = (req.body || {}) as { type?: unknown; value?: unknown; displayValue?: unknown; issuer?: unknown };
+  const validated = validateAndNormalizeExternalIdentifier({
+    type: body.type ?? existing.type,
+    value: body.value ?? existing.value,
+    displayValue: body.displayValue ?? existing.displayValue
+  });
+  if (!validated.ok) return badRequest(reply, validated.error);
+  const identifier = validated.identifier;
+  try {
+    const row = await prisma.contentExternalIdentifier.update({
+      where: { id: existing.id },
+      data: {
+        type: identifier.type,
+        value: identifier.value,
+        normalizedValue: identifier.normalizedValue,
+        displayValue: identifier.displayValue,
+        issuer: body.issuer === undefined ? existing.issuer : normalizeExternalIdentifierIssuer(body.issuer),
+        source: "manual",
+        publicVisible: false,
+        creatorApprovedAt: existing.creatorApprovedAt || new Date()
+      }
+    });
+    return reply.send(serializeContentExternalIdentifier(row));
+  } catch (e: any) {
+    if (String(e?.code || "") === "P2002") {
+      return reply.code(409).send({ code: "EXTERNAL_IDENTIFIER_EXISTS", message: "Identifier already exists for this content item." });
+    }
+    throw e;
+  }
+});
+
+app.delete("/api/content/:contentId/external-identifiers/:identifierId", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const content = await requireOwnedContentForExternalIdentifiers(req, reply);
+  if (!content) return;
+  const identifierId = asString((req.params as any).identifierId || "").trim();
+  if (!identifierId) return badRequest(reply, "identifierId required");
+  const existing = await prisma.contentExternalIdentifier.findFirst({ where: { id: identifierId, contentId: content.id } });
+  if (!existing) return notFound(reply, "Identifier not found");
+  await prisma.contentExternalIdentifier.delete({ where: { id: existing.id } });
+  return reply.send({ ok: true });
+});
 
 function generateShareToken() {
   return crypto.randomBytes(18).toString("hex");
