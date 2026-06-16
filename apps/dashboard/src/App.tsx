@@ -99,6 +99,7 @@ type PageKey =
   | "provider-console"
   | "finance"
   | "audience"
+  | "rights-holders"
   | "receipt"
   | "invite"
   | "profile"
@@ -636,16 +637,16 @@ export default function App() {
       requiresSplits: false
     },
     {
+      key: "rights-holders" as const,
+      label: "Rights Holders",
+      hint: "People, publishers, labels, and organizations",
+      requiresCommerce: true,
+      requiresSplits: false
+    },
+    {
       key: "splits" as const,
       label: "Manage Splits",
       hint: "Draft, lock, history",
-      requiresCommerce: true,
-      requiresSplits: true
-    },
-    {
-      key: "invite" as const,
-      label: "Split Invites",
-      hint: "Split requests",
       requiresCommerce: true,
       requiresSplits: true
     }
@@ -681,6 +682,7 @@ export default function App() {
     page === "sales" ? "Sales" :
     page === "audience" ? "Audience" :
     page === "finance" ? "Revenue" :
+    page === "rights-holders" ? "Rights Holders" :
     page === "splits" ? "Splits" :
     page === "split-editor" ? "Splits" :
     page === "profile" ? "Profile" :
@@ -1283,6 +1285,19 @@ export default function App() {
 
               {page === "payouts" && !isCommerceLockedPage && <PayoutRailsPage />}
 
+              {page === "rights-holders" && !isCommerceLockedPage && (
+                <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
+                  <div className="text-lg font-semibold">Rights Holders</div>
+                  <div className="mt-2 max-w-2xl text-sm text-neutral-400">
+                    A standalone registry for people, publishers, labels, organizations, and collecting societies will live here.
+                    Rights-holder records are separate from catalog identifiers, splits, payouts, settlements, and public attribution.
+                  </div>
+                  <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/50 p-4 text-xs text-neutral-500">
+                    Placeholder only. No rights-holder storage or APIs are active yet.
+                  </div>
+                </div>
+              )}
+
               {page === "content" && (
                 <ContentLibraryPage
                   identityLevel={identityLevel}
@@ -1308,6 +1323,7 @@ export default function App() {
                   capabilities={capabilities}
                   capabilityReasons={capabilityReasons}
                   nodeMode={nodeMode}
+                  onOpenInvites={() => setPage("invite")}
                   onEditContent={(id) => {
                     window.history.pushState({}, "", `/content/${encodeURIComponent(id)}/splits`);
                     setSelectedContentId(id);
