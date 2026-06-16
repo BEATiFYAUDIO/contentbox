@@ -22539,11 +22539,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const userId = (req.user as JwtUser).sub;
   const commerceAuthority = await resolveCommerceAuthorityForUser(userId);
 
-  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string; type?: string };
+  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string; type?: string; assetOrigin?: string };
   const trash = q.trash === "1";
   const tombstones = q.tombstones === "1";
   const scope = String(q.scope || "mine").toLowerCase();
   const requestedType = String(q.type || "all").toLowerCase();
+  const requestedAssetOrigin = String(q.assetOrigin || "native").toLowerCase();
   const allowedTypeFilters = new Set(["all", "songs", "videos", "books", "files"]);
   if (!allowedTypeFilters.has(requestedType)) {
     return reply.code(400).send({
@@ -22551,6 +22552,17 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       message: "Invalid type filter. Use one of: all, songs, videos, books, files."
     });
   }
+  const allowedAssetOriginFilters = new Set(["native", "legacy"]);
+  if (!allowedAssetOriginFilters.has(requestedAssetOrigin)) {
+    return reply.code(400).send({
+      error: "INVALID_ASSET_ORIGIN",
+      message: "Invalid assetOrigin filter. Use one of: native, legacy."
+    });
+  }
+  const assetOriginWhere =
+    requestedAssetOrigin === "legacy"
+      ? { assetOrigin: "legacy_import" as const }
+      : { OR: [{ assetOrigin: "native" as const }, { assetOrigin: null as any }] };
   const contentTypeWhere =
     requestedType === "songs"
       ? { type: "song" as const }
@@ -22580,6 +22592,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     title: true,
     description: true,
     type: true,
+    assetOrigin: true,
     status: true,
     previousVersionContentId: true,
     previousVersion: { select: { id: true, title: true, status: true } },
@@ -22820,7 +22833,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
 
   if (scope === "local") {
     const local = await prisma.contentItem.findMany({
-      where: { ...stateWhere, ...contentTypeWhere },
+      where: { ...stateWhere, ...contentTypeWhere, ...assetOriginWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
@@ -22835,7 +22848,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     );
   } else if (scope === "mine") {
     const owned = await prisma.contentItem.findMany({
-      where: { ownerUserId: userId, ...stateWhere, ...contentTypeWhere },
+      where: { ownerUserId: userId, ...stateWhere, ...contentTypeWhere, ...assetOriginWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
@@ -22857,6 +22870,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       prisma.contentItem.findMany({
         where: {
           ownerUserId: userId,
+          ...assetOriginWhere,
           status: "published",
           deletedAt: null,
           ...contentTypeWhere
@@ -22867,7 +22881,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       prisma.entitlement.findMany({
         where: {
           buyerUserId: userId,
-          content: { is: { status: "published", ...contentTypeWhere } } as any
+          content: { is: { status: "published", ...contentTypeWhere, ...assetOriginWhere } } as any
         },
         include: { content: { select: selectBase } },
         orderBy: { grantedAt: "desc" }
@@ -22875,6 +22889,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       prisma.contentItem.findMany({
         where: {
           storefrontStatus: { in: ["LISTED", "UNLISTED"] },
+          ...assetOriginWhere,
           status: "published",
           deletedAt: null,
           ...contentTypeWhere
@@ -22888,6 +22903,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
             status: "locked",
             content: {
               ownerUserId: { not: userId },
+              ...assetOriginWhere,
               status: "published",
               deletedAt: null,
               ...contentTypeWhere
@@ -22949,6 +22965,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
               status: "locked",
               content: {
                 ownerUserId: { not: userId },
+                ...assetOriginWhere,
                 status: "published",
                 deletedAt: null,
                 ...contentTypeWhere
@@ -22984,6 +23001,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       const participantContent = await prisma.contentItem.findMany({
         where: {
           id: { in: participantIds },
+          ...assetOriginWhere,
           status: "published",
           deletedAt: null,
           ...contentTypeWhere
@@ -23446,7 +23464,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         Boolean(fallback?.isParentOfDerivative)
     });
   }
+  const matchesRequestedAssetOrigin = (row: any): boolean => {
+    const assetOrigin = asString(row?.assetOrigin || "native").trim().toLowerCase();
+    if (requestedAssetOrigin === "legacy") return assetOrigin === "legacy_import";
+    return !assetOrigin || assetOrigin === "native";
+  };
   const unique = Array.from(deduped.values()).filter((row: any) =>
+    matchesRequestedAssetOrigin(row) &&
     isLibraryRowEligible(
       row,
       asString((Array.isArray(row?.appearsBecause) ? row.appearsBecause[0] : "") || "").trim() || "unknown",
@@ -23738,7 +23762,7 @@ app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
 
   // create DB row first
   const content = await prisma.contentItem.create({
-    data: { ownerUserId: userId, title, type: type as any, description, primaryTopic } as any
+    data: { ownerUserId: userId, title, type: type as any, assetOrigin: "native", description, primaryTopic } as any
   });
 
   try {

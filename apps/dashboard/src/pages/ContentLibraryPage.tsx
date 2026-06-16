@@ -18,6 +18,7 @@ import {
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
 type PrimaryTopic = "entertainment" | "music" | "news" | "gaming" | "sports" | "technology";
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
+type AssetOriginFilter = "native" | "legacy";
 const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
 const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
   all: "All",
@@ -67,6 +68,7 @@ type ContentItem = {
   title: string;
   type: ContentType;
   primaryTopic?: PrimaryTopic | null;
+  assetOrigin?: "native" | "legacy_import" | string | null;
   status: "draft" | "published";
   archivedAt?: string | null;
   trashedAt?: string | null;
@@ -597,6 +599,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const openManifestId = openManifestEntry?.[0] || null;
   const openManifest = openManifestEntry?.[1] || null;
   const [contentScope, setContentScope] = React.useState<"library" | "mine" | "local">("mine");
+  const [assetOriginFilter, setAssetOriginFilter] = React.useState<AssetOriginFilter>("native");
   const [libraryTypeFilter, setLibraryTypeFilter] = React.useState<LibraryTypeFilter>(() => readLibraryTypeFromUrl());
   const [storefrontPreview, setStorefrontPreview] = React.useState<Record<string, any | null>>({});
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
@@ -668,13 +671,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     setError(null);
     try {
       const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
+      const assetOriginQuery = `&assetOrigin=${encodeURIComponent(assetOriginFilter)}`;
       const effectiveScope: "library" | "mine" | "local" =
         contentScope === "library" || contentScope === "local" ? contentScope : "mine";
       const url = tombstoneMode
-        ? `/content?tombstones=1&scope=${effectiveScope}${typeQuery}`
+        ? `/content?tombstones=1&scope=${effectiveScope}${typeQuery}${assetOriginQuery}`
         : trashMode
-          ? `/content?trash=1&scope=${effectiveScope}${typeQuery}`
-          : `/content?scope=${effectiveScope}${typeQuery}`;
+          ? `/content?trash=1&scope=${effectiveScope}${typeQuery}${assetOriginQuery}`
+          : `/content?scope=${effectiveScope}${typeQuery}${assetOriginQuery}`;
       const data = await api<ContentItem[] | any>(url);
       const baseList = Array.isArray(data) ? data : [];
       const nextParticipationByContentId: Record<string, LibraryParticipation> = {};
@@ -911,7 +915,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   React.useEffect(() => {
     load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentScope, libraryTypeFilter]);
+  }, [contentScope, libraryTypeFilter, assetOriginFilter]);
 
   const refreshCurrentView = React.useCallback(() => load(showTrash, showTombstones), [showTrash, showTombstones]);
 
@@ -2008,9 +2012,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setShowTrash(false);
       setShowTombstones(false);
       setContentScope("mine");
+      setAssetOriginFilter("native");
 
       // Deterministic immediate refresh for the authored active view.
-      const refreshed = await api<ContentItem[]>("/content?scope=mine");
+      const refreshed = await api<ContentItem[]>("/content?scope=mine&assetOrigin=native");
       const strictOwned = Array.isArray(refreshed)
         ? refreshed.filter((it: any) => String(it?.libraryAccess || "owned").toLowerCase() === "owned")
         : [];
@@ -2405,6 +2410,31 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         <div className="text-lg font-semibold">Content catalog</div>
         <div className="text-sm text-neutral-400">Create an item, upload your master file, and the repo will track every version.</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-neutral-500">Catalog:</span>
+          <button
+            type="button"
+            className={`rounded-full border px-2 py-1 ${
+              assetOriginFilter === "native"
+                ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
+            }`}
+            onClick={() => setAssetOriginFilter("native")}
+          >
+            Certifyd
+          </button>
+          <button
+            type="button"
+            className={`rounded-full border px-2 py-1 ${
+              assetOriginFilter === "legacy"
+                ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
+            }`}
+            onClick={() => setAssetOriginFilter("legacy")}
+          >
+            Legacy
+          </button>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <span className="text-neutral-500">View:</span>
           <button
             type="button"
@@ -2461,7 +2491,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             </button>
           ))}
         </div>
-        <div className="text-xs text-neutral-500 mt-2">Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]}</div>
+        <div className="text-xs text-neutral-500 mt-2">
+          Showing: {assetOriginFilter === "legacy" ? "Legacy assets" : "Certifyd assets"} • {LIBRARY_TYPE_LABEL[libraryTypeFilter]}
+        </div>
         <div className="text-xs text-neutral-500 mt-2">
           {contentScope === "library"
             ? "Access: everything you can open (owned, purchased, preview)."

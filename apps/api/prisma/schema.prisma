@@ -252,6 +252,7 @@ model ContentItem {
   description   String?
   primaryTopic  String?
   type          ContentType
+  assetOrigin   String        @default("native")
   status        ContentStatus @default(draft)
   featureOnProfile Boolean    @default(false)
   storefrontStatus StorefrontStatus @default(DISABLED)
@@ -288,6 +289,7 @@ model ContentItem {
   externalIdentifiers ContentExternalIdentifier[]
 
   @@index([ownerUserId])
+  @@index([assetOrigin])
   @@index([previousVersionContentId])
   @@index([repoPath])
   @@index([deletedAt])
