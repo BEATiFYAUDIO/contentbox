@@ -4542,7 +4542,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                       {isOwner ? (
                         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                          <div className="text-xs text-neutral-300 font-medium">External Identifiers</div>
+                          <div className="text-xs text-neutral-300 font-medium">Industry Identifiers</div>
                           <div className="mt-1 text-xs text-neutral-400">
                             Add existing catalog identifiers like ISRC, UPC, ISWC, EIDR, ISBN, or DOI. These are optional compatibility references; the Certifyd Asset ID remains the source of truth.
                           </div>
