@@ -22619,6 +22619,21 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     ownerUserId: true,
     owner: { select: { displayName: true, email: true } },
     manifest: { select: { sha256: true } },
+    sourceReferences: {
+      select: {
+        id: true,
+        platform: true,
+        sourceUrl: true,
+        sourceAccount: true,
+        sourceAccountUrl: true,
+        sourceProofSubject: true,
+        sourceProofRecordId: true,
+        sourceVerified: true,
+        resolver: true,
+        resolvedAt: true
+      },
+      orderBy: { updatedAt: "desc" as const }
+    },
     _count: { select: { files: true, entitlements: true } }
   } as const;
 
@@ -23800,6 +23815,21 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
         legacyDiscogsUrl: true,
         createdAt: true,
         updatedAt: true,
+        sourceReferences: {
+          select: {
+            id: true,
+            platform: true,
+            sourceUrl: true,
+            sourceAccount: true,
+            sourceAccountUrl: true,
+            sourceProofSubject: true,
+            sourceProofRecordId: true,
+            sourceVerified: true,
+            resolver: true,
+            resolvedAt: true
+          },
+          orderBy: [{ updatedAt: "desc" }]
+        },
         externalIdentifiers: {
           select: {
             type: true,
@@ -23837,6 +23867,8 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
       artworkUrl: row.legacyArtworkUrl || null,
       provider: row.legacyProvider || null,
       externalUrl: row.legacyExternalUrl || null,
+      sourceReference: row.sourceReferences?.[0] || null,
+      sourceVerified: Boolean(row.sourceReferences?.some((source) => source.sourceVerified)),
       platformUrls: {
         spotify: row.legacySpotifyUrl || null,
         appleMusic: row.legacyAppleMusicUrl || null,
@@ -24337,6 +24369,12 @@ type ConnectWorkDiscovery = {
   musicBrainzUrl: string | null;
   discogsUrl: string | null;
   provider: string;
+  sourcePlatform: string | null;
+  sourceAccount: string | null;
+  sourceAccountUrl: string | null;
+  sourceProofSubject: string | null;
+  sourceVerified: boolean;
+  sourceProofRecordId: string | null;
 };
 
 type ConnectWorkIdentifier = {
@@ -24351,6 +24389,16 @@ type NormalizedConnectWorkIdentifier = {
   value: string;
   normalizedValue: string;
   displayValue: string;
+};
+
+type ConnectWorkSourceProof = {
+  sourcePlatform: string | null;
+  sourceAccount: string | null;
+  sourceAccountUrl: string | null;
+  sourceProofSubject: string | null;
+  sourceVerified: boolean;
+  sourceProofRecordId: string | null;
+  resolver: string;
 };
 
 function musicBrainzHeaders() {
@@ -24439,6 +24487,164 @@ function parseConnectWorkUrl(value: unknown): URL | null {
   } catch {
     return null;
   }
+}
+
+function normalizeSourceAccount(value: unknown): string | null {
+  const account = asString(value || "").trim().replace(/^@+/, "").toLowerCase();
+  return account || null;
+}
+
+function normalizeYoutubeSourceUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase();
+  if (host !== "youtube.com" && host !== "www.youtube.com") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts[0]?.startsWith("@")) {
+    const account = normalizeSourceAccount(parts[0]);
+    if (!account || !/^[a-z0-9._-]{3,64}$/i.test(account)) return null;
+    return { account, accountUrl: `https://www.youtube.com/@${account}` };
+  }
+  if (parts[0] === "channel" && parts[1] && /^UC[a-zA-Z0-9_-]{10,}$/.test(parts[1])) {
+    return { account: parts[1], accountUrl: `https://www.youtube.com/channel/${parts[1]}` };
+  }
+  return null;
+}
+
+function normalizeGithubSourceUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase();
+  if (host !== "github.com" && host !== "www.github.com" && host !== "gist.github.com") return null;
+  const account = normalizeSourceAccount(url.pathname.split("/").filter(Boolean)[0]);
+  if (!account || !/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/i.test(account)) return null;
+  return { account, accountUrl: `https://github.com/${account}` };
+}
+
+function normalizeTiktokSourceUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase();
+  if (host !== "tiktok.com" && host !== "www.tiktok.com") return null;
+  const first = url.pathname.split("/").filter(Boolean)[0] || "";
+  if (!first.startsWith("@")) return null;
+  const account = normalizeSourceAccount(first);
+  if (!account || !/^[a-z0-9._]{2,24}$/i.test(account)) return null;
+  return { account, accountUrl: `https://www.tiktok.com/@${account}` };
+}
+
+function normalizeRumbleSourceUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase();
+  if (host !== "rumble.com" && host !== "www.rumble.com") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  let account = "";
+  if ((parts[0] === "c" || parts[0] === "user") && parts[1]) account = parts[1];
+  else if (parts[0] && !parts[0].startsWith("v")) account = parts[0];
+  account = normalizeSourceAccount(account) || "";
+  if (!account || !/^[a-z0-9._-]{2,64}$/i.test(account)) return null;
+  return { account, accountUrl: `https://rumble.com/c/${account}` };
+}
+
+function normalizeRedditSourceUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase();
+  if (host !== "reddit.com" && host !== "www.reddit.com" && host !== "old.reddit.com") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts[0]?.toLowerCase() !== "user" || !parts[1]) return null;
+  const account = normalizeSourceAccount(parts[1]);
+  if (!account || !/^[a-z0-9_-]{3,20}$/i.test(account)) return null;
+  return { account, accountUrl: `https://www.reddit.com/user/${account}` };
+}
+
+function domainSourceFromUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  let host = url.hostname.toLowerCase().replace(/^www\./, "");
+  if (!host || host === "youtube.com" || host === "spotify.com" || host === "open.spotify.com" || host === "music.apple.com") return null;
+  return { account: host, accountUrl: `${url.protocol}//${host}` };
+}
+
+function sourceFromUrl(value: unknown): { platform: string; account: string; accountUrl: string; resolver: string } | null {
+  const youtube = normalizeYoutubeSourceUrl(value);
+  if (youtube) return { platform: "youtube", account: youtube.account, accountUrl: youtube.accountUrl, resolver: "youtube_url" };
+  const github = normalizeGithubSourceUrl(value);
+  if (github) return { platform: "github", account: github.account, accountUrl: github.accountUrl, resolver: "github_url" };
+  const tiktok = normalizeTiktokSourceUrl(value);
+  if (tiktok) return { platform: "tiktok", account: tiktok.account, accountUrl: tiktok.accountUrl, resolver: "tiktok_url" };
+  const rumble = normalizeRumbleSourceUrl(value);
+  if (rumble) return { platform: "rumble", account: rumble.account, accountUrl: rumble.accountUrl, resolver: "rumble_url" };
+  const reddit = normalizeRedditSourceUrl(value);
+  if (reddit) return { platform: "reddit", account: reddit.account, accountUrl: reddit.accountUrl, resolver: "reddit_url" };
+  const domain = domainSourceFromUrl(value);
+  if (domain) return { platform: "domain", account: domain.account, accountUrl: domain.accountUrl, resolver: "domain_url" };
+  return null;
+}
+
+function emptySourceProof(resolver = "none"): ConnectWorkSourceProof {
+  return {
+    sourcePlatform: null,
+    sourceAccount: null,
+    sourceAccountUrl: null,
+    sourceProofSubject: null,
+    sourceVerified: false,
+    sourceProofRecordId: null,
+    resolver
+  };
+}
+
+function emptyDiscoverySourceFields() {
+  return {
+    sourcePlatform: null,
+    sourceAccount: null,
+    sourceAccountUrl: null,
+    sourceProofSubject: null,
+    sourceVerified: false,
+    sourceProofRecordId: null
+  };
+}
+
+async function matchSourceProofForUser(userId: string, source: { platform: string; account: string; accountUrl: string; resolver: string } | null): Promise<ConnectWorkSourceProof> {
+  if (!source) return emptySourceProof();
+  const platform = source.platform.toLowerCase();
+  const account = platform === "domain" ? source.account.toLowerCase() : normalizeSourceAccount(source.account);
+  if (!account) return emptySourceProof(source.resolver);
+  const proofType = platform === "domain" ? "domain" : "social";
+  const subject = platform === "domain" ? account : `${platform}:${account}`;
+  const proof = await prisma.proofRecord.findFirst({
+    where: {
+      userId,
+      proofType,
+      subject,
+      status: "verified",
+      revokedAt: null
+    },
+    select: { id: true }
+  });
+  return {
+    sourcePlatform: platform,
+    sourceAccount: account,
+    sourceAccountUrl: source.accountUrl,
+    sourceProofSubject: subject,
+    sourceVerified: Boolean(proof?.id),
+    sourceProofRecordId: proof?.id || null,
+    resolver: source.resolver
+  };
+}
+
+function discoveryWithSource(discovery: Omit<ConnectWorkDiscovery, keyof ConnectWorkSourceProof>, source: ConnectWorkSourceProof | null): ConnectWorkDiscovery {
+  const proof = source || emptySourceProof();
+  return {
+    ...discovery,
+    sourcePlatform: proof.sourcePlatform,
+    sourceAccount: proof.sourceAccount,
+    sourceAccountUrl: proof.sourceAccountUrl,
+    sourceProofSubject: proof.sourceProofSubject,
+    sourceVerified: proof.sourceVerified,
+    sourceProofRecordId: proof.sourceProofRecordId
+  };
 }
 
 function spotifyUrlParts(url: URL): { kind: "track" | "album"; id: string } | null {
@@ -24550,9 +24756,18 @@ async function fetchSpotifyAccessToken(): Promise<string | null> {
   return fetchSpotifyAccessTokenFromCredentials(config);
 }
 
-function discoveryWithPrimaryUrl(discovery: Omit<ConnectWorkDiscovery, "externalUrl"> & { externalUrl?: string | null }): ConnectWorkDiscovery {
+function discoveryWithPrimaryUrl(discovery: Omit<ConnectWorkDiscovery, "externalUrl" | keyof ConnectWorkSourceProof> & { externalUrl?: string | null } & Partial<ConnectWorkSourceProof>): ConnectWorkDiscovery {
+  const source = {
+    sourcePlatform: discovery.sourcePlatform || null,
+    sourceAccount: discovery.sourceAccount || null,
+    sourceAccountUrl: discovery.sourceAccountUrl || null,
+    sourceProofSubject: discovery.sourceProofSubject || null,
+    sourceVerified: Boolean(discovery.sourceVerified),
+    sourceProofRecordId: discovery.sourceProofRecordId || null
+  };
   return {
     ...discovery,
+    ...source,
     externalUrl: pickPrimaryLegacyExternalUrl({
       youtubeUrl: discovery.youtubeUrl,
       spotifyUrl: discovery.spotifyUrl,
@@ -24673,7 +24888,7 @@ async function resolveAppleMusicUrl(url: URL): Promise<ConnectWorkDiscovery | nu
   });
 }
 
-async function resolveYoutubeUrl(url: URL): Promise<ConnectWorkDiscovery | null> {
+async function resolveYoutubeUrl(url: URL, userId: string): Promise<ConnectWorkDiscovery | null> {
   const videoId = youtubeVideoIdFromUrl(url);
   if (!videoId) return null;
   const canonical = sanitizeExternalMetadataUrl(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`);
@@ -24682,6 +24897,7 @@ async function resolveYoutubeUrl(url: URL): Promise<ConnectWorkDiscovery | null>
   oembed.searchParams.set("format", "json");
   const data = await fetchResolverJsonWithTimeout(oembed.toString());
   if (!data) return null;
+  const source = await matchSourceProofForUser(userId, sourceFromUrl(data?.author_url || url.toString()));
   return discoveryWithPrimaryUrl({
     title: sanitizeLegacyMetadataText(data?.title, 280),
     artist: sanitizeLegacyMetadataText(data?.author_name, 180),
@@ -24695,17 +24911,18 @@ async function resolveYoutubeUrl(url: URL): Promise<ConnectWorkDiscovery | null>
     youtubeUrl: canonical,
     musicBrainzUrl: null,
     discogsUrl: null,
-    provider: "YouTube"
+    provider: "YouTube",
+    ...source
   });
 }
 
-async function resolveConnectWorkUrl(rawUrl: unknown): Promise<ConnectWorkDiscovery | null> {
+async function resolveConnectWorkUrl(rawUrl: unknown, userId: string): Promise<ConnectWorkDiscovery | null> {
   const url = parseConnectWorkUrl(rawUrl);
   if (!url) return null;
   return (
     await resolveSpotifyUrl(url) ||
     await resolveAppleMusicUrl(url) ||
-    await resolveYoutubeUrl(url)
+    await resolveYoutubeUrl(url, userId)
   );
 }
 
@@ -24798,7 +25015,8 @@ async function lookupDiscogsDiscovery(identifier: { type: string; normalizedValu
       youtubeUrl: null,
       musicBrainzUrl: null,
       discogsUrl: discogsEntityUrl(result?.uri),
-      provider: "Discogs"
+      provider: "Discogs",
+      ...emptyDiscoverySourceFields()
     };
   } catch {
     return null;
@@ -24874,7 +25092,8 @@ async function lookupMusicBrainzDiscovery(identifier: { type: string; normalized
       youtubeUrl: platformUrls.youtubeUrl,
       musicBrainzUrl,
       discogsUrl: null,
-      provider: "MusicBrainz"
+      provider: "MusicBrainz",
+      ...emptyDiscoverySourceFields()
     }, identifier);
   }
   if (type === "ISWC") {
@@ -24897,7 +25116,8 @@ async function lookupMusicBrainzDiscovery(identifier: { type: string; normalized
       youtubeUrl: platformUrls.youtubeUrl,
       musicBrainzUrl,
       discogsUrl: null,
-      provider: "MusicBrainz"
+      provider: "MusicBrainz",
+      ...emptyDiscoverySourceFields()
     };
   }
   if (type === "UPC") {
@@ -24921,7 +25141,8 @@ async function lookupMusicBrainzDiscovery(identifier: { type: string; normalized
       youtubeUrl: platformUrls.youtubeUrl,
       musicBrainzUrl,
       discogsUrl: null,
-      provider: "MusicBrainz"
+      provider: "MusicBrainz",
+      ...emptyDiscoverySourceFields()
     }, identifier);
   }
   return {
@@ -24938,7 +25159,8 @@ async function lookupMusicBrainzDiscovery(identifier: { type: string; normalized
     youtubeUrl: null,
     musicBrainzUrl: null,
     discogsUrl: null,
-    provider: "MusicBrainz"
+    provider: "MusicBrainz",
+    ...emptyDiscoverySourceFields()
   };
 }
 
@@ -25059,14 +25281,16 @@ app.get("/api/connect-work/provider-status", { preHandler: requireAuth }, async 
 });
 
 app.post("/api/connect-work/resolve-url", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
   const body = (req.body || {}) as { url?: unknown };
   const url = parseConnectWorkUrl(body.url);
   if (!url) return badRequest(reply, "Supported Spotify, Apple Music, or YouTube URL required.");
-  const discovery = await resolveConnectWorkUrl(url.toString());
+  const discovery = await resolveConnectWorkUrl(url.toString(), userId);
   if (!discovery) {
+    const source = await matchSourceProofForUser(userId, sourceFromUrl(url.toString()));
     return reply.send({
       url: url.toString(),
-      discovery: {
+      discovery: discoveryWithSource({
         title: null,
         artist: null,
         artworkUrl: null,
@@ -25081,7 +25305,7 @@ app.post("/api/connect-work/resolve-url", { preHandler: requireAuth }, async (re
         musicBrainzUrl: null,
         discogsUrl: null,
         provider: "URL"
-      }
+      }, source)
     });
   }
   return reply.send({ url: url.toString(), discovery });
@@ -25106,6 +25330,9 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
     musicBrainzUrl?: unknown;
     discogsUrl?: unknown;
     provider?: unknown;
+    sourcePlatform?: unknown;
+    sourceAccount?: unknown;
+    sourceAccountUrl?: unknown;
   };
   const identifierInputs = Array.isArray(body.identifiers)
     ? body.identifiers
@@ -25147,6 +25374,26 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
     fallbackUrl: sanitizeExternalMetadataUrl(body.externalUrl)
   });
   const provider = sanitizeLegacyMetadataText(body.provider, 80) || "MusicBrainz";
+  const suppliedSourcePlatform = sanitizeLegacyMetadataText(body.sourcePlatform, 40);
+  const suppliedSourceAccount = sanitizeLegacyMetadataText(body.sourceAccount, 160);
+  const suppliedSourceAccountUrl = sanitizeExternalMetadataUrl(body.sourceAccountUrl);
+  const resolvedSource = await matchSourceProofForUser(
+    userId,
+    suppliedSourcePlatform && suppliedSourceAccount && suppliedSourceAccountUrl
+      ? {
+          platform: suppliedSourcePlatform,
+          account: suppliedSourceAccount,
+          accountUrl: suppliedSourceAccountUrl,
+          resolver: "connect_work_client_review"
+        }
+      : sourceFromUrl(youtubeUrl || spotifyUrl || appleMusicUrl || externalUrl || "")
+  );
+  if (!resolvedSource.sourceVerified) {
+    return reply.code(403).send({
+      error: "SOURCE_ACCOUNT_NOT_VERIFIED",
+      message: "Verify this source account before adding its works to your Legacy catalog."
+    });
+  }
   const descriptionParts = [
     artist ? `Artist: ${artist}` : null,
     releaseTitle ? `Release: ${releaseTitle}` : null,
@@ -25176,6 +25423,20 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
         legacyMusicBrainzUrl: musicBrainzUrl,
         legacyDiscogsUrl: discogsUrl,
         description: description || null
+      }
+    });
+    const sourceReference = await tx.contentSourceReference.create({
+      data: {
+        contentId: content.id,
+        platform: resolvedSource.sourcePlatform || "unknown",
+        sourceUrl: youtubeUrl || spotifyUrl || appleMusicUrl || externalUrl || resolvedSource.sourceAccountUrl || "",
+        sourceAccount: resolvedSource.sourceAccount,
+        sourceAccountUrl: resolvedSource.sourceAccountUrl,
+        sourceProofSubject: resolvedSource.sourceProofSubject,
+        sourceProofRecordId: resolvedSource.sourceProofRecordId,
+        sourceVerified: resolvedSource.sourceVerified,
+        resolver: resolvedSource.resolver,
+        resolvedAt: new Date()
       }
     });
     const identifierRows = [];
@@ -25210,6 +25471,13 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
           provider,
           artworkUrl: artworkUrl || null,
           externalUrl: externalUrl || null,
+          sourceReference: {
+            platform: sourceReference.platform,
+            sourceAccount: sourceReference.sourceAccount,
+            sourceProofSubject: sourceReference.sourceProofSubject,
+            sourceVerified: sourceReference.sourceVerified,
+            sourceProofRecordId: sourceReference.sourceProofRecordId
+          },
           platformUrls: {
             youtubeUrl,
             spotifyUrl,
@@ -25220,13 +25488,96 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
         } as any
       }
     }).catch(() => null);
-    return { content, identifiers: identifierRows };
+    return { content, identifiers: identifierRows, sourceReference };
   });
 
   return reply.code(201).send({
     content: result.content,
     identifier: result.identifiers[0] ? serializeContentExternalIdentifier(result.identifiers[0]) : null,
-    identifiers: result.identifiers.map(serializeContentExternalIdentifier)
+    identifiers: result.identifiers.map(serializeContentExternalIdentifier),
+    sourceReference: result.sourceReference
+  });
+});
+
+app.post("/api/content/:contentId/source-references/resolve", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params || {}).contentId || "").trim();
+  if (!contentId) return badRequest(reply, "contentId required");
+  const content = await prisma.contentItem.findFirst({
+    where: { id: contentId, ownerUserId: userId },
+    select: {
+      id: true,
+      assetOrigin: true,
+      legacyYoutubeUrl: true,
+      legacySpotifyUrl: true,
+      legacyAppleMusicUrl: true,
+      legacyExternalUrl: true,
+      legacyProvider: true
+    }
+  });
+  if (!content) return reply.code(404).send({ error: "Content not found" });
+  if (content.assetOrigin !== "legacy_import") return badRequest(reply, "Source references can only be resolved for Legacy assets.");
+  const sourceUrl =
+    content.legacyYoutubeUrl ||
+    content.legacySpotifyUrl ||
+    content.legacyAppleMusicUrl ||
+    content.legacyExternalUrl ||
+    "";
+  let resolvedSource = await matchSourceProofForUser(userId, sourceFromUrl(sourceUrl));
+  if (!resolvedSource.sourcePlatform) {
+    const parsedSourceUrl = parseConnectWorkUrl(sourceUrl);
+    if (parsedSourceUrl && youtubeVideoIdFromUrl(parsedSourceUrl)) {
+      const youtubeDiscovery = await resolveYoutubeUrl(parsedSourceUrl, userId);
+      if (youtubeDiscovery?.sourcePlatform) {
+        resolvedSource = {
+          sourcePlatform: youtubeDiscovery.sourcePlatform,
+          sourceAccount: youtubeDiscovery.sourceAccount,
+          sourceAccountUrl: youtubeDiscovery.sourceAccountUrl,
+          sourceProofSubject: youtubeDiscovery.sourceProofSubject,
+          sourceVerified: youtubeDiscovery.sourceVerified,
+          sourceProofRecordId: youtubeDiscovery.sourceProofRecordId,
+          resolver: "youtube_oembed"
+        };
+      }
+    }
+  }
+  if (!resolvedSource.sourcePlatform || !sourceUrl) {
+    return reply.send({
+      ok: false,
+      sourceReference: null,
+      sourceVerified: false,
+      message: "No resolvable source account found for this Legacy asset."
+    });
+  }
+  const existing = await prisma.contentSourceReference.findFirst({
+    where: {
+      contentId: content.id,
+      platform: resolvedSource.sourcePlatform,
+      sourceAccount: resolvedSource.sourceAccount
+    },
+    select: { id: true }
+  });
+  const data = {
+    platform: resolvedSource.sourcePlatform,
+    sourceUrl,
+    sourceAccount: resolvedSource.sourceAccount,
+    sourceAccountUrl: resolvedSource.sourceAccountUrl,
+    sourceProofSubject: resolvedSource.sourceProofSubject,
+    sourceProofRecordId: resolvedSource.sourceProofRecordId,
+    sourceVerified: resolvedSource.sourceVerified,
+    resolver: resolvedSource.resolver,
+    resolvedAt: new Date()
+  };
+  const sourceReference = existing
+    ? await prisma.contentSourceReference.update({ where: { id: existing.id }, data })
+    : await prisma.contentSourceReference.create({ data: { ...data, contentId: content.id } });
+  return reply.send({
+    ok: true,
+    sourceReference,
+    sourceVerified: sourceReference.sourceVerified,
+    message: sourceReference.sourceVerified
+      ? "Source account verified."
+      : "Source account resolved but no matching verified proof was found."
   });
 });
 
