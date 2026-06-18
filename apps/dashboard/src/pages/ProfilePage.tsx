@@ -731,7 +731,7 @@ export default function ProfilePage({
               className="absolute inset-0"
               style={{
                 background:
-                  "radial-gradient(circle at 50% 8%, rgba(0,0,0,.18), rgba(0,0,0,.68) 58%, rgba(0,0,0,.88) 100%), linear-gradient(180deg, rgba(0,0,0,.50), rgba(0,0,0,.82))"
+                  "radial-gradient(circle at 50% 8%, rgba(0,0,0,.10), rgba(0,0,0,.48) 58%, rgba(0,0,0,.72) 100%), linear-gradient(180deg, rgba(0,0,0,.34), rgba(0,0,0,.58))"
               }}
             />
             <div
@@ -742,7 +742,11 @@ export default function ProfilePage({
             />
             <div
               className="relative max-w-xl rounded-lg border p-3 shadow-2xl backdrop-blur-md"
-              style={{ borderColor: profileTheme.themeBorderColor, background: `${profileTheme.themeCardColor}c8` }}
+              style={{
+                borderColor: `${profileTheme.themeBorderColor}cc`,
+                background: `${profileTheme.themeCardColor}a6`,
+                boxShadow: `0 18px 45px rgba(0,0,0,.32), 0 0 36px ${profileTheme.themeAccentColor}22`
+              }}
             >
               <div className="text-xs uppercase tracking-wide" style={{ color: profileTheme.themeMutedTextColor }}>
                 Full-page public profile preview
@@ -751,13 +755,18 @@ export default function ProfilePage({
               <div className="mt-1 text-sm" style={{ color: profileTheme.themeMutedTextColor }}>
                 Wallpaper sits behind the whole profile. Existing trust score, verification, works, collaborations, and proof sections render as glass panels.
               </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: `${profileTheme.themeCardColor}f0`, border: `1px solid ${profileTheme.themeBorderColor}` }}>
+              <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: `${profileTheme.themeCardColor}ba`, border: `1px solid ${profileTheme.themeBorderColor}cc` }}>
                 <div className="h-full w-2/3 rounded-full" style={{ background: `linear-gradient(90deg, ${profileTheme.themeAccentColor}, ${profileTheme.themeButtonColor})` }} />
               </div>
               <button
                 type="button"
                 className="mt-3 rounded-lg px-3 py-2 text-sm font-medium"
-                style={{ background: profileTheme.themeButtonColor, color: profileTheme.themeButtonTextColor }}
+                style={{
+                  background: `${profileTheme.themeButtonColor}30`,
+                  color: profileTheme.themeTextColor,
+                  border: `1px solid ${profileTheme.themeButtonColor}bb`,
+                  boxShadow: `0 0 18px ${profileTheme.themeAccentColor}22`
+                }}
               >
                 Preview button
               </button>
