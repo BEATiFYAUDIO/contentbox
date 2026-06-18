@@ -609,7 +609,7 @@ export default function App() {
   const accountNav = [{ key: "profile" as const, label: "Profile", hint: "Identity" }];
 
   const contentNav = [
-    { key: "content" as const, label: "Catalog", hint: "Your content catalog" },
+    { key: "content" as const, label: "Works", hint: "Certifyd and Legacy works" },
     { key: "library" as const, label: "Library", hint: "What I own" }
   ];
 
@@ -690,7 +690,7 @@ export default function App() {
     page === "profile" ? "Profile" :
     page === "royalties-terms" ? "Split terms" :
     page === "payouts" ? PAYOUT_DESTINATIONS_LABEL :
-    page === "content" ? "Content catalog" :
+    page === "content" ? "Works catalog" :
     page === "receipt" ? "Receipt" :
     page === "invite" ? "Invite" : "Dashboard";
 
@@ -788,7 +788,7 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Works</div>
               <div className="space-y-1">
               {contentNav.map((item) => {
                 const active = item.key === page;

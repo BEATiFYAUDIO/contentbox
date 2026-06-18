@@ -23756,6 +23756,101 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   }));
 });
 
+app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const baseWhere = { ownerUserId: userId, deletedAt: null as any };
+  const [certifydRows, legacyRows] = await Promise.all([
+    prisma.contentItem.findMany({
+      where: { ...baseWhere, assetOrigin: "native" },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: 100,
+      select: {
+        id: true,
+        title: true,
+        type: true,
+        status: true,
+        assetOrigin: true,
+        featureOnProfile: true,
+        storefrontStatus: true,
+        createdAt: true,
+        updatedAt: true,
+        manifest: { select: { sha256: true } }
+      }
+    }),
+    prisma.contentItem.findMany({
+      where: { ...baseWhere, assetOrigin: "legacy_import" },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: 100,
+      select: {
+        id: true,
+        title: true,
+        assetOrigin: true,
+        legacyArtist: true,
+        legacyReleaseDate: true,
+        legacyProvider: true,
+        legacyArtworkUrl: true,
+        legacyExternalUrl: true,
+        legacySpotifyUrl: true,
+        legacyAppleMusicUrl: true,
+        legacyYoutubeUrl: true,
+        legacyMusicBrainzUrl: true,
+        legacyDiscogsUrl: true,
+        createdAt: true,
+        updatedAt: true,
+        externalIdentifiers: {
+          select: {
+            type: true,
+            displayValue: true,
+            normalizedValue: true
+          },
+          orderBy: [{ type: "asc" }, { createdAt: "asc" }]
+        }
+      }
+    })
+  ]);
+
+  return reply.send({
+    note: "Certifyd Works are sovereign/native catalog records. Legacy works are connected metadata references and are not ownership verification.",
+    certifydWorks: certifydRows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      type: row.type,
+      status: row.status,
+      assetOrigin: row.assetOrigin || "native",
+      featureOnProfile: Boolean(row.featureOnProfile),
+      storefrontStatus: row.storefrontStatus || "DISABLED",
+      manifestSha256: row.manifest?.sha256 || null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    })),
+    legacyWorks: legacyRows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      assetOrigin: row.assetOrigin || "legacy_import",
+      displayLabel: row.legacyProvider ? `Connected from ${row.legacyProvider}` : "Connected legacy work",
+      artist: row.legacyArtist || null,
+      releaseDate: row.legacyReleaseDate || null,
+      artworkUrl: row.legacyArtworkUrl || null,
+      provider: row.legacyProvider || null,
+      externalUrl: row.legacyExternalUrl || null,
+      platformUrls: {
+        spotify: row.legacySpotifyUrl || null,
+        appleMusic: row.legacyAppleMusicUrl || null,
+        youtube: row.legacyYoutubeUrl || null,
+        musicBrainz: row.legacyMusicBrainzUrl || null,
+        discogs: row.legacyDiscogsUrl || null
+      },
+      identifiers: row.externalIdentifiers.map((identifier) => ({
+        type: identifier.type,
+        displayValue: identifier.displayValue,
+        normalizedValue: identifier.normalizedValue
+      })),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    }))
+  });
+});
+
 // Create a new content item and initialize a repo for it
 app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;

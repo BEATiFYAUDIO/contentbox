@@ -2433,8 +2433,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         </div>
       ) : null}
       <div>
-        <div className="text-lg font-semibold">Content catalog</div>
-        <div className="text-sm text-neutral-400">Create an item, upload your master file, and the repo will track every version.</div>
+        <div className="text-lg font-semibold">Works catalog</div>
+        <div className="text-sm text-neutral-400">Create Certifyd Works, connect Legacy works, and keep your catalog organized.</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <span className="text-neutral-500">View:</span>
           <button
@@ -2493,7 +2493,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           ))}
         </div>
         <div className="text-xs text-neutral-500 mt-2">
-          Showing: {assetOriginFilter === "legacy" ? "Legacy assets" : "Certifyd assets"} • {LIBRARY_TYPE_LABEL[libraryTypeFilter]}
+          Showing: {assetOriginFilter === "legacy" ? "Legacy works" : "Certifyd Works"} • {LIBRARY_TYPE_LABEL[libraryTypeFilter]}
         </div>
         <div className="text-xs text-neutral-500 mt-2">
           {contentScope === "library"
@@ -2549,7 +2549,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       <div className="grid gap-6 lg:grid-cols-2">
         <form onSubmit={createContent} className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
-            <div className="font-medium">New content item</div>
+            <div className="font-medium">New Certifyd Work</div>
             {currentUserEmail ? (
               <div className="text-[11px] text-neutral-500">Creating as: <span className="text-neutral-300">{currentUserEmail}</span></div>
             ) : null}
@@ -2725,7 +2725,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
         <div className="flex flex-wrap items-center justify-between mb-3 gap-3">
           <div className="flex items-center gap-2">
-            <div className="font-medium">Your content</div>
+            <div className="font-medium">Your Works</div>
 
             <div className="ml-2 inline-flex rounded-lg border border-neutral-800 overflow-hidden">
               <button
@@ -2744,7 +2744,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   await load(false, false, "native");
                 }}
               >
-                Content
+                Certifyd Works
               </button>
               <button
                 type="button"
@@ -3099,7 +3099,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           <div className="text-sm text-neutral-400">Loading…</div>
         ) : items.length === 0 ? (
           <div className="text-sm text-neutral-400">
-            {showTrash ? "Trash is empty." : showTombstones ? "No archived items." : "No content yet."}
+            {showTrash ? "Trash is empty." : showTombstones ? "No archived items." : "No works yet."}
           </div>
         ) : (
           <div className="space-y-2">
