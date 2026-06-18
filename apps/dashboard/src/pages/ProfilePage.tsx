@@ -17,11 +17,16 @@ type Me = {
 };
 
 type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
+type ProfileCardStrength = "light" | "medium" | "strong";
+type ProfileOverlayStrength = "lighter" | "balanced" | "darker";
+type ProfileButtonStyle = "glass" | "filled" | "outline";
 
 type ProfileTheme = {
   themeWallpaperImageUrl: string | null;
   themeMode: ProfileThemeMode;
   themeAccentColor: string;
+  themeAccentOverrideColor: string | null;
+  themeResolvedAccentColor?: string;
   themeBackgroundColor: string;
   themeCardColor: string;
   themeBorderColor: string;
@@ -29,6 +34,10 @@ type ProfileTheme = {
   themeButtonTextColor: string;
   themeTextColor: string;
   themeMutedTextColor: string;
+  themeCardStrength: ProfileCardStrength;
+  themeOverlayStrength: ProfileOverlayStrength;
+  themeButtonStyle: ProfileButtonStyle;
+  themeSuggestedAccentColors?: string[];
   themeGeneratedFromImage: boolean;
   themeUpdatedAt: string | null;
 };
@@ -37,6 +46,8 @@ const DEFAULT_PROFILE_THEME: ProfileTheme = {
   themeWallpaperImageUrl: null,
   themeMode: "auto",
   themeAccentColor: "#d4b26a",
+  themeAccentOverrideColor: null,
+  themeResolvedAccentColor: "#d4b26a",
   themeBackgroundColor: "#040506",
   themeCardColor: "#0a0b0d",
   themeBorderColor: "#2f2b27",
@@ -44,6 +55,10 @@ const DEFAULT_PROFILE_THEME: ProfileTheme = {
   themeButtonTextColor: "#0b0b0b",
   themeTextColor: "#f4f2ec",
   themeMutedTextColor: "#b7afa1",
+  themeCardStrength: "medium",
+  themeOverlayStrength: "balanced",
+  themeButtonStyle: "glass",
+  themeSuggestedAccentColors: ["#d4b26a", "#38bdf8", "#a78bfa", "#ef4444", "#22c55e", "#f8fafc"],
   themeGeneratedFromImage: false,
   themeUpdatedAt: null
 };
@@ -82,6 +97,68 @@ type PublicLocationResponse = {
 function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) return error.message;
   return fallback;
+}
+
+function normalizeHexColor(value: string | null | undefined): string | null {
+  const match = String(value || "").trim().match(/^#?([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1].toLowerCase()}` : null;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const clean = normalizeHexColor(hex) || "#000000";
+  return {
+    r: parseInt(clean.slice(1, 3), 16),
+    g: parseInt(clean.slice(3, 5), 16),
+    b: parseInt(clean.slice(5, 7), 16)
+  };
+}
+
+function relativeLuminance(hex: string): number {
+  const { r, g, b } = hexToRgb(hex);
+  const convert = (value: number) => {
+    const s = value / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * convert(r) + 0.7152 * convert(g) + 0.0722 * convert(b);
+}
+
+function contrastRatio(a: string, b: string): number {
+  const l1 = relativeLuminance(a);
+  const l2 = relativeLuminance(b);
+  const light = Math.max(l1, l2);
+  const dark = Math.min(l1, l2);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+function readableTextFor(background: string): string {
+  return contrastRatio(background, "#f8fafc") >= contrastRatio(background, "#08090b") ? "#f8fafc" : "#08090b";
+}
+
+function resolvedProfileAccent(theme: ProfileTheme): string {
+  return normalizeHexColor(theme.themeAccentOverrideColor) || normalizeHexColor(theme.themeResolvedAccentColor) || normalizeHexColor(theme.themeAccentColor) || "#d4b26a";
+}
+
+function profileAccentSuggestions(theme: ProfileTheme): string[] {
+  const base = [
+    ...(theme.themeSuggestedAccentColors || []),
+    theme.themeAccentColor,
+    theme.themeBorderColor,
+    theme.themeButtonColor,
+    "#d4b26a",
+    "#38bdf8",
+    "#a78bfa",
+    "#ef4444",
+    "#22c55e",
+    "#f8fafc"
+  ];
+  const out: string[] = [];
+  for (const candidate of base) {
+    const hex = normalizeHexColor(candidate);
+    if (!hex || out.includes(hex)) continue;
+    out.push(hex);
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 type ProfilePageProps = {
@@ -444,6 +521,18 @@ export default function ProfilePage({
     }
   };
 
+  const previewAccent = resolvedProfileAccent(profileTheme);
+  const previewCardAlpha = profileTheme.themeCardStrength === "light" ? 0.16 : profileTheme.themeCardStrength === "strong" ? 0.3 : 0.22;
+  const previewOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.24 : profileTheme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
+  const previewButtonBackground =
+    profileTheme.themeButtonStyle === "filled"
+      ? previewAccent
+      : profileTheme.themeButtonStyle === "outline"
+        ? "rgba(255,255,255,.025)"
+        : "rgba(255,255,255,.07)";
+  const previewButtonText = profileTheme.themeButtonStyle === "filled" ? readableTextFor(previewAccent) : profileTheme.themeTextColor;
+  const previewAccentSuggestions = profileAccentSuggestions(profileTheme);
+
   return (
     <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
       <div className="text-lg font-semibold">Profile</div>
@@ -731,22 +820,22 @@ export default function ProfilePage({
               className="absolute inset-0"
               style={{
                 background:
-                  "radial-gradient(circle at 50% 8%, rgba(0,0,0,.04), rgba(0,0,0,.30) 58%, rgba(0,0,0,.54) 100%), linear-gradient(180deg, rgba(0,0,0,.20), rgba(0,0,0,.44))"
+                  `radial-gradient(circle at 50% 8%, rgba(0,0,0,.04), rgba(0,0,0,${previewOverlayAlpha}) 58%, rgba(0,0,0,.54) 100%), linear-gradient(180deg, rgba(0,0,0,.20), rgba(0,0,0,${Math.min(previewOverlayAlpha + 0.1, 0.62)}))`
               }}
             />
             <div
               className="pointer-events-none absolute inset-0"
               style={{
-                background: `radial-gradient(520px 180px at 18% 4%, ${profileTheme.themeAccentColor}33, transparent 70%)`
+                background: `radial-gradient(520px 180px at 18% 4%, ${previewAccent}33, transparent 70%)`
               }}
             />
             <div
               className="relative max-w-xl rounded-lg border p-3 shadow-2xl backdrop-blur-md"
               style={{
                 borderColor: `${profileTheme.themeBorderColor}bb`,
-                background: "rgba(10,10,10,.24)",
+                background: `rgba(10,10,10,${previewCardAlpha})`,
                 backdropFilter: "blur(20px) saturate(125%)",
-                boxShadow: `0 18px 45px rgba(0,0,0,.32), 0 0 36px ${profileTheme.themeAccentColor}22`
+                boxShadow: `0 18px 45px rgba(0,0,0,.32), 0 0 36px ${previewAccent}22`
               }}
             >
               <div className="text-xs uppercase tracking-wide" style={{ color: profileTheme.themeMutedTextColor }}>
@@ -756,17 +845,17 @@ export default function ProfilePage({
               <div className="mt-1 text-sm" style={{ color: profileTheme.themeMutedTextColor }}>
                 Wallpaper sits behind the whole profile. Existing trust score, verification, works, collaborations, and proof sections render as glass panels.
               </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.07)", border: `1px solid ${profileTheme.themeBorderColor}bb` }}>
-                <div className="h-full w-2/3 rounded-full" style={{ background: `linear-gradient(90deg, ${profileTheme.themeAccentColor}, ${profileTheme.themeButtonColor})` }} />
+              <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.07)", border: `1px solid ${previewAccent}99` }}>
+                <div className="h-full w-2/3 rounded-full" style={{ background: `linear-gradient(90deg, ${previewAccent}, ${profileTheme.themeButtonColor})` }} />
               </div>
               <button
                 type="button"
                 className="mt-3 rounded-lg px-3 py-2 text-sm font-medium"
                 style={{
-                  background: "rgba(255,255,255,.07)",
-                  color: profileTheme.themeTextColor,
-                  border: `1px solid ${profileTheme.themeButtonColor}bb`,
-                  boxShadow: `0 0 18px ${profileTheme.themeAccentColor}22`
+                  background: previewButtonBackground,
+                  color: previewButtonText,
+                  border: `1px solid ${previewAccent}bb`,
+                  boxShadow: `0 0 18px ${previewAccent}22`
                 }}
               >
                 Preview button
@@ -792,6 +881,81 @@ export default function ProfilePage({
             </label>
             <div className="text-xs text-neutral-500 md:self-end">
               Themes are generated server-side with high-contrast text and button safety checks.
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/25 p-3">
+            <div className="text-xs font-medium text-neutral-200">Quick Adjust</div>
+            <div className="mt-1 text-xs text-neutral-500">Fix generated colors without editing raw hex values.</div>
+
+            <div className="mt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs text-neutral-400">Accent Color</div>
+                <div className="text-xs text-neutral-500">
+                  Generated: <span className="font-mono">{profileTheme.themeAccentColor}</span>
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {previewAccentSuggestions.map((color) => {
+                  const selected = previewAccent.toLowerCase() === color.toLowerCase();
+                  return (
+                    <button
+                      type="button"
+                      key={color}
+                      title={color}
+                      onClick={() => setProfileTheme((theme) => ({ ...theme, themeAccentOverrideColor: color, themeResolvedAccentColor: color }))}
+                      className={`h-8 w-8 rounded-full border ${selected ? "border-white ring-2 ring-white/30" : "border-neutral-700"}`}
+                      style={{ background: color }}
+                    />
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => setProfileTheme((theme) => ({ ...theme, themeAccentOverrideColor: null, themeResolvedAccentColor: theme.themeAccentColor }))}
+                  className="rounded-full border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-900"
+                >
+                  Use generated
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <label className="text-xs text-neutral-400">
+                Card Strength
+                <select
+                  value={profileTheme.themeCardStrength}
+                  onChange={(e) => setProfileTheme((theme) => ({ ...theme, themeCardStrength: e.target.value as ProfileCardStrength }))}
+                  className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                >
+                  <option value="light">Light</option>
+                  <option value="medium">Medium</option>
+                  <option value="strong">Strong</option>
+                </select>
+              </label>
+              <label className="text-xs text-neutral-400">
+                Overlay
+                <select
+                  value={profileTheme.themeOverlayStrength}
+                  onChange={(e) => setProfileTheme((theme) => ({ ...theme, themeOverlayStrength: e.target.value as ProfileOverlayStrength }))}
+                  className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                >
+                  <option value="lighter">Lighter</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="darker">Darker</option>
+                </select>
+              </label>
+              <label className="text-xs text-neutral-400">
+                Button Style
+                <select
+                  value={profileTheme.themeButtonStyle}
+                  onChange={(e) => setProfileTheme((theme) => ({ ...theme, themeButtonStyle: e.target.value as ProfileButtonStyle }))}
+                  className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                >
+                  <option value="glass">Glass</option>
+                  <option value="filled">Filled</option>
+                  <option value="outline">Outline</option>
+                </select>
+              </label>
             </div>
           </div>
 

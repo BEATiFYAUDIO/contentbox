@@ -11223,11 +11223,16 @@ async function storeAvatarBufferForUser(userId: string, buf: Buffer, contentType
 }
 
 type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
+type ProfileCardStrength = "light" | "medium" | "strong";
+type ProfileOverlayStrength = "lighter" | "balanced" | "darker";
+type ProfileButtonStyle = "glass" | "filled" | "outline";
 
 type ProfileTheme = {
   themeWallpaperImageUrl: string | null;
   themeMode: ProfileThemeMode;
   themeAccentColor: string;
+  themeAccentOverrideColor: string | null;
+  themeResolvedAccentColor: string;
   themeBackgroundColor: string;
   themeCardColor: string;
   themeBorderColor: string;
@@ -11235,11 +11240,15 @@ type ProfileTheme = {
   themeButtonTextColor: string;
   themeTextColor: string;
   themeMutedTextColor: string;
+  themeCardStrength: ProfileCardStrength;
+  themeOverlayStrength: ProfileOverlayStrength;
+  themeButtonStyle: ProfileButtonStyle;
+  themeSuggestedAccentColors: string[];
   themeGeneratedFromImage: boolean;
   themeUpdatedAt: string | null;
 };
 
-const PROFILE_THEME_DEFAULTS: Omit<ProfileTheme, "themeWallpaperImageUrl" | "themeMode" | "themeGeneratedFromImage" | "themeUpdatedAt"> = {
+const PROFILE_THEME_DEFAULTS = {
   themeAccentColor: "#d4b26a",
   themeBackgroundColor: "#040506",
   themeCardColor: "#0a0b0d",
@@ -11254,6 +11263,24 @@ function normalizeProfileThemeMode(value: unknown): ProfileThemeMode {
   const mode = asString(value || "").trim().toLowerCase().replace(/-/g, "_");
   if (mode === "vibrant" || mode === "dark" || mode === "minimal" || mode === "high_contrast") return mode;
   return "auto";
+}
+
+function normalizeProfileCardStrength(value: unknown): ProfileCardStrength {
+  const raw = asString(value || "").trim().toLowerCase();
+  if (raw === "light" || raw === "strong") return raw;
+  return "medium";
+}
+
+function normalizeProfileOverlayStrength(value: unknown): ProfileOverlayStrength {
+  const raw = asString(value || "").trim().toLowerCase();
+  if (raw === "lighter" || raw === "darker") return raw;
+  return "balanced";
+}
+
+function normalizeProfileButtonStyle(value: unknown): ProfileButtonStyle {
+  const raw = asString(value || "").trim().toLowerCase();
+  if (raw === "filled" || raw === "outline") return raw;
+  return "glass";
 }
 
 function normalizeHexColor(value: unknown): string | null {
@@ -11305,6 +11332,18 @@ function contrastRatio(a: string, b: string): number {
 
 function readableTextFor(background: string): string {
   return contrastRatio(background, "#f8fafc") >= contrastRatio(background, "#08090b") ? "#f8fafc" : "#08090b";
+}
+
+function uniqueProfileAccentSuggestions(colors: Array<string | null | undefined>): string[] {
+  const out: string[] = [];
+  for (const color of colors) {
+    const hex = normalizeHexColor(color);
+    if (!hex) continue;
+    if (out.some((existing) => colorDistance(existing, hex) < 24)) continue;
+    out.push(hex);
+    if (out.length >= 8) break;
+  }
+  return out;
 }
 
 type ExtractedProfilePalette = {
@@ -11596,6 +11635,8 @@ function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): Pr
     themeWallpaperImageUrl: null,
     themeMode: mode,
     themeAccentColor: normalizeHexColor(accent) || PROFILE_THEME_DEFAULTS.themeAccentColor,
+    themeAccentOverrideColor: null,
+    themeResolvedAccentColor: normalizeHexColor(accent) || PROFILE_THEME_DEFAULTS.themeAccentColor,
     themeBackgroundColor: normalizeHexColor(background) || PROFILE_THEME_DEFAULTS.themeBackgroundColor,
     themeCardColor: normalizeHexColor(card) || PROFILE_THEME_DEFAULTS.themeCardColor,
     themeBorderColor: normalizeHexColor(border) || PROFILE_THEME_DEFAULTS.themeBorderColor,
@@ -11603,6 +11644,10 @@ function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): Pr
     themeButtonTextColor: normalizeHexColor(buttonText) || PROFILE_THEME_DEFAULTS.themeButtonTextColor,
     themeTextColor: "#f8fafc",
     themeMutedTextColor: mode === "high_contrast" ? "#e5e7eb" : "#b8c0cc",
+    themeCardStrength: "medium" as ProfileCardStrength,
+    themeOverlayStrength: "balanced" as ProfileOverlayStrength,
+    themeButtonStyle: "glass" as ProfileButtonStyle,
+    themeSuggestedAccentColors: [] as string[],
     themeGeneratedFromImage: Boolean(buf),
     themeUpdatedAt: new Date().toISOString()
   };
@@ -11612,21 +11657,57 @@ function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): Pr
     theme.themeButtonColor = PROFILE_THEME_DEFAULTS.themeButtonColor;
     theme.themeButtonTextColor = PROFILE_THEME_DEFAULTS.themeButtonTextColor;
   }
+  theme.themeResolvedAccentColor = theme.themeAccentColor;
+  theme.themeSuggestedAccentColors = uniqueProfileAccentSuggestions([
+    theme.themeAccentColor,
+    theme.themeBorderColor,
+    theme.themeButtonColor,
+    palette.secondary,
+    "#d4b26a",
+    "#38bdf8",
+    "#a78bfa",
+    "#ef4444",
+    "#22c55e",
+    "#f8fafc"
+  ]);
   return theme;
 }
 
 function userToProfileTheme(user: any): ProfileTheme {
+  const generatedAccent = normalizeHexColor(user?.themeAccentColor) || PROFILE_THEME_DEFAULTS.themeAccentColor;
+  const accentOverride = normalizeHexColor(user?.themeAccentOverrideColor);
+  const resolvedAccent = accentOverride || generatedAccent;
+  const generatedButton = normalizeHexColor(user?.themeButtonColor) || PROFILE_THEME_DEFAULTS.themeButtonColor;
+  const effectiveButtonColor = normalizeProfileButtonStyle(user?.themeButtonStyle) === "filled" ? resolvedAccent : generatedButton;
+  const buttonText = readableTextFor(effectiveButtonColor);
   return {
     themeWallpaperImageUrl: asString(user?.themeWallpaperImageUrl || "").trim() || null,
     themeMode: normalizeProfileThemeMode(user?.themeMode),
-    themeAccentColor: normalizeHexColor(user?.themeAccentColor) || PROFILE_THEME_DEFAULTS.themeAccentColor,
+    themeAccentColor: generatedAccent,
+    themeAccentOverrideColor: accentOverride,
+    themeResolvedAccentColor: resolvedAccent,
     themeBackgroundColor: normalizeHexColor(user?.themeBackgroundColor) || PROFILE_THEME_DEFAULTS.themeBackgroundColor,
     themeCardColor: normalizeHexColor(user?.themeCardColor) || PROFILE_THEME_DEFAULTS.themeCardColor,
-    themeBorderColor: normalizeHexColor(user?.themeBorderColor) || PROFILE_THEME_DEFAULTS.themeBorderColor,
-    themeButtonColor: normalizeHexColor(user?.themeButtonColor) || PROFILE_THEME_DEFAULTS.themeButtonColor,
-    themeButtonTextColor: normalizeHexColor(user?.themeButtonTextColor) || PROFILE_THEME_DEFAULTS.themeButtonTextColor,
+    themeBorderColor: mixHex(normalizeHexColor(user?.themeBorderColor) || PROFILE_THEME_DEFAULTS.themeBorderColor, resolvedAccent, 0.36),
+    themeButtonColor: effectiveButtonColor,
+    themeButtonTextColor: normalizeProfileButtonStyle(user?.themeButtonStyle) === "filled" ? buttonText : (normalizeHexColor(user?.themeButtonTextColor) || PROFILE_THEME_DEFAULTS.themeButtonTextColor),
     themeTextColor: normalizeHexColor(user?.themeTextColor) || PROFILE_THEME_DEFAULTS.themeTextColor,
     themeMutedTextColor: normalizeHexColor(user?.themeMutedTextColor) || PROFILE_THEME_DEFAULTS.themeMutedTextColor,
+    themeCardStrength: normalizeProfileCardStrength(user?.themeCardStrength),
+    themeOverlayStrength: normalizeProfileOverlayStrength(user?.themeOverlayStrength),
+    themeButtonStyle: normalizeProfileButtonStyle(user?.themeButtonStyle),
+    themeSuggestedAccentColors: uniqueProfileAccentSuggestions([
+      generatedAccent,
+      normalizeHexColor(user?.themeBorderColor),
+      normalizeHexColor(user?.themeButtonColor),
+      resolvedAccent,
+      "#d4b26a",
+      "#38bdf8",
+      "#a78bfa",
+      "#ef4444",
+      "#22c55e",
+      "#f8fafc"
+    ]),
     themeGeneratedFromImage: Boolean(user?.themeGeneratedFromImage),
     themeUpdatedAt: user?.themeUpdatedAt?.toISOString?.() || null
   };
@@ -17721,6 +17802,7 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
       themeWallpaperImageUrl: true,
       themeMode: true,
       themeAccentColor: true,
+      themeAccentOverrideColor: true,
       themeBackgroundColor: true,
       themeCardColor: true,
       themeBorderColor: true,
@@ -17728,6 +17810,9 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
       themeButtonTextColor: true,
       themeTextColor: true,
       themeMutedTextColor: true,
+      themeCardStrength: true,
+      themeOverlayStrength: true,
+      themeButtonStyle: true,
       themeGeneratedFromImage: true,
       themeUpdatedAt: true
     }
@@ -22284,6 +22369,7 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
       themeWallpaperImageUrl: true,
       themeMode: true,
       themeAccentColor: true,
+      themeAccentOverrideColor: true,
       themeBackgroundColor: true,
       themeCardColor: true,
       themeBorderColor: true,
@@ -22291,6 +22377,9 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
       themeButtonTextColor: true,
       themeTextColor: true,
       themeMutedTextColor: true,
+      themeCardStrength: true,
+      themeOverlayStrength: true,
+      themeButtonStyle: true,
       themeGeneratedFromImage: true,
       themeUpdatedAt: true
     }
@@ -22302,7 +22391,16 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
 app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const body = (req.body || {}) as { mode?: unknown };
   const userId = (req.user as JwtUser).sub;
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { themeWallpaperImageUrl: true } });
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      themeWallpaperImageUrl: true,
+      themeAccentOverrideColor: true,
+      themeCardStrength: true,
+      themeOverlayStrength: true,
+      themeButtonStyle: true
+    }
+  });
   if (!user) return reply.code(404).send({ error: "User not found" });
   let sourceBuffer: Buffer | null = null;
   const wallpaperPath = asString(user.themeWallpaperImageUrl || "").trim();
@@ -22322,6 +22420,11 @@ app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (r
   }
   const theme = generateProfileThemeFromImage(sourceBuffer, body.mode);
   theme.themeWallpaperImageUrl = wallpaperPath || null;
+  theme.themeAccentOverrideColor = normalizeHexColor(user.themeAccentOverrideColor);
+  theme.themeCardStrength = normalizeProfileCardStrength(user.themeCardStrength);
+  theme.themeOverlayStrength = normalizeProfileOverlayStrength(user.themeOverlayStrength);
+  theme.themeButtonStyle = normalizeProfileButtonStyle(user.themeButtonStyle);
+  theme.themeResolvedAccentColor = theme.themeAccentOverrideColor || theme.themeAccentColor;
   return reply.send({ theme });
 });
 
@@ -22348,6 +22451,12 @@ app.patch("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any,
     if (!color) return badRequest(reply, `${field} must be a valid hex color.`);
     data[field] = color;
   }
+  const accentOverrideRaw = asString(themeInput.themeAccentOverrideColor || "").trim();
+  data.themeAccentOverrideColor = accentOverrideRaw ? normalizeHexColor(accentOverrideRaw) : null;
+  if (accentOverrideRaw && !data.themeAccentOverrideColor) return badRequest(reply, "themeAccentOverrideColor must be a valid hex color.");
+  data.themeCardStrength = normalizeProfileCardStrength(themeInput.themeCardStrength);
+  data.themeOverlayStrength = normalizeProfileOverlayStrength(themeInput.themeOverlayStrength);
+  data.themeButtonStyle = normalizeProfileButtonStyle(themeInput.themeButtonStyle);
   const checkedTheme = userToProfileTheme({ ...data, themeWallpaperImageUrl: themeInput.themeWallpaperImageUrl || null, themeGeneratedFromImage: themeInput.themeGeneratedFromImage });
   if (contrastRatio(checkedTheme.themeCardColor, checkedTheme.themeTextColor) < 4.5) return badRequest(reply, "Theme text color does not have enough contrast.");
   if (contrastRatio(checkedTheme.themeButtonColor, checkedTheme.themeButtonTextColor) < 4.5) return badRequest(reply, "Theme button text color does not have enough contrast.");
@@ -22369,6 +22478,10 @@ app.post("/api/me/profile-theme/reset", { preHandler: requireAuth }, async (req:
     data: {
       themeWallpaperImageUrl: null,
       themeMode: "auto",
+      themeAccentOverrideColor: null,
+      themeCardStrength: "medium",
+      themeOverlayStrength: "balanced",
+      themeButtonStyle: "glass",
       ...PROFILE_THEME_DEFAULTS,
       themeGeneratedFromImage: false,
       themeUpdatedAt: new Date()
@@ -22396,6 +22509,7 @@ app.post("/api/me/profile-theme/wallpaper/upload", { preHandler: requireAuth }, 
         themeWallpaperImageUrl: wallpaperUrl,
         themeMode: generated.themeMode,
         themeAccentColor: generated.themeAccentColor,
+        themeAccentOverrideColor: null,
         themeBackgroundColor: generated.themeBackgroundColor,
         themeCardColor: generated.themeCardColor,
         themeBorderColor: generated.themeBorderColor,
@@ -22403,6 +22517,9 @@ app.post("/api/me/profile-theme/wallpaper/upload", { preHandler: requireAuth }, 
         themeButtonTextColor: generated.themeButtonTextColor,
         themeTextColor: generated.themeTextColor,
         themeMutedTextColor: generated.themeMutedTextColor,
+        themeCardStrength: "medium",
+        themeOverlayStrength: "balanced",
+        themeButtonStyle: "glass",
         themeGeneratedFromImage: true,
         themeUpdatedAt: new Date()
       }
@@ -32714,6 +32831,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     themeWallpaperImageUrl: true,
     themeMode: true,
     themeAccentColor: true,
+    themeAccentOverrideColor: true,
     themeBackgroundColor: true,
     themeCardColor: true,
     themeBorderColor: true,
@@ -32721,6 +32839,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     themeButtonTextColor: true,
     themeTextColor: true,
     themeMutedTextColor: true,
+    themeCardStrength: true,
+    themeOverlayStrength: true,
+    themeButtonStyle: true,
     themeGeneratedFromImage: true,
     themeUpdatedAt: true,
     witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
@@ -33029,24 +33150,40 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     profileTheme.themeWallpaperImageUrl && profileTheme.themeWallpaperImageUrl.startsWith("/public/profile-wallpapers/")
       ? escHtml(profileTheme.themeWallpaperImageUrl)
       : "";
+  const profileCardAlpha = profileTheme.themeCardStrength === "light" ? 0.16 : profileTheme.themeCardStrength === "strong" ? 0.30 : 0.22;
+  const profileCardStrongAlpha = profileTheme.themeCardStrength === "light" ? 0.22 : profileTheme.themeCardStrength === "strong" ? 0.40 : 0.28;
+  const profileMobileCardAlpha = profileTheme.themeCardStrength === "light" ? 0.24 : profileTheme.themeCardStrength === "strong" ? 0.42 : 0.32;
+  const profileMobileCardStrongAlpha = profileTheme.themeCardStrength === "light" ? 0.30 : profileTheme.themeCardStrength === "strong" ? 0.50 : 0.38;
+  const profileOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.24 : profileTheme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
+  const profileMobileOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.34 : profileTheme.themeOverlayStrength === "darker" ? 0.56 : 0.44;
+  const profileButtonBackground =
+    profileTheme.themeButtonStyle === "filled"
+      ? profileTheme.themeResolvedAccentColor
+      : profileTheme.themeButtonStyle === "outline"
+        ? "rgba(255,255,255,0.025)"
+        : "rgba(255,255,255,0.065)";
+  const profileButtonText = profileTheme.themeButtonStyle === "filled" ? readableTextFor(profileTheme.themeResolvedAccentColor) : profileTheme.themeTextColor;
   const profileThemeCss = [
-    `--theme-accent:${profileTheme.themeAccentColor}`,
+    `--theme-accent:${profileTheme.themeResolvedAccentColor}`,
     `--theme-bg:${profileTheme.themeBackgroundColor}`,
     `--theme-card:${profileTheme.themeCardColor}`,
     `--theme-border:${profileTheme.themeBorderColor}`,
     `--theme-button:${profileTheme.themeButtonColor}`,
-    `--theme-button-text:${profileTheme.themeButtonTextColor}`,
+    `--theme-button-text:${profileButtonText}`,
     `--theme-text:${profileTheme.themeTextColor}`,
     `--theme-muted:${profileTheme.themeMutedTextColor}`,
-    `--profile-bg-overlay:rgba(0,0,0,0.34)`,
-    `--profile-card-bg:rgba(10,10,10,0.20)`,
-    `--profile-card-bg-strong:rgba(18,18,18,0.26)`,
+    `--profile-bg-overlay:rgba(0,0,0,${profileOverlayAlpha})`,
+    `--profile-card-bg:rgba(10,10,10,${profileCardAlpha})`,
+    `--profile-card-bg-strong:rgba(18,18,18,${profileCardStrongAlpha})`,
+    `--profile-card-bg-mobile:rgba(10,10,10,${profileMobileCardAlpha})`,
+    `--profile-card-bg-mobile-strong:rgba(18,18,18,${profileMobileCardStrongAlpha})`,
+    `--profile-bg-overlay-mobile:rgba(0,0,0,${profileMobileOverlayAlpha})`,
     `--profile-card-border:color-mix(in srgb, ${profileTheme.themeBorderColor} 78%, transparent)`,
     `--profile-card-blur:blur(20px) saturate(125%)`,
-    `--profile-accent:${profileTheme.themeAccentColor}`,
-    `--profile-accent-soft:color-mix(in srgb, ${profileTheme.themeAccentColor} 18%, transparent)`,
-    `--profile-button-bg:rgba(255,255,255,0.065)`,
-    `--profile-button-border:color-mix(in srgb, ${profileTheme.themeButtonColor} 70%, transparent)`,
+    `--profile-accent:${profileTheme.themeResolvedAccentColor}`,
+    `--profile-accent-soft:color-mix(in srgb, ${profileTheme.themeResolvedAccentColor} 18%, transparent)`,
+    `--profile-button-bg:${profileButtonBackground}`,
+    `--profile-button-border:color-mix(in srgb, ${profileTheme.themeResolvedAccentColor} 70%, transparent)`,
     `--profile-text:${profileTheme.themeTextColor}`,
     `--profile-muted:${profileTheme.themeMutedTextColor}`
   ].join(";");
@@ -34306,9 +34443,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     @media (max-width: 640px) {
       body { background-attachment:scroll; }
       :root {
-        --profile-bg-overlay:rgba(0,0,0,0.44);
-        --profile-card-bg:rgba(10,10,10,0.28);
-        --profile-card-bg-strong:rgba(18,18,18,0.34);
+        --profile-bg-overlay:var(--profile-bg-overlay-mobile);
+        --profile-card-bg:var(--profile-card-bg-mobile);
+        --profile-card-bg-strong:var(--profile-card-bg-mobile-strong);
       }
       .profile-header-grid {
         --profile-brand-col: 44px;
