@@ -73,6 +73,7 @@ import {
   type PublicMode,
   type PublicLinkState
 } from "./lib/publicLinkState.js";
+import { decryptSecret, encryptSecret } from "./lib/cryptoConfig.js";
 import {
   type ParentPublishAnchor,
   type ProofBundleV1,
@@ -24480,12 +24481,52 @@ async function fetchResolverJsonWithTimeout(url: string, headers?: Record<string
   }
 }
 
-async function fetchSpotifyAccessToken(): Promise<string | null> {
-  const clientId = asString(process.env.SPOTIFY_CLIENT_ID || "").trim();
-  const clientSecret = asString(process.env.SPOTIFY_CLIENT_SECRET || "").trim();
-  if (!clientId || !clientSecret) return null;
+type SpotifyMetadataProviderConfig = {
+  clientId: string;
+  clientSecret: string;
+  source: "dashboard" | "env";
+};
+
+function normalizeSpotifyClientId(value: unknown): string {
+  return asString(value || "").replace(/\s+/g, "").trim().slice(0, 200);
+}
+
+function normalizeSpotifyClientSecret(value: unknown): string {
+  return asString(value || "").trim().slice(0, 500);
+}
+
+async function readStoredSpotifyMetadataProviderConfig(): Promise<SpotifyMetadataProviderConfig | null> {
+  const row = await prisma.metadataProviderConfig.findUnique({ where: { provider: "spotify" } });
+  if (!row?.clientId || !row.clientSecretCiphertext || !row.clientSecretIv || !row.clientSecretTag) return null;
   try {
-    const encoded = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+    const decrypted = decryptSecret({
+      ciphertextB64: row.clientSecretCiphertext,
+      ivB64: row.clientSecretIv,
+      tagB64: row.clientSecretTag
+    }).toString("utf8");
+    const clientId = normalizeSpotifyClientId(row.clientId);
+    const clientSecret = normalizeSpotifyClientSecret(decrypted);
+    if (!clientId || !clientSecret) return null;
+    return { clientId, clientSecret, source: "dashboard" };
+  } catch {
+    return null;
+  }
+}
+
+function readEnvSpotifyMetadataProviderConfig(): SpotifyMetadataProviderConfig | null {
+  const clientId = normalizeSpotifyClientId(process.env.SPOTIFY_CLIENT_ID);
+  const clientSecret = normalizeSpotifyClientSecret(process.env.SPOTIFY_CLIENT_SECRET);
+  if (!clientId || !clientSecret) return null;
+  return { clientId, clientSecret, source: "env" };
+}
+
+async function readEffectiveSpotifyMetadataProviderConfig(): Promise<SpotifyMetadataProviderConfig | null> {
+  return (await readStoredSpotifyMetadataProviderConfig()) || readEnvSpotifyMetadataProviderConfig();
+}
+
+async function fetchSpotifyAccessTokenFromCredentials(config: SpotifyMetadataProviderConfig): Promise<string | null> {
+  try {
+    const encoded = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64");
     const res = await fetchWithTimeout("https://accounts.spotify.com/api/token", {
       method: "POST",
       headers: {
@@ -24503,6 +24544,12 @@ async function fetchSpotifyAccessToken(): Promise<string | null> {
   }
 }
 
+async function fetchSpotifyAccessToken(): Promise<string | null> {
+  const config = await readEffectiveSpotifyMetadataProviderConfig();
+  if (!config) return null;
+  return fetchSpotifyAccessTokenFromCredentials(config);
+}
+
 function discoveryWithPrimaryUrl(discovery: Omit<ConnectWorkDiscovery, "externalUrl"> & { externalUrl?: string | null }): ConnectWorkDiscovery {
   return {
     ...discovery,
@@ -24515,6 +24562,24 @@ function discoveryWithPrimaryUrl(discovery: Omit<ConnectWorkDiscovery, "external
       fallbackUrl: discovery.externalUrl
     })
   };
+}
+
+function spotifyUpcIdentifier(value: unknown): ConnectWorkIdentifier | null {
+  const raw = asString(value || "").replace(/[\s-]+/g, "").trim();
+  if (!raw) return null;
+  const candidates = [raw];
+  if (/^\d{13,14}$/.test(raw)) {
+    const trimmedToUpcA = raw.replace(/^0+/, "");
+    if (trimmedToUpcA.length === 12) candidates.push(trimmedToUpcA);
+    if (raw.length > 12) candidates.push(raw.slice(-12));
+  }
+  for (const candidate of candidates) {
+    const validated = validateAndNormalizeExternalIdentifier({ type: "UPC", value: candidate });
+    if (validated.ok) {
+      return { type: "UPC", value: validated.identifier.displayValue };
+    }
+  }
+  return null;
 }
 
 async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null> {
@@ -24540,7 +24605,8 @@ async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null>
       const upc = asString(albumData?.external_ids?.upc || albumData?.external_ids?.ean || data?.external_ids?.upc || data?.external_ids?.ean || "").trim();
       const releaseTitle = sanitizeLegacyMetadataText(parts.kind === "track" ? (albumData?.name || data?.album?.name) : data?.name, 280);
       if (isrc) identifiers.push({ type: "ISRC", value: isrc });
-      if (upc) identifiers.push({ type: "UPC", value: upc });
+      const upcIdentifier = spotifyUpcIdentifier(upc);
+      if (upcIdentifier) identifiers.push(upcIdentifier);
       return discoveryWithPrimaryUrl({
         title: sanitizeLegacyMetadataText(data?.name, 280),
         artist: artists || null,
@@ -24675,11 +24741,8 @@ function discogsUserToken(): string | null {
   return asString(process.env.DISCOGS_USER_TOKEN || process.env.DISCOGS_TOKEN || "").trim() || null;
 }
 
-function spotifyApiConfigured(): boolean {
-  return Boolean(
-    asString(process.env.SPOTIFY_CLIENT_ID || "").trim() &&
-    asString(process.env.SPOTIFY_CLIENT_SECRET || "").trim()
-  );
+async function spotifyApiConfigured(): Promise<boolean> {
+  return Boolean(await readEffectiveSpotifyMetadataProviderConfig());
 }
 
 function discogsEntityUrl(uri: unknown): string | null {
@@ -24913,8 +24976,80 @@ app.post("/api/connect-work/lookup", { preHandler: requireAuth }, async (req: an
   return reply.send({ identifier: validated.identifier, discovery });
 });
 
+async function spotifyMetadataProviderStatus() {
+  const row = await prisma.metadataProviderConfig.findUnique({ where: { provider: "spotify" } });
+  const storedConfigured = Boolean(row?.clientId && row.clientSecretCiphertext && row.clientSecretIv && row.clientSecretTag);
+  const envConfigured = Boolean(readEnvSpotifyMetadataProviderConfig());
+  return {
+    configured: storedConfigured || envConfigured,
+    richMetadata: storedConfigured || envConfigured ? "configured" : "fallback_only",
+    source: storedConfigured ? "dashboard" : envConfigured ? "env" : "fallback",
+    clientId: row?.clientId || null,
+    clientSecretConfigured: Boolean(row?.clientSecretCiphertext),
+    clientSecretMasked: row?.clientSecretCiphertext ? "••••••••" : null,
+    envConfigured,
+    lastTestedAt: row?.lastTestedAt ? row.lastTestedAt.toISOString() : null,
+    lastStatus: row?.lastStatus || null,
+    lastError: row?.lastError || null
+  };
+}
+
+app.get("/api/settings/metadata-providers", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const spotify = await spotifyMetadataProviderStatus();
+  return reply.send({ spotify });
+});
+
+app.patch("/api/settings/metadata-providers/spotify", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body || {}) as { clientId?: unknown; clientSecret?: unknown };
+  const clientId = normalizeSpotifyClientId(body.clientId);
+  const clientSecret = normalizeSpotifyClientSecret(body.clientSecret);
+  if (!clientId) return badRequest(reply, "Spotify clientId is required.");
+  if (!clientSecret) return badRequest(reply, "Spotify clientSecret is required.");
+  const encrypted = encryptSecret(Buffer.from(clientSecret, "utf8"));
+  await prisma.metadataProviderConfig.upsert({
+    where: { provider: "spotify" },
+    create: {
+      provider: "spotify",
+      clientId,
+      clientSecretCiphertext: encrypted.ciphertextB64,
+      clientSecretIv: encrypted.ivB64,
+      clientSecretTag: encrypted.tagB64
+    },
+    update: {
+      clientId,
+      clientSecretCiphertext: encrypted.ciphertextB64,
+      clientSecretIv: encrypted.ivB64,
+      clientSecretTag: encrypted.tagB64,
+      lastStatus: null,
+      lastError: null
+    }
+  });
+  return reply.send({ ok: true, spotify: await spotifyMetadataProviderStatus() });
+});
+
+app.post("/api/settings/metadata-providers/spotify/test", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const config = await readStoredSpotifyMetadataProviderConfig();
+  if (!config) return badRequest(reply, "Spotify dashboard configuration is incomplete.");
+  const token = await fetchSpotifyAccessTokenFromCredentials(config);
+  const now = new Date();
+  await prisma.metadataProviderConfig.update({
+    where: { provider: "spotify" },
+    data: {
+      lastTestedAt: now,
+      lastStatus: token ? "connected" : "error",
+      lastError: token ? null : "Spotify token request failed."
+    }
+  });
+  return reply.send({
+    ok: Boolean(token),
+    status: token ? "connected" : "error",
+    error: token ? null : "Spotify token request failed.",
+    spotify: await spotifyMetadataProviderStatus()
+  });
+});
+
 app.get("/api/connect-work/provider-status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const configured = spotifyApiConfigured();
+  const configured = await spotifyApiConfigured();
   return reply.send({
     spotify: {
       richMetadata: configured ? "configured" : "fallback_only",
@@ -24978,15 +25113,20 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
       ? [{ type: body.type, value: body.value }]
       : [];
   const identifiers: NormalizedConnectWorkIdentifier[] = [];
+  let firstIdentifierError: string | null = null;
   for (const input of identifierInputs) {
     const validated = validateAndNormalizeExternalIdentifier({
       type: (input as any)?.type,
       value: (input as any)?.value,
       displayValue: (input as any)?.displayValue
     });
-    if (!validated.ok) return badRequest(reply, validated.error);
+    if (!validated.ok) {
+      firstIdentifierError ||= validated.error;
+      continue;
+    }
     identifiers.push(validated.identifier);
   }
+  if (!identifiers.length && firstIdentifierError) return badRequest(reply, firstIdentifierError);
   const primaryIdentifier = identifiers[0] || null;
   const title = asString(body.title || "").trim() || (primaryIdentifier ? `${primaryIdentifier.type} ${primaryIdentifier.displayValue}` : "Connected legacy asset");
   const artist = sanitizeLegacyMetadataText(body.artist, 180) || "";

@@ -811,6 +811,19 @@ model LightningNodeConfig {
   updatedAt          DateTime @updatedAt
 }
 
+model MetadataProviderConfig {
+  provider               String   @id
+  clientId               String?
+  clientSecretCiphertext String?
+  clientSecretIv         String?
+  clientSecretTag        String?
+  lastTestedAt           DateTime?
+  lastStatus             String?
+  lastError              String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
 model Entitlement {
   id              String   @id @default(cuid())
   buyerId         String?
