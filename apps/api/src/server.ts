@@ -9,6 +9,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { argon2id } from "@noble/hashes/argon2";
@@ -11324,12 +11325,135 @@ function boostColorForAccent(hex: string): string {
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
   if (max - min < 22) return mixHex(hex, PROFILE_THEME_DEFAULTS.themeAccentColor, 0.15);
-  const lift = max < 160 ? 48 : 16;
+  const lift = max < 130 ? 36 : max < 180 ? 18 : 0;
   return rgbToHex(
     r === max ? Math.min(255, r + lift) : r + 10,
     g === max ? Math.min(255, g + lift) : g + 10,
     b === max ? Math.min(255, b + lift) : b + 10
   );
+}
+
+type ProfileColorCluster = {
+  key: string;
+  count: number;
+  r: number;
+  g: number;
+  b: number;
+  saturationSum: number;
+  brightnessSum: number;
+  luminanceSum: number;
+};
+
+function profileClusterHex(cluster: ProfileColorCluster): string {
+  return rgbToHex(cluster.r / cluster.count, cluster.g / cluster.count, cluster.b / cluster.count);
+}
+
+function profileClusterSaturation(cluster: ProfileColorCluster): number {
+  return cluster.saturationSum / Math.max(1, cluster.count);
+}
+
+function profileClusterBrightness(cluster: ProfileColorCluster): number {
+  return cluster.brightnessSum / Math.max(1, cluster.count);
+}
+
+function profileClusterLuminance(cluster: ProfileColorCluster): number {
+  return cluster.luminanceSum / Math.max(1, cluster.count);
+}
+
+function pngPaethPredictor(left: number, above: number, upperLeft: number): number {
+  const p = left + above - upperLeft;
+  const pa = Math.abs(p - left);
+  const pb = Math.abs(p - above);
+  const pc = Math.abs(p - upperLeft);
+  if (pa <= pb && pa <= pc) return left;
+  if (pb <= pc) return above;
+  return upperLeft;
+}
+
+function extractRgbSamplesFromPngBuffer(buf: Buffer): Array<{ r: number; g: number; b: number }> {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (!buf.subarray(0, 8).equals(signature)) return [];
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks: Buffer[] = [];
+  while (offset + 12 <= buf.length) {
+    const length = buf.readUInt32BE(offset);
+    const type = buf.subarray(offset + 4, offset + 8).toString("ascii");
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    if (dataEnd + 4 > buf.length) break;
+    const data = buf.subarray(dataStart, dataEnd);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      idatChunks.push(Buffer.from(data));
+    } else if (type === "IEND") {
+      break;
+    }
+    offset = dataEnd + 4;
+  }
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : 0;
+  if (!width || !height || bitDepth !== 8 || !channels || idatChunks.length === 0) return [];
+  let inflated: Buffer;
+  try {
+    inflated = zlib.inflateSync(Buffer.concat(idatChunks));
+  } catch {
+    return [];
+  }
+  const bytesPerPixel = channels;
+  const rowBytes = width * channels;
+  const expectedMin = (rowBytes + 1) * height;
+  if (inflated.length < expectedMin) return [];
+  const previous = Buffer.alloc(rowBytes);
+  const current = Buffer.alloc(rowBytes);
+  const samples: Array<{ r: number; g: number; b: number }> = [];
+  const pixelStride = Math.max(1, Math.floor(Math.sqrt((width * height) / 5000)));
+  let inputOffset = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[inputOffset++];
+    for (let x = 0; x < rowBytes; x += 1) {
+      const raw = inflated[inputOffset++];
+      const left = x >= bytesPerPixel ? current[x - bytesPerPixel] : 0;
+      const above = previous[x] || 0;
+      const upperLeft = x >= bytesPerPixel ? previous[x - bytesPerPixel] || 0 : 0;
+      let value = raw;
+      if (filter === 1) value = raw + left;
+      else if (filter === 2) value = raw + above;
+      else if (filter === 3) value = raw + Math.floor((left + above) / 2);
+      else if (filter === 4) value = raw + pngPaethPredictor(left, above, upperLeft);
+      current[x] = value & 0xff;
+    }
+    if (y % pixelStride === 0) {
+      for (let px = 0; px < width; px += pixelStride) {
+        const idx = px * channels;
+        if (colorType === 0) {
+          const v = current[idx];
+          samples.push({ r: v, g: v, b: v });
+        } else {
+          samples.push({ r: current[idx], g: current[idx + 1], b: current[idx + 2] });
+        }
+      }
+    }
+    previous.set(current);
+  }
+  return samples;
+}
+
+function extractFallbackRgbSamplesFromBytes(buf: Buffer): Array<{ r: number; g: number; b: number }> {
+  const samples: Array<{ r: number; g: number; b: number }> = [];
+  const start = Math.min(128, Math.floor(buf.length / 10));
+  const step = Math.max(31, Math.floor(buf.length / 2500));
+  for (let i = start; i + 2 < buf.length; i += step) {
+    samples.push({ r: buf[i], g: buf[i + 1], b: buf[i + 2] });
+    if (samples.length >= 2500) break;
+  }
+  return samples;
 }
 
 function extractProfilePaletteFromImageBytes(buf: Buffer): ExtractedProfilePalette {
@@ -11341,27 +11465,49 @@ function extractProfilePaletteFromImageBytes(buf: Buffer): ExtractedProfilePalet
       ok: false
     };
   }
-  const vibrant: Array<{ hex: string; score: number }> = [];
-  const darkSamples: Array<{ hex: string; lum: number }> = [];
-  const start = Math.min(128, Math.floor(buf.length / 10));
-  const step = Math.max(17, Math.floor(buf.length / 6000));
-  for (let i = start; i + 2 < buf.length; i += step) {
-    const rr = buf[i];
-    const gg = buf[i + 1];
-    const bb = buf[i + 2];
+  const clusters = new Map<string, ProfileColorCluster>();
+  const rgbSamples = extractRgbSamplesFromPngBuffer(buf);
+  const samples = rgbSamples.length ? rgbSamples : extractFallbackRgbSamplesFromBytes(buf);
+  let sampleCount = 0;
+  for (const sample of samples) {
+    const rr = sample.r;
+    const gg = sample.g;
+    const bb = sample.b;
     const max = Math.max(rr, gg, bb);
     const min = Math.min(rr, gg, bb);
     const hex = rgbToHex(rr, gg, bb);
     const lum = relativeLuminance(hex);
-    if (lum < 0.28) darkSamples.push({ hex, lum });
-    if (max >= 48 && max - min >= 22) {
-      const saturation = (max - min) / 255;
-      const brightness = max / 255;
-      vibrant.push({ hex, score: saturation * 0.68 + brightness * 0.32 });
-    }
-    if (vibrant.length >= 2200 && darkSamples.length >= 900) break;
+    const saturation = max === 0 ? 0 : (max - min) / max;
+    const brightness = max / 255;
+    if (brightness < 0.04 || brightness > 0.98) continue;
+    const bucket = 32;
+    const qr = Math.round(rr / bucket) * bucket;
+    const qg = Math.round(gg / bucket) * bucket;
+    const qb = Math.round(bb / bucket) * bucket;
+    const key = `${qr}:${qg}:${qb}`;
+    const current = clusters.get(key) || {
+      key,
+      count: 0,
+      r: 0,
+      g: 0,
+      b: 0,
+      saturationSum: 0,
+      brightnessSum: 0,
+      luminanceSum: 0
+    };
+    current.count += 1;
+    current.r += rr;
+    current.g += gg;
+    current.b += bb;
+    current.saturationSum += saturation;
+    current.brightnessSum += brightness;
+    current.luminanceSum += lum;
+    clusters.set(key, current);
+    sampleCount += 1;
+    if (sampleCount >= 5000) break;
   }
-  if (!vibrant.length && !darkSamples.length) {
+  const allClusters = Array.from(clusters.values()).sort((a, b) => b.count - a.count);
+  if (!allClusters.length) {
     const hash = crypto.createHash("sha256").update(buf).digest();
     const accent = rgbToHex(80 + (hash[0] % 140), 80 + (hash[1] % 140), 80 + (hash[2] % 140));
     return {
@@ -11371,19 +11517,50 @@ function extractProfilePaletteFromImageBytes(buf: Buffer): ExtractedProfilePalet
       ok: true
     };
   }
-  vibrant.sort((a, b) => b.score - a.score);
-  const accent = boostColorForAccent(vibrant[0]?.hex || darkSamples[0]?.hex || PROFILE_THEME_DEFAULTS.themeAccentColor);
-  const secondaryPicked =
-    vibrant.find((candidate) => colorDistance(candidate.hex, accent) > 45)?.hex ||
-    mixHex(accent, "#ffffff", 0.28);
-  const darkPicked =
-    darkSamples.sort((a, b) => a.lum - b.lum)[Math.min(Math.floor(darkSamples.length * 0.35), Math.max(0, darkSamples.length - 1))]?.hex ||
-    mixHex("#050607", accent, 0.18);
+  const minClusterCount = Math.max(4, Math.ceil(sampleCount * 0.05));
+  const meaningfulClusters = allClusters.filter((cluster) => cluster.count >= minClusterCount);
+  const candidateClusters = meaningfulClusters.length ? meaningfulClusters : allClusters.slice(0, 4);
+  const nonNeutralClusters = candidateClusters
+    .filter((cluster) => {
+      const saturation = profileClusterSaturation(cluster);
+      const brightness = profileClusterBrightness(cluster);
+      return saturation >= 0.16 && brightness >= 0.12 && brightness <= 0.92;
+    })
+    .sort((a, b) => {
+      const countDelta = b.count - a.count;
+      if (countDelta !== 0) return countDelta;
+      return profileClusterSaturation(b) - profileClusterSaturation(a);
+    });
+  const dominantCluster = candidateClusters[0];
+  const accentCluster = nonNeutralClusters[0] || dominantCluster;
+  const accentBase = profileClusterHex(accentCluster);
+  const accent = boostColorForAccent(accentBase);
+  const secondaryCluster =
+    nonNeutralClusters.find((cluster) => cluster.key !== accentCluster.key && colorDistance(profileClusterHex(cluster), accentBase) > 36) ||
+    candidateClusters.find((cluster) => cluster.key !== accentCluster.key && colorDistance(profileClusterHex(cluster), accentBase) > 28) ||
+    null;
+  const darkCluster =
+    candidateClusters
+      .filter((cluster) => profileClusterLuminance(cluster) < 0.3)
+      .sort((a, b) => {
+        const countDelta = b.count - a.count;
+        if (countDelta !== 0) return countDelta;
+        return profileClusterLuminance(a) - profileClusterLuminance(b);
+      })[0] ||
+    allClusters
+      .filter((cluster) => profileClusterLuminance(cluster) < 0.35)
+      .sort((a, b) => b.count - a.count)[0] ||
+    dominantCluster;
+  const secondaryPicked = secondaryCluster ? profileClusterHex(secondaryCluster) : mixHex(accent, profileClusterHex(dominantCluster), 0.34);
+  const neonTamedAccent =
+    profileClusterSaturation(accentCluster) > 0.82 && accentCluster.count < sampleCount * 0.18
+      ? mixHex(accent, profileClusterHex(dominantCluster), 0.35)
+      : accent;
   return {
-    dark: mixHex("#030405", darkPicked, 0.62),
-    accent,
+    dark: mixHex("#030405", profileClusterHex(darkCluster), 0.62),
+    accent: neonTamedAccent,
     secondary: boostColorForAccent(secondaryPicked),
-    ok: Boolean(vibrant.length)
+    ok: Boolean(nonNeutralClusters.length || candidateClusters.length)
   };
 }
 
@@ -32861,14 +33038,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     `--theme-button-text:${profileTheme.themeButtonTextColor}`,
     `--theme-text:${profileTheme.themeTextColor}`,
     `--theme-muted:${profileTheme.themeMutedTextColor}`,
-    `--profile-bg-overlay:rgba(0,0,0,0.46)`,
-    `--profile-card-bg:color-mix(in srgb, ${profileTheme.themeCardColor} 62%, transparent)`,
-    `--profile-card-bg-strong:color-mix(in srgb, ${profileTheme.themeCardColor} 72%, transparent)`,
+    `--profile-bg-overlay:rgba(0,0,0,0.34)`,
+    `--profile-card-bg:rgba(10,10,10,0.20)`,
+    `--profile-card-bg-strong:rgba(18,18,18,0.26)`,
     `--profile-card-border:color-mix(in srgb, ${profileTheme.themeBorderColor} 78%, transparent)`,
-    `--profile-card-blur:blur(14px) saturate(120%)`,
+    `--profile-card-blur:blur(20px) saturate(125%)`,
     `--profile-accent:${profileTheme.themeAccentColor}`,
     `--profile-accent-soft:color-mix(in srgb, ${profileTheme.themeAccentColor} 18%, transparent)`,
-    `--profile-button-bg:color-mix(in srgb, ${profileTheme.themeButtonColor} 22%, transparent)`,
+    `--profile-button-bg:rgba(255,255,255,0.065)`,
     `--profile-button-border:color-mix(in srgb, ${profileTheme.themeButtonColor} 70%, transparent)`,
     `--profile-text:${profileTheme.themeTextColor}`,
     `--profile-muted:${profileTheme.themeMutedTextColor}`
@@ -33775,8 +33952,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       pointer-events:none;
       z-index:0;
       background:
-        radial-gradient(circle at 50% 12%, rgba(0,0,0,0.10), rgba(0,0,0,0.48) 62%, rgba(0,0,0,0.72) 100%),
-        linear-gradient(180deg, rgba(0,0,0,0.34) 0%, var(--profile-bg-overlay) 46%, rgba(0,0,0,0.72) 100%);
+        radial-gradient(circle at 50% 12%, rgba(0,0,0,0.04), rgba(0,0,0,0.28) 62%, rgba(0,0,0,0.55) 100%),
+        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, var(--profile-bg-overlay) 48%, rgba(0,0,0,0.56) 100%);
     }
     body::after {
       content:"";
@@ -33800,8 +33977,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       border-radius:18px;
       padding:24px;
       overflow:hidden;
-      box-shadow:0 30px 90px rgba(0,0,0,0.44), 0 0 70px var(--profile-accent-soft);
-      backdrop-filter: blur(18px) saturate(130%);
+      box-shadow:0 30px 90px rgba(0,0,0,0.36), 0 0 54px var(--profile-accent-soft);
+      backdrop-filter: blur(20px) saturate(125%);
     }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     .brand-logo-image { display:block; width:var(--profile-logo-size); max-width:100%; height:auto; object-fit:contain; }
@@ -33809,9 +33986,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       width:22px;
       height:22px;
       border-radius:999px;
-      border:1px solid #4b3a22;
-      background:linear-gradient(180deg, #2b2215 0%, #16120b 100%);
-      color:#d8be84;
+      border:1px solid var(--profile-button-border);
+      background:var(--profile-button-bg);
+      color:var(--profile-accent);
       display:inline-flex;
       align-items:center;
       justify-content:center;
@@ -33820,7 +33997,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       line-height:1;
       text-transform:lowercase;
     }
-    .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#b6ae9e; }
+    .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:var(--profile-muted); }
     .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; display:none; }
     .muted { color:var(--profile-muted); font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
@@ -33829,7 +34006,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     a { color:var(--profile-accent); text-decoration:none; }
     a:hover { text-decoration:underline; text-shadow:0 0 18px var(--profile-accent-soft); }
     a:focus-visible, button:focus-visible, summary:focus-visible { outline:2px solid var(--profile-accent); outline-offset:3px; }
-    .section { margin-top:20px; border:1px solid var(--profile-card-border); border-radius:14px; background:var(--profile-card-bg); padding:16px; box-shadow:0 16px 38px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05); backdrop-filter: var(--profile-card-blur); }
+    .section { margin-top:20px; border:1px solid var(--profile-card-border); border-radius:14px; background:var(--profile-card-bg); padding:16px; box-shadow:0 16px 38px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.06); backdrop-filter: var(--profile-card-blur); }
     .section h3 { margin:0; font-size:18px; letter-spacing:-0.01em; }
     .section-sub { margin-top:6px; color:var(--profile-muted); font-size:13px; }
     .profile-header-grid {
@@ -33844,11 +34021,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       border:1px solid var(--profile-card-border);
       border-radius:16px;
       overflow:hidden;
-      background:
-        linear-gradient(135deg, var(--profile-accent-soft), transparent 52%),
-        var(--profile-card-bg);
+      background:var(--profile-card-bg);
       backdrop-filter: var(--profile-card-blur);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 46px rgba(0,0,0,0.26);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 18px 46px rgba(0,0,0,0.20), 0 0 42px var(--profile-accent-soft);
     }
     .profile-header-grid > * { position:relative; z-index:1; }
     .brand-rail { display:flex; align-items:center; justify-content:center; justify-self:center; padding:0; min-width:0; }
@@ -33936,6 +34111,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .proof-badge--substack { background:#1d1712; border-color:#614430; color:#e0c4a6; }
     .proof-badge--x { background:#121110; border-color:#3f3d3a; color:#ddd8cf; }
     .proof-badge--instagram { background:#191315; border-color:#52403f; color:#ddc8c9; }
+    .proof-badge--github,
+    .proof-badge--youtube,
+    .proof-badge--tiktok,
+    .proof-badge--reddit,
+    .proof-badge--rumble,
+    .proof-badge--substack,
+    .proof-badge--x,
+    .proof-badge--instagram {
+      background:var(--profile-button-bg);
+      border-color:var(--profile-button-border);
+      color:var(--profile-accent);
+    }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:12px; }
     .featured-item {
       border:1px solid var(--profile-card-border);
@@ -33945,12 +34132,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       display:flex;
       flex-direction:column;
       min-width:0;
+      backdrop-filter:var(--profile-card-blur);
+      box-shadow:0 10px 30px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.05);
       transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease;
     }
-    .featured-item:hover { transform:translateY(-2px); border-color:var(--profile-accent); box-shadow:0 12px 24px rgba(0,0,0,0.26), 0 0 28px var(--profile-accent-soft); }
+    .featured-item:hover { transform:translateY(-2px); border-color:var(--profile-accent); box-shadow:0 12px 24px rgba(0,0,0,0.20), 0 0 28px var(--profile-accent-soft); }
     .featured-media {
       border-bottom:1px solid var(--profile-card-border);
-      background:var(--profile-card-bg-strong);
+      background:rgba(255,255,255,0.045);
       overflow:hidden;
       aspect-ratio:16 / 9;
       width:100%;
@@ -33961,14 +34150,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     .featured-meta { padding:10px 12px 12px; min-width:0; display:flex; flex-direction:column; }
     .featured-image { width:100%; height:100%; object-fit:cover; display:block; }
-    .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, #121419 0%, #0f1013 100%); }
-    .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:#0d0f13; display:flex; align-items:center; justify-content:center; }
+    .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.045); }
+    .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:rgba(255,255,255,0.045); display:flex; align-items:center; justify-content:center; }
     .featured-video-thumb { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-video-preview { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
     .featured-video-fallback { position:absolute; inset:0; min-height:0; z-index:2; }
     .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:var(--profile-button-bg); border:1px solid var(--profile-button-border); color:var(--profile-accent); font-size:12px; line-height:1; z-index:3; box-shadow:0 0 18px var(--profile-accent-soft); backdrop-filter:blur(8px); }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
-    .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid #252525; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid var(--profile-card-border); background:rgba(255,255,255,0.045); display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
     .featured-song-cover-wrap .featured-fallback { display:none; }
     .featured-song-cover-missing .featured-fallback { display:block; }
@@ -34024,7 +34213,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, var(--profile-accent) 0%, var(--theme-button) 62%, color-mix(in srgb, var(--profile-accent) 64%, #fff) 100%); transition:width .2s ease; box-shadow:0 0 18px var(--profile-accent-soft); }
     @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
       .card, .section, .profile-header-grid, .signal-rail, .featured-item, .meta-item {
-        background:color-mix(in srgb, var(--theme-card) 82%, #000);
+        background:rgba(12,12,12,0.52);
       }
     }
     body.iframe-embedded { padding:10px; }
@@ -34117,9 +34306,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     @media (max-width: 640px) {
       body { background-attachment:scroll; }
       :root {
-        --profile-bg-overlay:rgba(0,0,0,0.56);
-        --profile-card-bg:color-mix(in srgb, var(--theme-card) 72%, transparent);
-        --profile-card-bg-strong:color-mix(in srgb, var(--theme-card) 78%, transparent);
+        --profile-bg-overlay:rgba(0,0,0,0.44);
+        --profile-card-bg:rgba(10,10,10,0.28);
+        --profile-card-bg-strong:rgba(18,18,18,0.34);
       }
       .profile-header-grid {
         --profile-brand-col: 44px;

@@ -731,7 +731,7 @@ export default function ProfilePage({
               className="absolute inset-0"
               style={{
                 background:
-                  "radial-gradient(circle at 50% 8%, rgba(0,0,0,.10), rgba(0,0,0,.48) 58%, rgba(0,0,0,.72) 100%), linear-gradient(180deg, rgba(0,0,0,.34), rgba(0,0,0,.58))"
+                  "radial-gradient(circle at 50% 8%, rgba(0,0,0,.04), rgba(0,0,0,.30) 58%, rgba(0,0,0,.54) 100%), linear-gradient(180deg, rgba(0,0,0,.20), rgba(0,0,0,.44))"
               }}
             />
             <div
@@ -743,8 +743,9 @@ export default function ProfilePage({
             <div
               className="relative max-w-xl rounded-lg border p-3 shadow-2xl backdrop-blur-md"
               style={{
-                borderColor: `${profileTheme.themeBorderColor}cc`,
-                background: `${profileTheme.themeCardColor}a6`,
+                borderColor: `${profileTheme.themeBorderColor}bb`,
+                background: "rgba(10,10,10,.24)",
+                backdropFilter: "blur(20px) saturate(125%)",
                 boxShadow: `0 18px 45px rgba(0,0,0,.32), 0 0 36px ${profileTheme.themeAccentColor}22`
               }}
             >
@@ -755,14 +756,14 @@ export default function ProfilePage({
               <div className="mt-1 text-sm" style={{ color: profileTheme.themeMutedTextColor }}>
                 Wallpaper sits behind the whole profile. Existing trust score, verification, works, collaborations, and proof sections render as glass panels.
               </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: `${profileTheme.themeCardColor}ba`, border: `1px solid ${profileTheme.themeBorderColor}cc` }}>
+              <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.07)", border: `1px solid ${profileTheme.themeBorderColor}bb` }}>
                 <div className="h-full w-2/3 rounded-full" style={{ background: `linear-gradient(90deg, ${profileTheme.themeAccentColor}, ${profileTheme.themeButtonColor})` }} />
               </div>
               <button
                 type="button"
                 className="mt-3 rounded-lg px-3 py-2 text-sm font-medium"
                 style={{
-                  background: `${profileTheme.themeButtonColor}30`,
+                  background: "rgba(255,255,255,.07)",
                   color: profileTheme.themeTextColor,
                   border: `1px solid ${profileTheme.themeButtonColor}bb`,
                   boxShadow: `0 0 18px ${profileTheme.themeAccentColor}22`
