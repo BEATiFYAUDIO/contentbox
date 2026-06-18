@@ -125,6 +125,18 @@ model User {
   displayName  String?
   bio          String?
   avatarUrl    String?
+  themeWallpaperImageUrl String?
+  themeMode              String   @default("auto")
+  themeAccentColor       String?
+  themeBackgroundColor   String?
+  themeCardColor         String?
+  themeBorderColor       String?
+  themeButtonColor       String?
+  themeButtonTextColor   String?
+  themeTextColor         String?
+  themeMutedTextColor    String?
+  themeGeneratedFromImage Boolean @default(false)
+  themeUpdatedAt         DateTime?
   passwordHash String?
   recoveryKeyHash      String?
   recoveryKeyCreatedAt DateTime?

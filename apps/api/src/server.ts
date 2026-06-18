@@ -11221,6 +11221,209 @@ async function storeAvatarBufferForUser(userId: string, buf: Buffer, contentType
   return `/public/avatars/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
 }
 
+type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
+
+type ProfileTheme = {
+  themeWallpaperImageUrl: string | null;
+  themeMode: ProfileThemeMode;
+  themeAccentColor: string;
+  themeBackgroundColor: string;
+  themeCardColor: string;
+  themeBorderColor: string;
+  themeButtonColor: string;
+  themeButtonTextColor: string;
+  themeTextColor: string;
+  themeMutedTextColor: string;
+  themeGeneratedFromImage: boolean;
+  themeUpdatedAt: string | null;
+};
+
+const PROFILE_THEME_DEFAULTS: Omit<ProfileTheme, "themeWallpaperImageUrl" | "themeMode" | "themeGeneratedFromImage" | "themeUpdatedAt"> = {
+  themeAccentColor: "#d4b26a",
+  themeBackgroundColor: "#040506",
+  themeCardColor: "#0a0b0d",
+  themeBorderColor: "#2f2b27",
+  themeButtonColor: "#d4b26a",
+  themeButtonTextColor: "#0b0b0b",
+  themeTextColor: "#f4f2ec",
+  themeMutedTextColor: "#b7afa1"
+};
+
+function normalizeProfileThemeMode(value: unknown): ProfileThemeMode {
+  const mode = asString(value || "").trim().toLowerCase().replace(/-/g, "_");
+  if (mode === "vibrant" || mode === "dark" || mode === "minimal" || mode === "high_contrast") return mode;
+  return "auto";
+}
+
+function normalizeHexColor(value: unknown): string | null {
+  const raw = asString(value || "").trim();
+  const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1].toLowerCase()}` : null;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const clean = normalizeHexColor(hex) || "#000000";
+  return {
+    r: parseInt(clean.slice(1, 3), 16),
+    g: parseInt(clean.slice(3, 5), 16),
+    b: parseInt(clean.slice(5, 7), 16)
+  };
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  return `#${[clamp(r), clamp(g), clamp(b)].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function mixHex(a: string, b: string, weight = 0.5): string {
+  const ca = hexToRgb(a);
+  const cb = hexToRgb(b);
+  return rgbToHex(
+    ca.r * (1 - weight) + cb.r * weight,
+    ca.g * (1 - weight) + cb.g * weight,
+    ca.b * (1 - weight) + cb.b * weight
+  );
+}
+
+function relativeLuminance(hex: string): number {
+  const { r, g, b } = hexToRgb(hex);
+  const convert = (value: number) => {
+    const s = value / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * convert(r) + 0.7152 * convert(g) + 0.0722 * convert(b);
+}
+
+function contrastRatio(a: string, b: string): number {
+  const l1 = relativeLuminance(a);
+  const l2 = relativeLuminance(b);
+  const light = Math.max(l1, l2);
+  const dark = Math.min(l1, l2);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+function readableTextFor(background: string): string {
+  return contrastRatio(background, "#f8fafc") >= contrastRatio(background, "#08090b") ? "#f8fafc" : "#08090b";
+}
+
+function extractAccentFromImageBytes(buf: Buffer): string {
+  if (!buf?.length) return PROFILE_THEME_DEFAULTS.themeAccentColor;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+  const start = Math.min(128, Math.floor(buf.length / 10));
+  const step = Math.max(17, Math.floor(buf.length / 6000));
+  for (let i = start; i + 2 < buf.length; i += step) {
+    const rr = buf[i];
+    const gg = buf[i + 1];
+    const bb = buf[i + 2];
+    const max = Math.max(rr, gg, bb);
+    const min = Math.min(rr, gg, bb);
+    if (max < 38 || max - min < 18) continue;
+    r += rr;
+    g += gg;
+    b += bb;
+    count += 1;
+    if (count >= 1600) break;
+  }
+  if (!count) {
+    const hash = crypto.createHash("sha256").update(buf).digest();
+    return rgbToHex(150 + (hash[0] % 90), 110 + (hash[1] % 80), 40 + (hash[2] % 90));
+  }
+  return rgbToHex(r / count, g / count, b / count);
+}
+
+function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): ProfileTheme {
+  const mode = normalizeProfileThemeMode(modeRaw);
+  const rawAccent = buf ? extractAccentFromImageBytes(buf) : PROFILE_THEME_DEFAULTS.themeAccentColor;
+  const accent =
+    mode === "high_contrast" ? "#f6c453" :
+    mode === "minimal" ? mixHex(rawAccent, "#d4b26a", 0.65) :
+    mode === "dark" ? mixHex(rawAccent, "#d4b26a", 0.35) :
+    mode === "vibrant" ? mixHex(rawAccent, "#ffffff", 0.08) :
+    mixHex(rawAccent, "#d4b26a", 0.25);
+  const background =
+    mode === "high_contrast" ? "#000000" :
+    mode === "minimal" ? "#08090b" :
+    mode === "dark" ? mixHex("#050607", accent, 0.08) :
+    mixHex("#040506", accent, mode === "vibrant" ? 0.14 : 0.1);
+  const card =
+    mode === "high_contrast" ? "#080808" :
+    mode === "minimal" ? "#101113" :
+    mixHex("#0a0b0d", accent, mode === "vibrant" ? 0.16 : 0.1);
+  const border =
+    mode === "high_contrast" ? "#f6c453" :
+    mode === "minimal" ? "#2d3138" :
+    mixHex("#2f2b27", accent, 0.32);
+  const button = mode === "high_contrast" ? "#f6c453" : mixHex(accent, "#f6c453", 0.28);
+  let buttonText = readableTextFor(button);
+  if (contrastRatio(button, buttonText) < 4.5) buttonText = "#08090b";
+  const theme = {
+    themeWallpaperImageUrl: null,
+    themeMode: mode,
+    themeAccentColor: normalizeHexColor(accent) || PROFILE_THEME_DEFAULTS.themeAccentColor,
+    themeBackgroundColor: normalizeHexColor(background) || PROFILE_THEME_DEFAULTS.themeBackgroundColor,
+    themeCardColor: normalizeHexColor(card) || PROFILE_THEME_DEFAULTS.themeCardColor,
+    themeBorderColor: normalizeHexColor(border) || PROFILE_THEME_DEFAULTS.themeBorderColor,
+    themeButtonColor: normalizeHexColor(button) || PROFILE_THEME_DEFAULTS.themeButtonColor,
+    themeButtonTextColor: normalizeHexColor(buttonText) || PROFILE_THEME_DEFAULTS.themeButtonTextColor,
+    themeTextColor: "#f8fafc",
+    themeMutedTextColor: mode === "high_contrast" ? "#e5e7eb" : "#b8c0cc",
+    themeGeneratedFromImage: Boolean(buf),
+    themeUpdatedAt: new Date().toISOString()
+  };
+  if (contrastRatio(theme.themeCardColor, theme.themeTextColor) < 7) theme.themeTextColor = PROFILE_THEME_DEFAULTS.themeTextColor;
+  if (contrastRatio(theme.themeCardColor, theme.themeMutedTextColor) < 4.5) theme.themeMutedTextColor = PROFILE_THEME_DEFAULTS.themeMutedTextColor;
+  if (contrastRatio(theme.themeButtonColor, theme.themeButtonTextColor) < 4.5) {
+    theme.themeButtonColor = PROFILE_THEME_DEFAULTS.themeButtonColor;
+    theme.themeButtonTextColor = PROFILE_THEME_DEFAULTS.themeButtonTextColor;
+  }
+  return theme;
+}
+
+function userToProfileTheme(user: any): ProfileTheme {
+  return {
+    themeWallpaperImageUrl: asString(user?.themeWallpaperImageUrl || "").trim() || null,
+    themeMode: normalizeProfileThemeMode(user?.themeMode),
+    themeAccentColor: normalizeHexColor(user?.themeAccentColor) || PROFILE_THEME_DEFAULTS.themeAccentColor,
+    themeBackgroundColor: normalizeHexColor(user?.themeBackgroundColor) || PROFILE_THEME_DEFAULTS.themeBackgroundColor,
+    themeCardColor: normalizeHexColor(user?.themeCardColor) || PROFILE_THEME_DEFAULTS.themeCardColor,
+    themeBorderColor: normalizeHexColor(user?.themeBorderColor) || PROFILE_THEME_DEFAULTS.themeBorderColor,
+    themeButtonColor: normalizeHexColor(user?.themeButtonColor) || PROFILE_THEME_DEFAULTS.themeButtonColor,
+    themeButtonTextColor: normalizeHexColor(user?.themeButtonTextColor) || PROFILE_THEME_DEFAULTS.themeButtonTextColor,
+    themeTextColor: normalizeHexColor(user?.themeTextColor) || PROFILE_THEME_DEFAULTS.themeTextColor,
+    themeMutedTextColor: normalizeHexColor(user?.themeMutedTextColor) || PROFILE_THEME_DEFAULTS.themeMutedTextColor,
+    themeGeneratedFromImage: Boolean(user?.themeGeneratedFromImage),
+    themeUpdatedAt: user?.themeUpdatedAt?.toISOString?.() || null
+  };
+}
+
+async function storeWallpaperBufferForUser(userId: string, buf: Buffer, contentType: string | null) {
+  if (!buf || buf.length === 0) return null;
+  const MAX = 6 * 1024 * 1024;
+  if (buf.length > MAX) throw new Error("WALLPAPER_TOO_LARGE");
+  const ct = String(contentType || "").toLowerCase();
+  const ext = (() => {
+    const m = (ct.match(/^image\/(png|jpeg|jpg|webp|avif)$/i) || [])[1];
+    if (!m) return "";
+    if (m === "jpeg") return ".jpg";
+    return `.${m}`;
+  })();
+  if (!ext) throw new Error("INVALID_WALLPAPER_TYPE");
+  const sha = crypto.createHash("sha256").update(buf).digest("hex");
+  const dir = path.join(CONTENTBOX_ROOT, "profile-wallpapers", userId);
+  await fs.mkdir(dir, { recursive: true });
+  const filename = `${sha}${ext}`;
+  const abs = path.join(dir, filename);
+  try {
+    await fs.stat(abs);
+  } catch {
+    await fs.writeFile(abs, buf);
+  }
+  return `/public/profile-wallpapers/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
+}
+
 /** ---------- manifest helpers ---------- */
 
 type ManifestFile = { path?: string; filename?: string; originalName?: string; sha256?: string; sizeBytes?: number; mime?: string };
@@ -17275,10 +17478,29 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, displayName: true, createdAt: true, bio: true, avatarUrl: true }
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      createdAt: true,
+      bio: true,
+      avatarUrl: true,
+      themeWallpaperImageUrl: true,
+      themeMode: true,
+      themeAccentColor: true,
+      themeBackgroundColor: true,
+      themeCardColor: true,
+      themeBorderColor: true,
+      themeButtonColor: true,
+      themeButtonTextColor: true,
+      themeTextColor: true,
+      themeMutedTextColor: true,
+      themeGeneratedFromImage: true,
+      themeUpdatedAt: true
+    }
   });
   const publicOrigin = getActivePublicOrigin();
-  return { ...user, publicOrigin: publicOrigin || null };
+  return { ...user, profileTheme: userToProfileTheme(user), publicOrigin: publicOrigin || null };
 });
 
 app.get("/api/me/creator-signal", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -21821,6 +22043,148 @@ app.post("/api/me/avatar/upload", { preHandler: requireAuth }, async (req: any, 
   }
 });
 
+app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      themeWallpaperImageUrl: true,
+      themeMode: true,
+      themeAccentColor: true,
+      themeBackgroundColor: true,
+      themeCardColor: true,
+      themeBorderColor: true,
+      themeButtonColor: true,
+      themeButtonTextColor: true,
+      themeTextColor: true,
+      themeMutedTextColor: true,
+      themeGeneratedFromImage: true,
+      themeUpdatedAt: true
+    }
+  });
+  if (!user) return reply.code(404).send({ error: "User not found" });
+  return reply.send({ theme: userToProfileTheme(user) });
+});
+
+app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body || {}) as { mode?: unknown };
+  const userId = (req.user as JwtUser).sub;
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { themeWallpaperImageUrl: true } });
+  if (!user) return reply.code(404).send({ error: "User not found" });
+  let sourceBuffer: Buffer | null = null;
+  const wallpaperPath = asString(user.themeWallpaperImageUrl || "").trim();
+  if (wallpaperPath.startsWith("/public/profile-wallpapers/")) {
+    try {
+      const parsed = new URL(wallpaperPath, "http://localhost");
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      const wallpaperUserId = decodeURIComponent(parts[2] || "");
+      const filename = decodeURIComponent(parts[3] || "");
+      if (wallpaperUserId === userId && filename) {
+        const abs = path.join(CONTENTBOX_ROOT, "profile-wallpapers", wallpaperUserId, filename);
+        sourceBuffer = await fs.readFile(abs);
+      }
+    } catch {
+      sourceBuffer = null;
+    }
+  }
+  const theme = generateProfileThemeFromImage(sourceBuffer, body.mode);
+  theme.themeWallpaperImageUrl = wallpaperPath || null;
+  return reply.send({ theme });
+});
+
+app.patch("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body || {}) as Record<string, unknown>;
+  const themeInput = typeof body.theme === "object" && body.theme ? (body.theme as Record<string, unknown>) : body;
+  const data: any = {
+    themeMode: normalizeProfileThemeMode(themeInput.themeMode || themeInput.mode),
+    themeUpdatedAt: new Date()
+  };
+  const colorFields = [
+    "themeAccentColor",
+    "themeBackgroundColor",
+    "themeCardColor",
+    "themeBorderColor",
+    "themeButtonColor",
+    "themeButtonTextColor",
+    "themeTextColor",
+    "themeMutedTextColor"
+  ];
+  for (const field of colorFields) {
+    const color = normalizeHexColor(themeInput[field]);
+    if (!color) return badRequest(reply, `${field} must be a valid hex color.`);
+    data[field] = color;
+  }
+  const checkedTheme = userToProfileTheme({ ...data, themeWallpaperImageUrl: themeInput.themeWallpaperImageUrl || null, themeGeneratedFromImage: themeInput.themeGeneratedFromImage });
+  if (contrastRatio(checkedTheme.themeCardColor, checkedTheme.themeTextColor) < 4.5) return badRequest(reply, "Theme text color does not have enough contrast.");
+  if (contrastRatio(checkedTheme.themeButtonColor, checkedTheme.themeButtonTextColor) < 4.5) return badRequest(reply, "Theme button text color does not have enough contrast.");
+  data.themeGeneratedFromImage = Boolean(themeInput.themeGeneratedFromImage);
+  const wallpaper = asString(themeInput.themeWallpaperImageUrl || "").trim();
+  if (wallpaper) {
+    if (!wallpaper.startsWith("/public/profile-wallpapers/")) return badRequest(reply, "Wallpaper URL must be a stored public wallpaper.");
+    data.themeWallpaperImageUrl = wallpaper;
+  }
+  const updated = await prisma.user.update({ where: { id: userId }, data });
+  invalidatePublicProfileProjectionCachesForUser(userId);
+  return reply.send({ ok: true, theme: userToProfileTheme(updated) });
+});
+
+app.post("/api/me/profile-theme/reset", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: {
+      themeWallpaperImageUrl: null,
+      themeMode: "auto",
+      ...PROFILE_THEME_DEFAULTS,
+      themeGeneratedFromImage: false,
+      themeUpdatedAt: new Date()
+    }
+  });
+  invalidatePublicProfileProjectionCachesForUser(userId);
+  return reply.send({ ok: true, theme: userToProfileTheme(updated) });
+});
+
+app.post("/api/me/profile-theme/wallpaper/upload", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  try {
+    const file = await req.file();
+    if (!file) return badRequest(reply, "image file required");
+    const mime = String(file.mimetype || "").toLowerCase();
+    const buf = await file.toBuffer();
+    const wallpaperUrl = await storeWallpaperBufferForUser(userId, buf, mime);
+    if (!wallpaperUrl) return reply.code(500).send({ error: "Failed to store wallpaper" });
+    const mode = normalizeProfileThemeMode((req.body as any)?.mode?.value || (req.body as any)?.mode || "auto");
+    const generated = generateProfileThemeFromImage(buf, mode);
+    generated.themeWallpaperImageUrl = wallpaperUrl;
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        themeWallpaperImageUrl: wallpaperUrl,
+        themeMode: generated.themeMode,
+        themeAccentColor: generated.themeAccentColor,
+        themeBackgroundColor: generated.themeBackgroundColor,
+        themeCardColor: generated.themeCardColor,
+        themeBorderColor: generated.themeBorderColor,
+        themeButtonColor: generated.themeButtonColor,
+        themeButtonTextColor: generated.themeButtonTextColor,
+        themeTextColor: generated.themeTextColor,
+        themeMutedTextColor: generated.themeMutedTextColor,
+        themeGeneratedFromImage: true,
+        themeUpdatedAt: new Date()
+      }
+    });
+    invalidatePublicProfileProjectionCachesForUser(userId);
+    return reply.send({ ok: true, theme: userToProfileTheme(updated) });
+  } catch (e: any) {
+    const msg = String(e?.message || "");
+    if (msg === "WALLPAPER_TOO_LARGE") return reply.code(413).send({ error: "WALLPAPER_TOO_LARGE", message: "Wallpaper must be 6MB or smaller." });
+    if (msg === "INVALID_WALLPAPER_TYPE") return badRequest(reply, "Only PNG, JPG, WebP, or AVIF images are supported.");
+    req.log.error({ err: e }, "me.profileTheme.wallpaper.upload.failed");
+    return reply.code(500).send({ error: "INTERNAL_ERROR" });
+  }
+});
+
 // (external/profile/import) route: enhanced implementation later in the file (Lens, ENS, HTML parsing).
 
 // Enhance external profile import: try Lens and ENS lookups when applicable
@@ -22254,6 +22618,34 @@ async function handlePublicAvatar(req: any, reply: any) {
 }
 
 app.get("/public/avatars/:userId/:filename", handlePublicAvatar);
+
+async function handlePublicProfileWallpaper(req: any, reply: any) {
+  try {
+    const userId = asString((req.params || {})?.userId || "");
+    const filename = asString((req.params || {})?.filename || "");
+    if (!userId || !filename) return notFound(reply, "Not found");
+    const root = path.join(CONTENTBOX_ROOT, "profile-wallpapers", userId);
+    const abs = path.join(root, filename);
+    const rel = path.relative(root, abs);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) return notFound(reply, "Not found");
+    if (!fsSync.existsSync(abs)) return notFound(reply, "Not found");
+    const ext = path.extname(filename).toLowerCase();
+    const mime =
+      ext === ".png" ? "image/png" :
+      ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" :
+      ext === ".webp" ? "image/webp" :
+      ext === ".avif" ? "image/avif" :
+      "application/octet-stream";
+    if (!mime.startsWith("image/")) return notFound(reply, "Not found");
+    reply.header("cache-control", "public, max-age=86400");
+    reply.type(mime);
+    return reply.send(fsSync.createReadStream(abs));
+  } catch {
+    return notFound(reply, "Not found");
+  }
+}
+
+app.get("/public/profile-wallpapers/:userId/:filename", handlePublicProfileWallpaper);
 
 /**
  * PAYOUT METHODS (public for now)
@@ -32086,6 +32478,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     email: true,
     bio: true,
     avatarUrl: true,
+    themeWallpaperImageUrl: true,
+    themeMode: true,
+    themeAccentColor: true,
+    themeBackgroundColor: true,
+    themeCardColor: true,
+    themeBorderColor: true,
+    themeButtonColor: true,
+    themeButtonTextColor: true,
+    themeTextColor: true,
+    themeMutedTextColor: true,
+    themeGeneratedFromImage: true,
+    themeUpdatedAt: true,
     witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
   } as const;
 
@@ -32387,6 +32791,21 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeBrandLogoSrc = resolveProfileLogoPath()
     ? escHtml("/logo.png?v=20260601c")
     : "";
+  const profileTheme = userToProfileTheme(user);
+  const safeThemeWallpaperUrl =
+    profileTheme.themeWallpaperImageUrl && profileTheme.themeWallpaperImageUrl.startsWith("/public/profile-wallpapers/")
+      ? escHtml(profileTheme.themeWallpaperImageUrl)
+      : "";
+  const profileThemeCss = [
+    `--theme-accent:${profileTheme.themeAccentColor}`,
+    `--theme-bg:${profileTheme.themeBackgroundColor}`,
+    `--theme-card:${profileTheme.themeCardColor}`,
+    `--theme-border:${profileTheme.themeBorderColor}`,
+    `--theme-button:${profileTheme.themeButtonColor}`,
+    `--theme-button-text:${profileTheme.themeButtonTextColor}`,
+    `--theme-text:${profileTheme.themeTextColor}`,
+    `--theme-muted:${profileTheme.themeMutedTextColor}`
+  ].join(";");
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p: any) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -33261,14 +33680,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       --profile-id-gap: 14px;
       --profile-avatar-size: 124px;
       --profile-signal-col: 320px;
+      ${profileThemeCss};
     }
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:
-      radial-gradient(1100px 540px at 14% -8%, rgba(76, 58, 28, 0.15), transparent 62%),
+      radial-gradient(1100px 540px at 14% -8%, color-mix(in srgb, var(--theme-accent) 16%, transparent), transparent 62%),
       radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.14), transparent 64%),
-      #040506;
-      color:#eee; padding:24px; }
-    .card { width:min(940px, 100%); margin:0 auto; background:linear-gradient(180deg, #0a0b0d 0%, #07080a 100%); border:1px solid #202227; border-radius:18px; padding:24px; overflow:hidden; box-shadow:0 30px 90px rgba(0,0,0,0.46); }
+      var(--theme-bg);
+      color:var(--theme-text); padding:24px; }
+    .card { width:min(940px, 100%); margin:0 auto; background:linear-gradient(180deg, color-mix(in srgb, var(--theme-card) 96%, transparent) 0%, color-mix(in srgb, var(--theme-bg) 94%, #000) 100%); border:1px solid var(--theme-border); border-radius:18px; padding:24px; overflow:hidden; box-shadow:0 30px 90px rgba(0,0,0,0.46); }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     .brand-logo-image { display:block; width:var(--profile-logo-size); max-width:100%; height:auto; object-fit:contain; }
     .brand-mark {
@@ -33288,33 +33708,46 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#b6ae9e; }
     .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; display:none; }
-    .muted { color:#9aa0a6; font-size:13px; }
+    .muted { color:var(--theme-muted); font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
-    a { color:#9bdcff; text-decoration:none; }
+    a { color:var(--theme-accent); text-decoration:none; }
     a:hover { text-decoration:underline; }
-    .section { margin-top:20px; border:1px solid #262526; border-radius:14px; background:#0b0b0d; padding:16px; }
+    .section { margin-top:20px; border:1px solid var(--theme-border); border-radius:14px; background:color-mix(in srgb, var(--theme-card) 90%, #000); padding:16px; }
     .section h3 { margin:0; font-size:18px; letter-spacing:-0.01em; }
     .section-sub { margin-top:6px; color:#a7a094; font-size:13px; }
     .profile-header-grid {
+      position:relative;
       display:grid;
       grid-template-columns:minmax(var(--profile-brand-col), 1fr) minmax(320px, var(--profile-identity-col)) minmax(var(--profile-signal-col), 1fr);
       gap:var(--profile-gap-y) var(--profile-gap-x);
       align-items:center;
       justify-content:stretch;
       margin-top:14px;
-      padding-inline:18px;
+      padding:18px;
+      border:1px solid color-mix(in srgb, var(--theme-border) 86%, transparent);
+      border-radius:16px;
+      overflow:hidden;
+      background:
+        linear-gradient(135deg, color-mix(in srgb, var(--theme-accent) 12%, transparent), transparent 52%),
+        color-mix(in srgb, var(--theme-card) 92%, #000);
+      ${
+        safeThemeWallpaperUrl
+          ? `background-image: linear-gradient(90deg, rgba(0,0,0,0.78), rgba(0,0,0,0.48)), linear-gradient(180deg, rgba(0,0,0,0.22), rgba(0,0,0,0.78)), url("${safeThemeWallpaperUrl}"); background-size:cover; background-position:center;`
+          : ""
+      }
     }
+    .profile-header-grid > * { position:relative; z-index:1; }
     .brand-rail { display:flex; align-items:center; justify-content:center; justify-self:center; padding:0; min-width:0; }
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; justify-content:center; min-width:0; width:100%; justify-self:center; margin-left:0; }
-    .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
+    .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid var(--theme-border); background:var(--theme-card); display:flex; align-items:center; justify-content:center; color:var(--theme-muted); font-size:12px; flex:none; box-shadow:0 12px 36px rgba(0,0,0,0.42); }
     .hero-meta { min-width:0; flex:0 0 auto; display:block; }
     .hero-primary { min-width:0; }
     .hero-name { font-weight:650; font-size:27px; line-height:1.08; letter-spacing:-0.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .hero-handle { margin-top:5px; font-size:14px; color:#b5ad9f; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .hero-handle { margin-top:5px; font-size:14px; color:var(--theme-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .hero-handle .mono { word-break:normal; overflow-wrap:normal; }
-    .signal-rail { border:1px solid #3a3327; border-radius:12px; background:#14110c; padding:12px; justify-self:end; width:min(100%, var(--profile-signal-col)); }
+    .signal-rail { border:1px solid var(--theme-border); border-radius:12px; background:color-mix(in srgb, var(--theme-card) 82%, transparent); padding:12px; justify-self:end; width:min(100%, var(--profile-signal-col)); backdrop-filter: blur(6px); }
     .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
     .signal-compact-score { margin-top:6px; font-size:16px; }
     .signal-compact-meter { margin-top:6px; height:6px; }
@@ -33392,19 +33825,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .proof-badge--instagram { background:#191315; border-color:#52403f; color:#ddc8c9; }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:12px; }
     .featured-item {
-      border:1px solid #2f2b27;
+      border:1px solid var(--theme-border);
       border-radius:12px;
-      background:#11100d;
+      background:color-mix(in srgb, var(--theme-card) 94%, #000);
       overflow:hidden;
       display:flex;
       flex-direction:column;
       min-width:0;
       transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease;
     }
-    .featured-item:hover { transform:translateY(-2px); border-color:#4b4030; box-shadow:0 12px 24px rgba(0,0,0,0.26); }
+    .featured-item:hover { transform:translateY(-2px); border-color:var(--theme-accent); box-shadow:0 12px 24px rgba(0,0,0,0.26); }
     .featured-media {
-      border-bottom:1px solid #27221d;
-      background:#0f0e0c;
+      border-bottom:1px solid var(--theme-border);
+      background:color-mix(in srgb, var(--theme-card) 82%, #000);
       overflow:hidden;
       aspect-ratio:16 / 9;
       width:100%;
@@ -33462,20 +33895,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       align-items:center;
       font-weight:600;
       font-size:12px;
-      color:#cfb071;
+      color:var(--theme-accent);
     }
     .empty-state {
       margin-top:12px;
-      border:1px dashed #45403a;
+      border:1px dashed var(--theme-border);
       border-radius:12px;
       padding:14px;
-      color:#b7afa1;
-      background:#12100d;
+      color:var(--theme-muted);
+      background:color-mix(in srgb, var(--theme-card) 86%, #000);
       font-size:13px;
       line-height:1.45;
     }
-    .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#17130e; border:1px solid #3d3528; overflow:hidden; }
-    .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #9a6a2d 0%, #c59b54 52%, #8b6f3f 100%); transition:width .2s ease; }
+    .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:color-mix(in srgb, var(--theme-card) 70%, #000); border:1px solid var(--theme-border); overflow:hidden; }
+    .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, var(--theme-accent) 0%, var(--theme-button) 62%, color-mix(in srgb, var(--theme-accent) 64%, #fff) 100%); transition:width .2s ease; }
     body.iframe-embedded { padding:10px; }
     body.iframe-embedded .card {
       width:100%;
