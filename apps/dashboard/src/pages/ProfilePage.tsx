@@ -718,22 +718,41 @@ export default function ProfilePage({
           </div>
 
           <div
-            className="mt-3 overflow-hidden rounded-xl border p-4"
+            className="relative mt-3 min-h-72 overflow-hidden rounded-xl border p-4"
             style={{
               borderColor: profileTheme.themeBorderColor,
               background: profileTheme.themeWallpaperImageUrl
-                ? `linear-gradient(90deg, rgba(0,0,0,.78), rgba(0,0,0,.42)), url(${resolvePublicImageUrl(profileTheme.themeWallpaperImageUrl)}) center/cover`
+                ? `url(${resolvePublicImageUrl(profileTheme.themeWallpaperImageUrl)}) center/cover`
                 : profileTheme.themeBackgroundColor,
               color: profileTheme.themeTextColor
             }}
           >
-            <div className="max-w-xl rounded-lg border p-3" style={{ borderColor: profileTheme.themeBorderColor, background: `${profileTheme.themeCardColor}dd` }}>
+            <div
+              className="absolute inset-0"
+              style={{
+                background:
+                  "radial-gradient(circle at 50% 8%, rgba(0,0,0,.18), rgba(0,0,0,.68) 58%, rgba(0,0,0,.88) 100%), linear-gradient(180deg, rgba(0,0,0,.50), rgba(0,0,0,.82))"
+              }}
+            />
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{
+                background: `radial-gradient(520px 180px at 18% 4%, ${profileTheme.themeAccentColor}33, transparent 70%)`
+              }}
+            />
+            <div
+              className="relative max-w-xl rounded-lg border p-3 shadow-2xl backdrop-blur-md"
+              style={{ borderColor: profileTheme.themeBorderColor, background: `${profileTheme.themeCardColor}c8` }}
+            >
               <div className="text-xs uppercase tracking-wide" style={{ color: profileTheme.themeMutedTextColor }}>
-                Public profile preview
+                Full-page public profile preview
               </div>
               <div className="mt-1 text-xl font-semibold">{me?.displayName || "Creator"}</div>
               <div className="mt-1 text-sm" style={{ color: profileTheme.themeMutedTextColor }}>
-                Trust score, verification cards, works, badges, and buttons keep the current layout with your generated theme.
+                Wallpaper sits behind the whole profile. Existing trust score, verification, works, collaborations, and proof sections render as glass panels.
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full" style={{ background: `${profileTheme.themeCardColor}f0`, border: `1px solid ${profileTheme.themeBorderColor}` }}>
+                <div className="h-full w-2/3 rounded-full" style={{ background: `linear-gradient(90deg, ${profileTheme.themeAccentColor}, ${profileTheme.themeButtonColor})` }} />
               </div>
               <button
                 type="button"

@@ -33683,12 +33683,59 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       ${profileThemeCss};
     }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:
-      radial-gradient(1100px 540px at 14% -8%, color-mix(in srgb, var(--theme-accent) 16%, transparent), transparent 62%),
-      radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.14), transparent 64%),
-      var(--theme-bg);
-      color:var(--theme-text); padding:24px; }
-    .card { width:min(940px, 100%); margin:0 auto; background:linear-gradient(180deg, color-mix(in srgb, var(--theme-card) 96%, transparent) 0%, color-mix(in srgb, var(--theme-bg) 94%, #000) 100%); border:1px solid var(--theme-border); border-radius:18px; padding:24px; overflow:hidden; box-shadow:0 30px 90px rgba(0,0,0,0.46); }
+    html { min-height:100%; background:var(--theme-bg); }
+    body {
+      min-height:100vh;
+      margin:0;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      color:var(--theme-text);
+      padding:24px;
+      background:
+        radial-gradient(1100px 540px at 14% -8%, color-mix(in srgb, var(--theme-accent) 20%, transparent), transparent 62%),
+        radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.22), transparent 64%),
+        ${
+          safeThemeWallpaperUrl
+            ? `url("${safeThemeWallpaperUrl}") center / cover fixed no-repeat,`
+            : ""
+        }
+        var(--theme-bg);
+      position:relative;
+    }
+    body::before {
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      background:
+        radial-gradient(circle at 50% 12%, rgba(0,0,0,0.18), rgba(0,0,0,0.72) 62%, rgba(0,0,0,0.88) 100%),
+        linear-gradient(180deg, rgba(0,0,0,0.54) 0%, rgba(0,0,0,0.78) 46%, rgba(0,0,0,0.9) 100%);
+    }
+    body::after {
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      background:
+        radial-gradient(800px 300px at 50% 0%, color-mix(in srgb, var(--theme-accent) 18%, transparent), transparent 70%),
+        radial-gradient(700px 400px at 12% 24%, rgba(255,255,255,0.04), transparent 72%);
+      mix-blend-mode:screen;
+      opacity:.75;
+    }
+    .card {
+      position:relative;
+      z-index:1;
+      width:min(940px, 100%);
+      margin:0 auto;
+      background:linear-gradient(180deg, color-mix(in srgb, var(--theme-card) 82%, transparent) 0%, color-mix(in srgb, var(--theme-bg) 78%, transparent) 100%);
+      border:1px solid color-mix(in srgb, var(--theme-border) 88%, transparent);
+      border-radius:18px;
+      padding:24px;
+      overflow:hidden;
+      box-shadow:0 30px 90px rgba(0,0,0,0.56), 0 0 70px color-mix(in srgb, var(--theme-accent) 10%, transparent);
+      backdrop-filter: blur(18px) saturate(130%);
+    }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     .brand-logo-image { display:block; width:var(--profile-logo-size); max-width:100%; height:auto; object-fit:contain; }
     .brand-mark {
@@ -33714,7 +33761,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
     a { color:var(--theme-accent); text-decoration:none; }
     a:hover { text-decoration:underline; }
-    .section { margin-top:20px; border:1px solid var(--theme-border); border-radius:14px; background:color-mix(in srgb, var(--theme-card) 90%, #000); padding:16px; }
+    .section { margin-top:20px; border:1px solid color-mix(in srgb, var(--theme-border) 86%, transparent); border-radius:14px; background:color-mix(in srgb, var(--theme-card) 72%, transparent); padding:16px; box-shadow:0 16px 38px rgba(0,0,0,0.28); backdrop-filter: blur(12px) saturate(120%); }
     .section h3 { margin:0; font-size:18px; letter-spacing:-0.01em; }
     .section-sub { margin-top:6px; color:#a7a094; font-size:13px; }
     .profile-header-grid {
@@ -33731,12 +33778,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       overflow:hidden;
       background:
         linear-gradient(135deg, color-mix(in srgb, var(--theme-accent) 12%, transparent), transparent 52%),
-        color-mix(in srgb, var(--theme-card) 92%, #000);
-      ${
-        safeThemeWallpaperUrl
-          ? `background-image: linear-gradient(90deg, rgba(0,0,0,0.78), rgba(0,0,0,0.48)), linear-gradient(180deg, rgba(0,0,0,0.22), rgba(0,0,0,0.78)), url("${safeThemeWallpaperUrl}"); background-size:cover; background-position:center;`
-          : ""
-      }
+        color-mix(in srgb, var(--theme-card) 74%, transparent);
+      backdrop-filter: blur(14px) saturate(125%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 46px rgba(0,0,0,0.26);
     }
     .profile-header-grid > * { position:relative; z-index:1; }
     .brand-rail { display:flex; align-items:center; justify-content:center; justify-self:center; padding:0; min-width:0; }
@@ -33756,17 +33800,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-chip {
       display:inline-flex;
       align-items:center;
-      border:1px solid #4a4032;
+      border:1px solid color-mix(in srgb, var(--theme-border) 88%, transparent);
       border-radius:999px;
       padding:2px 8px;
       font-size:11px;
-      color:#d0c5b2;
-      background:#1a1610;
+      color:var(--theme-text);
+      background:color-mix(in srgb, var(--theme-accent) 14%, var(--theme-card));
       line-height:1.25;
     }
     .meta-grid { display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px; }
-    .meta-item { border:1px solid #1f1f1f; border-radius:10px; background:#101113; padding:10px; }
-    .meta-label { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
+    .meta-item { border:1px solid color-mix(in srgb, var(--theme-border) 86%, transparent); border-radius:10px; background:color-mix(in srgb, var(--theme-card) 76%, transparent); padding:10px; }
+    .meta-label { color:var(--theme-muted); font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
     .details-toggle { margin-top:0; }
     .details-toggle > summary {
       list-style:none;
@@ -33792,7 +33836,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .details-toggle[open] > summary::after { content:"Hide"; }
     .stack-tight { margin-top:10px; }
     .proof-group { margin-top:12px; }
-    .proof-group-title { color:#cfbf9d; font-size:13px; font-weight:600; letter-spacing:0.01em; margin-bottom:6px; }
+    .proof-group-title { color:var(--theme-accent); font-size:13px; font-weight:600; letter-spacing:0.01em; margin-bottom:6px; }
     .proof-group .line { margin-top:6px; line-height:1.35; }
     .proof-badge {
       display:inline-flex;
@@ -33802,9 +33846,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       justify-content:center;
       border-radius:999px;
       margin-right:6px;
-      border:1px solid #3f3a2e;
-      background:#171411;
-      color:#ddd5c7;
+      border:1px solid color-mix(in srgb, var(--theme-border) 84%, transparent);
+      background:color-mix(in srgb, var(--theme-accent) 12%, var(--theme-card));
+      color:var(--theme-accent);
       vertical-align:middle;
       overflow:hidden;
       flex:none;
@@ -33862,12 +33906,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-audio { width:100%; }
     .featured-fallback { font-size:10px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
     .featured-topline { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
-    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:#c9bda9; background:#1b1813; border:1px solid #423a2e; border-radius:999px; padding:2px 7px; }
-    .featured-verified { font-size:10px; color:#d4c093; background:#1f1810; border:1px solid #4c3d28; border-radius:999px; padding:2px 7px; }
+    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:var(--theme-muted); background:color-mix(in srgb, var(--theme-card) 84%, transparent); border:1px solid color-mix(in srgb, var(--theme-border) 86%, transparent); border-radius:999px; padding:2px 7px; }
+    .featured-verified { font-size:10px; color:var(--theme-accent); background:color-mix(in srgb, var(--theme-accent) 14%, var(--theme-card)); border:1px solid color-mix(in srgb, var(--theme-accent) 54%, var(--theme-border)); border-radius:999px; padding:2px 7px; }
     .posture-pill { font-size:10px; border-radius:999px; padding:2px 9px; border:1px solid transparent; letter-spacing:0.01em; white-space:nowrap; }
-    .posture-pill--basic { color:#fcd7b5; background:#2a1a0f; border-color:#6f4a2a; }
-    .posture-pill--creator { color:#e5e7eb; background:#2a2f39; border-color:#7a818f; }
-    .posture-pill--node { color:#fef3c7; background:#2c230d; border-color:#b18a2e; }
+    .posture-pill--basic,
+    .posture-pill--creator,
+    .posture-pill--node { color:var(--theme-button-text); background:var(--theme-button); border-color:color-mix(in srgb, var(--theme-button) 74%, #fff); }
     .featured-title {
       font-weight:650;
       font-size:15px;
@@ -33881,7 +33925,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-support {
       margin-top:4px;
       font-size:12px;
-      color:#a5b0c0;
+      color:var(--theme-muted);
       line-height:1.3;
       display:-webkit-box;
       -webkit-line-clamp:2;
@@ -33997,6 +34041,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       }
     }
     @media (max-width: 640px) {
+      body { background-attachment:scroll; }
       .profile-header-grid {
         --profile-brand-col: 44px;
         --profile-gap-x: 11px;
