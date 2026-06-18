@@ -1,7 +1,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { clearToken, getToken } from "../lib/auth";
-import { getApiBase } from "../lib/api";
+import { api, getApiBase } from "../lib/api";
 
 const DEFAULT_HEALTH_PATH = "/api/health";
 
@@ -41,6 +41,20 @@ type ProgressStep = {
   title: string;
   detail: string;
   state: "done" | "current" | "pending";
+};
+
+type MetadataProvidersSettings = {
+  spotify?: {
+    configured?: boolean;
+    richMetadata?: string;
+    source?: string;
+    clientId?: string | null;
+    clientSecretConfigured?: boolean;
+    envConfigured?: boolean;
+    lastTestedAt?: string | null;
+    lastStatus?: string | null;
+    lastError?: string | null;
+  };
 };
 
 type LightningRuntimeSnapshot = {
@@ -248,6 +262,12 @@ export default function ConfigPage({
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadinessSnapshot | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
   const [lightningWalletError, setLightningWalletError] = useState<string | null>(null);
+  const [metadataSettings, setMetadataSettings] = useState<MetadataProvidersSettings | null>(null);
+  const [spotifyClientId, setSpotifyClientId] = useState("");
+  const [spotifyClientSecret, setSpotifyClientSecret] = useState("");
+  const [spotifyBusy, setSpotifyBusy] = useState<null | "save" | "test">(null);
+  const [spotifyMessage, setSpotifyMessage] = useState<string | null>(null);
+  const [spotifyError, setSpotifyError] = useState<string | null>(null);
   const [fanTestBusy, setFanTestBusy] = useState(false);
   const [fanTestResult, setFanTestResult] = useState<FanNetworkTestResult | null>(null);
   const [fanTestError, setFanTestError] = useState<string | null>(null);
@@ -552,6 +572,63 @@ export default function ConfigPage({
       cancelled = true;
     };
   }, [apiBase, token]);
+
+  async function loadMetadataProviders() {
+    const res = await api<MetadataProvidersSettings>("/api/settings/metadata-providers", "GET");
+    setMetadataSettings(res || null);
+    if (res?.spotify?.clientId) setSpotifyClientId(String(res.spotify.clientId));
+  }
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    loadMetadataProviders().catch(() => {
+      if (!cancelled) setMetadataSettings(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  async function onSaveSpotifyProvider() {
+    setSpotifyError(null);
+    setSpotifyMessage(null);
+    if (!spotifyClientId.trim()) return setSpotifyError("Spotify Client ID is required.");
+    if (!spotifyClientSecret.trim()) return setSpotifyError("Spotify Client Secret is required.");
+    setSpotifyBusy("save");
+    try {
+      const res = await api<{ ok: boolean; spotify?: MetadataProvidersSettings["spotify"] }>("/api/settings/metadata-providers/spotify", "PATCH", {
+        clientId: spotifyClientId.trim(),
+        clientSecret: spotifyClientSecret
+      });
+      setMetadataSettings({ spotify: res.spotify });
+      setSpotifyClientSecret("");
+      setSpotifyMessage("Spotify metadata provider saved.");
+    } catch (e: any) {
+      setSpotifyError(e?.message || "Failed to save Spotify metadata provider.");
+    } finally {
+      setSpotifyBusy(null);
+    }
+  }
+
+  async function onTestSpotifyProvider() {
+    setSpotifyError(null);
+    setSpotifyMessage(null);
+    setSpotifyBusy("test");
+    try {
+      const res = await api<{ ok: boolean; status?: string; error?: string | null; spotify?: MetadataProvidersSettings["spotify"] }>("/api/settings/metadata-providers/spotify/test", "POST");
+      setMetadataSettings({ spotify: res.spotify });
+      if (!res.ok) {
+        setSpotifyError(res.error || "Spotify connection test failed.");
+        return;
+      }
+      setSpotifyMessage("Spotify connection test passed.");
+    } catch (e: any) {
+      setSpotifyError(e?.message || "Spotify connection test failed.");
+    } finally {
+      setSpotifyBusy(null);
+    }
+  }
 
   useEffect(() => {
     if (!token) return;
@@ -2473,6 +2550,81 @@ export default function ConfigPage({
           >
             Open Lightning config
           </button>
+        </div>
+        <div style={{ marginTop: 14, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 14 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Metadata Providers</div>
+          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
+            Spotify enrichment is optional. Connect Work still works without it using fallback metadata. See{" "}
+            <a href="/docs/spotify-metadata-provider.md" target="_blank" rel="noreferrer" style={{ color: "#7dd3fc" }}>
+              Spotify setup
+            </a>
+            {" "}and{" "}
+            <a href="/docs/connect-work.md" target="_blank" rel="noreferrer" style={{ color: "#7dd3fc" }}>
+              Connect Work docs
+            </a>
+            .
+          </div>
+          <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>Spotify</div>
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  Status:{" "}
+                  <b style={{ color: metadataSettings?.spotify?.configured ? "#6ee7b7" : "#fbbf24" }}>
+                    {metadataSettings?.spotify?.configured ? "Configured" : "Fallback only"}
+                  </b>
+                  {metadataSettings?.spotify?.source ? ` · Source: ${metadataSettings.spotify.source}` : ""}
+                </div>
+              </div>
+              {metadataSettings?.spotify?.lastStatus ? (
+                <div style={{ fontSize: 12, color: metadataSettings.spotify.lastStatus === "connected" ? "#6ee7b7" : "#fbbf24" }}>
+                  Last test: {metadataSettings.spotify.lastStatus}
+                </div>
+              ) : null}
+            </div>
+            <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+              <label style={{ display: "grid", gap: 5, fontSize: 12, opacity: 0.9 }}>
+                Client ID
+                <input
+                  value={spotifyClientId}
+                  onChange={(e) => setSpotifyClientId(e.target.value)}
+                  className={inputClass}
+                  placeholder="Spotify Client ID"
+                />
+              </label>
+              <label style={{ display: "grid", gap: 5, fontSize: 12, opacity: 0.9 }}>
+                Client Secret
+                <input
+                  value={spotifyClientSecret}
+                  onChange={(e) => setSpotifyClientSecret(e.target.value)}
+                  type="password"
+                  className={inputClass}
+                  placeholder={metadataSettings?.spotify?.clientSecretConfigured ? "Stored; enter a new secret to replace" : "Spotify Client Secret"}
+                />
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+              <button
+                onClick={onSaveSpotifyProvider}
+                disabled={spotifyBusy !== null}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: spotifyBusy ? "not-allowed" : "pointer", opacity: spotifyBusy ? 0.6 : 1 }}
+              >
+                {spotifyBusy === "save" ? "Saving..." : "Save Spotify"}
+              </button>
+              <button
+                onClick={onTestSpotifyProvider}
+                disabled={spotifyBusy !== null || !metadataSettings?.spotify?.clientSecretConfigured}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: spotifyBusy ? "not-allowed" : "pointer", opacity: spotifyBusy || !metadataSettings?.spotify?.clientSecretConfigured ? 0.6 : 1 }}
+              >
+                {spotifyBusy === "test" ? "Testing..." : "Test connection"}
+              </button>
+            </div>
+            {metadataSettings?.spotify?.lastError ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>Last error: {metadataSettings.spotify.lastError}</div>
+            ) : null}
+            {spotifyMessage ? <div style={{ marginTop: 8, fontSize: 12, color: "#6ee7b7" }}>{spotifyMessage}</div> : null}
+            {spotifyError ? <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>{spotifyError}</div> : null}
+          </div>
         </div>
       </div>
 

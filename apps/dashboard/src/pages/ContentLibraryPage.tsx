@@ -18,6 +18,7 @@ import {
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
 type PrimaryTopic = "entertainment" | "music" | "news" | "gaming" | "sports" | "technology";
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
+type AssetOriginFilter = "native" | "legacy";
 const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
 const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
   all: "All",
@@ -65,8 +66,21 @@ type ContentItem = {
   // id, type, title, status, deletedAt, coverUrl(optional), manifest.sha256(optional).
   id: string;
   title: string;
+  description?: string | null;
   type: ContentType;
   primaryTopic?: PrimaryTopic | null;
+  assetOrigin?: "native" | "legacy_import" | string | null;
+  legacyArtist?: string | null;
+  legacyReleaseTitle?: string | null;
+  legacyReleaseDate?: string | null;
+  legacyProvider?: string | null;
+  legacyArtworkUrl?: string | null;
+  legacyExternalUrl?: string | null;
+  legacySpotifyUrl?: string | null;
+  legacyAppleMusicUrl?: string | null;
+  legacyYoutubeUrl?: string | null;
+  legacyMusicBrainzUrl?: string | null;
+  legacyDiscogsUrl?: string | null;
   status: "draft" | "published";
   archivedAt?: string | null;
   trashedAt?: string | null;
@@ -200,6 +214,7 @@ type ContentLibraryPageProps = {
   capabilityReasons?: Record<string, string>;
   productTier?: "basic" | "advanced" | "lan";
   currentUserEmail?: string | null;
+  requestedAssetOriginFilter?: AssetOriginFilter | null;
   onOpenSplits?: (contentId: string) => void;
 };
 
@@ -449,6 +464,7 @@ export default function ContentLibraryPage({
   capabilities,
   capabilityReasons,
   currentUserEmail,
+  requestedAssetOriginFilter,
   productTier
 }: ContentLibraryPageProps) {
   const resolvedProductTier = productTier || "basic";
@@ -597,6 +613,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const openManifestId = openManifestEntry?.[0] || null;
   const openManifest = openManifestEntry?.[1] || null;
   const [contentScope, setContentScope] = React.useState<"library" | "mine" | "local">("mine");
+  const [assetOriginFilter, setAssetOriginFilter] = React.useState<AssetOriginFilter>("native");
   const [libraryTypeFilter, setLibraryTypeFilter] = React.useState<LibraryTypeFilter>(() => readLibraryTypeFromUrl());
   const [storefrontPreview, setStorefrontPreview] = React.useState<Record<string, any | null>>({});
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
@@ -661,20 +678,34 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     contentStatus?: string | null;
   } | null>(null);
 
-  async function load(trashMode: boolean = showTrash, tombstoneMode: boolean = showTombstones) {
+  React.useEffect(() => {
+    if (!requestedAssetOriginFilter) return;
+    setAssetOriginFilter(requestedAssetOriginFilter);
+    setContentScope("mine");
+    setShowClearance(false);
+    setShowTrash(false);
+    setShowTombstones(false);
+  }, [requestedAssetOriginFilter]);
+
+  async function load(
+    trashMode: boolean = showTrash,
+    tombstoneMode: boolean = showTombstones,
+    originFilter: AssetOriginFilter = assetOriginFilter
+  ) {
     const requestId = ++loadRequestRef.current;
     const isCurrent = () => requestId === loadRequestRef.current;
     setLoading(true);
     setError(null);
     try {
       const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
+      const assetOriginQuery = `&assetOrigin=${encodeURIComponent(originFilter)}`;
       const effectiveScope: "library" | "mine" | "local" =
         contentScope === "library" || contentScope === "local" ? contentScope : "mine";
       const url = tombstoneMode
-        ? `/content?tombstones=1&scope=${effectiveScope}${typeQuery}`
+        ? `/content?tombstones=1&scope=${effectiveScope}${typeQuery}${assetOriginQuery}`
         : trashMode
-          ? `/content?trash=1&scope=${effectiveScope}${typeQuery}`
-          : `/content?scope=${effectiveScope}${typeQuery}`;
+          ? `/content?trash=1&scope=${effectiveScope}${typeQuery}${assetOriginQuery}`
+          : `/content?scope=${effectiveScope}${typeQuery}${assetOriginQuery}`;
       const data = await api<ContentItem[] | any>(url);
       const baseList = Array.isArray(data) ? data : [];
       const nextParticipationByContentId: Record<string, LibraryParticipation> = {};
@@ -911,7 +942,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   React.useEffect(() => {
     load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentScope, libraryTypeFilter]);
+  }, [contentScope, libraryTypeFilter, assetOriginFilter]);
 
   const refreshCurrentView = React.useCallback(() => load(showTrash, showTombstones), [showTrash, showTombstones]);
 
@@ -2008,9 +2039,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setShowTrash(false);
       setShowTombstones(false);
       setContentScope("mine");
+      setAssetOriginFilter("native");
 
       // Deterministic immediate refresh for the authored active view.
-      const refreshed = await api<ContentItem[]>("/content?scope=mine");
+      const refreshed = await api<ContentItem[]>("/content?scope=mine&assetOrigin=native");
       const strictOwned = Array.isArray(refreshed)
         ? refreshed.filter((it: any) => String(it?.libraryAccess || "owned").toLowerCase() === "owned")
         : [];
@@ -2402,8 +2434,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         </div>
       ) : null}
       <div>
-        <div className="text-lg font-semibold">Content catalog</div>
-        <div className="text-sm text-neutral-400">Create an item, upload your master file, and the repo will track every version.</div>
+        <div className="text-lg font-semibold">Works catalog</div>
+        <div className="text-sm text-neutral-400">Create Certifyd Works, connect Legacy works, and keep your catalog organized.</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <span className="text-neutral-500">View:</span>
           <button
@@ -2461,7 +2493,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             </button>
           ))}
         </div>
-        <div className="text-xs text-neutral-500 mt-2">Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]}</div>
+        <div className="text-xs text-neutral-500 mt-2">
+          Showing: {assetOriginFilter === "legacy" ? "Legacy works" : "Certifyd Works"} • {LIBRARY_TYPE_LABEL[libraryTypeFilter]}
+        </div>
         <div className="text-xs text-neutral-500 mt-2">
           {contentScope === "library"
             ? "Access: everything you can open (owned, purchased, preview)."
@@ -2516,7 +2550,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       <div className="grid gap-6 lg:grid-cols-2">
         <form onSubmit={createContent} className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
-            <div className="font-medium">New content item</div>
+            <div className="font-medium">New Certifyd Work</div>
             {currentUserEmail ? (
               <div className="text-[11px] text-neutral-500">Creating as: <span className="text-neutral-300">{currentUserEmail}</span></div>
             ) : null}
@@ -2692,25 +2726,44 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
         <div className="flex flex-wrap items-center justify-between mb-3 gap-3">
           <div className="flex items-center gap-2">
-            <div className="font-medium">Your content</div>
+            <div className="font-medium">Your Works</div>
 
             <div className="ml-2 inline-flex rounded-lg border border-neutral-800 overflow-hidden">
               <button
                 type="button"
                 className={`text-sm px-3 py-1 whitespace-nowrap ${
-                  !showTrash && !showTombstones && !showClearance
+                  !showTrash && !showTombstones && !showClearance && assetOriginFilter === "native"
                     ? "bg-emerald-950/40 text-emerald-200 border-r border-emerald-800/60 font-medium"
                     : "text-neutral-300 hover:bg-neutral-900"
                 }`}
                 onClick={async () => {
+                  setAssetOriginFilter("native");
                   setContentScope("mine");
                   setShowClearance(false);
                   setShowTrash(false);
                   setShowTombstones(false);
-                  await load(false, false);
+                  await load(false, false, "native");
                 }}
               >
-                Content
+                Certifyd Works
+              </button>
+              <button
+                type="button"
+                className={`text-sm px-3 py-1 whitespace-nowrap ${
+                  !showTrash && !showTombstones && !showClearance && assetOriginFilter === "legacy"
+                    ? "bg-emerald-950/40 text-emerald-200 border-r border-emerald-800/60 font-medium"
+                    : "text-neutral-300 hover:bg-neutral-900"
+                }`}
+                onClick={async () => {
+                  setAssetOriginFilter("legacy");
+                  setContentScope("mine");
+                  setShowClearance(false);
+                  setShowTrash(false);
+                  setShowTombstones(false);
+                  await load(false, false, "legacy");
+                }}
+              >
+                Legacy
               </button>
               <button
                 type="button"
@@ -2724,7 +2777,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   setShowClearance(false);
                   setShowTrash(true);
                   setShowTombstones(false);
-                  await load(true, false);
+                  await load(true, false, assetOriginFilter);
                 }}
               >
                 Trash
@@ -2741,7 +2794,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   setShowClearance(false);
                   setShowTrash(false);
                   setShowTombstones(true);
-                  await load(false, true);
+                  await load(false, true, assetOriginFilter);
                 }}
               >
                 Archived
@@ -3047,7 +3100,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           <div className="text-sm text-neutral-400">Loading…</div>
         ) : items.length === 0 ? (
           <div className="text-sm text-neutral-400">
-            {showTrash ? "Trash is empty." : showTombstones ? "No archived items." : "No content yet."}
+            {showTrash ? "Trash is empty." : showTombstones ? "No archived items." : "No works yet."}
           </div>
         ) : (
           <div className="space-y-2">
@@ -3063,6 +3116,21 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const accessTag = it.libraryAccess || (it.ownerUserId === meId ? "owned" : "preview");
               const participationInfo = participationByContentId[it.id];
               const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
+              const isLegacyAsset = String(it.assetOrigin || "").trim().toLowerCase() === "legacy_import";
+              const legacyDescription = String(it.description || "").trim();
+              const legacyArtist = String(it.legacyArtist || "").trim() || null;
+              const legacyReleaseTitle = String(it.legacyReleaseTitle || "").trim() || null;
+              const legacyReleaseDate = String(it.legacyReleaseDate || "").trim() || null;
+              const legacyProvider = String(it.legacyProvider || "").trim() || null;
+              const legacyArtworkUrl = String(it.legacyArtworkUrl || "").trim() || null;
+              const legacyExternalUrl = String(it.legacyExternalUrl || "").trim() || null;
+              const legacyPlatformLinks = [
+                { label: "YouTube", url: String(it.legacyYoutubeUrl || "").trim() },
+                { label: "Spotify", url: String(it.legacySpotifyUrl || "").trim() },
+                { label: "Apple Music", url: String(it.legacyAppleMusicUrl || "").trim() },
+                { label: "Discogs", url: String(it.legacyDiscogsUrl || "").trim() },
+                { label: "MusicBrainz", url: String(it.legacyMusicBrainzUrl || "").trim() }
+              ].filter((link) => Boolean(link.url));
               const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(it.type || ""));
 
               const split = splitByContent[it.id] ?? null;
@@ -3130,32 +3198,77 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   <div className="flex flex-wrap items-center justify-between gap-4 px-3 py-2">
                     <div className="min-w-0 flex items-start gap-3">
                       <div className="shrink-0 w-24 h-16 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900/70">
-                        <img
-                          src={localCoverUrlByContent[it.id] || `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
-                            it.manifest?.sha256 || coverCacheBustByContent[it.id]
-                              ? `?v=${encodeURIComponent(String(coverCacheBustByContent[it.id] || it.manifest?.sha256 || ""))}`
-                              : ""
-                          }`}
-                          alt={`${it.title || "Content"} cover`}
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                          onError={(e) => {
-                            const el = e.currentTarget;
-                            const parent = el.parentElement;
-                            if (!parent) return;
-                            parent.innerHTML = `<div class=\"w-full h-full flex items-center justify-center text-[10px] uppercase tracking-wide text-neutral-500\">${String(
-                              it.type || "file"
-                            )}</div>`;
-                          }}
-                        />
+                        {isLegacyAsset ? (
+                          legacyArtworkUrl ? (
+                            <img
+                              src={legacyArtworkUrl}
+                              alt={`${it.title || "Legacy asset"} artwork`}
+                              className="h-full w-full object-cover"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                const el = e.currentTarget;
+                                const parent = el.parentElement;
+                                if (!parent) return;
+                                parent.innerHTML = `<div class=\"flex h-full w-full items-center justify-center text-[10px] uppercase tracking-wide text-amber-300\">Legacy</div>`;
+                              }}
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-[10px] uppercase tracking-wide text-amber-300">
+                              Legacy
+                            </div>
+                          )
+                        ) : (
+                          <img
+                            src={localCoverUrlByContent[it.id] || `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
+                              it.manifest?.sha256 || coverCacheBustByContent[it.id]
+                                ? `?v=${encodeURIComponent(String(coverCacheBustByContent[it.id] || it.manifest?.sha256 || ""))}`
+                                : ""
+                            }`}
+                            alt={`${it.title || "Content"} cover`}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                            onError={(e) => {
+                              const el = e.currentTarget;
+                              const parent = el.parentElement;
+                              if (!parent) return;
+                              parent.innerHTML = `<div class=\"w-full h-full flex items-center justify-center text-[10px] uppercase tracking-wide text-neutral-500\">${String(
+                                it.type || "file"
+                              )}</div>`;
+                            }}
+                          />
+                        )}
                       </div>
                       <div className="min-w-0">
                       <div className="text-sm font-medium truncate">{it.title}</div>
-                      <div className="text-xs text-neutral-400">
-                        {it.type.toUpperCase()} • {it.status.toUpperCase()} • {formatDateLabel(it.createdAt)} • {filesCount} file
-                        {filesCount === 1 ? "" : "s"}
-                        {(showTrash || showTombstones) && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
-                      </div>
+                      {isLegacyAsset ? (
+                        <div className="text-xs text-neutral-400">
+                          {[
+                            legacyArtist,
+                            legacyReleaseTitle,
+                            legacyReleaseDate,
+                            "Connected legacy asset"
+                          ].filter(Boolean).join(" • ")}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-neutral-400">
+                          {it.type.toUpperCase()} • {it.status.toUpperCase()} • {formatDateLabel(it.createdAt)} • {filesCount} file
+                          {filesCount === 1 ? "" : "s"}
+                          {(showTrash || showTombstones) && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
+                        </div>
+                      )}
+                      {isLegacyAsset ? (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <span className="inline-flex rounded-full border border-amber-800 bg-amber-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
+                            Legacy
+                          </span>
+                          {legacyProvider ? (
+                            <span className="inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
+                              {legacyProvider}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
                       {it.previousVersionContentId ? (
                         <div className="text-[11px] text-sky-300/90 mt-1">
@@ -3220,7 +3333,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   setExpanded((m) => ({ ...m, [it.id]: next }));
                                   if (next) {
                                     try {
-                                      if (isOwner) {
+                                      if (isOwner && isLegacyAsset) {
+                                        await Promise.all([
+                                          externalIdentifiersByContent[it.id] !== undefined ? Promise.resolve() : loadExternalIdentifiers(it.id),
+                                          auditByContent[it.id] !== undefined ? Promise.resolve() : loadAudit(it.id)
+                                        ]);
+                                      } else if (isOwner) {
                                         await Promise.all([
                                           filesByContent[it.id] ? Promise.resolve() : loadFiles(it.id),
                                           splitByContent[it.id] !== undefined ? Promise.resolve() : loadLatestSplit(it.id),
@@ -3250,22 +3368,33 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   ? "Hide details"
                                   : !isOwner && participationInfo?.kind === "remote"
                                     ? "Open release"
-                                    : isOwner
+                                    : isOwner && !isLegacyAsset
                                       ? "Show files"
                                       : "Details"}
                               </button>
 
-                              {isOwner && allowUpload ? (
+                              {isLegacyAsset && legacyExternalUrl ? (
+                                <a
+                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 whitespace-nowrap"
+                                  href={legacyExternalUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Open Source
+                                </a>
+                              ) : null}
+
+                              {!isLegacyAsset && isOwner && allowUpload ? (
                                 <UploadButton contentId={it.id} disabled={busy} label="Upload" />
                               ) : null}
-                              {isOwner && allowCoverUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
+                              {!isLegacyAsset && isOwner && allowCoverUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
                                 <CoverUploadButton
                                   contentId={it.id}
                                   disabled={busy}
                                   label={uiState === "published" ? "Update cover" : "Upload cover"}
                                 />
                               ) : null}
-                              {splitsAllowed && isOwner ? (
+                              {!isLegacyAsset && splitsAllowed && isOwner ? (
                                 <button
                                   type="button"
                                   className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
@@ -3276,25 +3405,27 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 </button>
                               ) : null}
 
-                              <button
-                                type="button"
-                                className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
-                                onClick={() => publishContent(it.id)}
-                                disabled={
-                                  publishBusy[it.id] ||
-                                  !canPublishFromLibrary ||
-                                  !allowPublish ||
-                                  derivativePublishBlocked ||
-                                  (isBasicTier && isDerivativeType)
-                                }
-                                title={publishTitle}
-                              >
-                                {!allowPublish
-                                  ? "Published"
-                                  : publishBusy[it.id]
-                                    ? "Publishing…"
-                                    : "Publish"}
-                              </button>
+                              {!isLegacyAsset ? (
+                                <button
+                                  type="button"
+                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
+                                  onClick={() => publishContent(it.id)}
+                                  disabled={
+                                    publishBusy[it.id] ||
+                                    !canPublishFromLibrary ||
+                                    !allowPublish ||
+                                    derivativePublishBlocked ||
+                                    (isBasicTier && isDerivativeType)
+                                  }
+                                  title={publishTitle}
+                                >
+                                  {!allowPublish
+                                    ? "Published"
+                                    : publishBusy[it.id]
+                                      ? "Publishing…"
+                                      : "Publish"}
+                                </button>
+                              ) : null}
 
                               {allowTrash || allowArchive ? (
                                 <button
@@ -3363,7 +3494,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </>
                       )}
                     </div>
-                    {!canPublishFromLibrary ? (
+                    {!isLegacyAsset && !canPublishFromLibrary ? (
                       <div className="w-full text-[11px] text-amber-300">
                         {networkPublishReasonResolved}{" "}
                         <button
@@ -3378,6 +3509,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </button>
                       </div>
                     ) : null}
+                    {!isLegacyAsset ? (
                     <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
                       <div>
                         Network publish:{" "}
@@ -3404,9 +3536,115 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-neutral-500">Basic mode: free content can be discoverable; paid listings require commerce.</div>
                       ) : null}
                     </div>
+                    ) : null}
                   </div>
 
-                  {!showTrash && !showTombstones && isOpen && (
+                  {!showTrash && !showTombstones && isOpen && isLegacyAsset && (
+                    <div className="border-t border-neutral-800 px-3 py-3">
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 text-sm">
+                        <div className="flex flex-col gap-3 md:flex-row">
+                          {legacyArtworkUrl ? (
+                            <img
+                              src={legacyArtworkUrl}
+                              alt={`${it.title || "Legacy asset"} artwork`}
+                              className="h-36 w-36 rounded-lg border border-neutral-800 object-cover"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="flex h-36 w-36 shrink-0 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900/70 text-[10px] uppercase tracking-wide text-amber-300">
+                              Legacy
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1 space-y-3">
+                            <div>
+                              <div className="font-medium text-neutral-200">{it.title}</div>
+                              <div className="mt-1 text-xs text-neutral-400">
+                                Connected legacy asset. This is private catalog metadata; the Certifyd Asset ID remains the canonical record.
+                              </div>
+                            </div>
+                            <div className="grid gap-2 text-xs text-neutral-300 md:grid-cols-2">
+                              <div>
+                                <span className="text-neutral-500">Artist</span>
+                                <div>{legacyArtist || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Release</span>
+                                <div>{legacyReleaseTitle || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Release date</span>
+                                <div>{legacyReleaseDate || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Provider</span>
+                                <div>{legacyProvider || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">External source</span>
+                                <div>
+                                  {legacyExternalUrl ? (
+                                    <a href={legacyExternalUrl} target="_blank" rel="noreferrer" className="break-all text-sky-300 hover:text-sky-200">
+                                      Open Source
+                                    </a>
+                                  ) : (
+                                    "Not provided"
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs font-medium text-neutral-300">Platform links</div>
+                              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                                {legacyPlatformLinks.length ? (
+                                  legacyPlatformLinks.map((link) => (
+                                    <a
+                                      key={`${link.label}-${link.url}`}
+                                      href={link.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rounded-full border border-neutral-800 px-2 py-1 text-sky-300 hover:bg-neutral-900 hover:text-sky-200"
+                                    >
+                                      {link.label}
+                                    </a>
+                                  ))
+                                ) : (
+                                  <div className="text-neutral-500">No platform links found.</div>
+                                )}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs font-medium text-neutral-300">Identifiers</div>
+                              <div className="mt-2 space-y-2 text-xs">
+                                {externalIdentifierLoading[it.id] && externalIdentifiersByContent[it.id] === undefined ? (
+                                  <div className="text-neutral-500">Loading identifiers…</div>
+                                ) : null}
+                                {(externalIdentifiersByContent[it.id] || []).length ? (
+                                  (externalIdentifiersByContent[it.id] || []).map((identifier) => (
+                                    <div key={identifier.id} className="rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2">
+                                      <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] text-neutral-300">
+                                        {identifier.type}
+                                      </span>{" "}
+                                      <span className="break-all text-neutral-200">{identifier.displayValue || identifier.value}</span>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <div className="text-neutral-500">No identifiers found.</div>
+                                )}
+                              </div>
+                            </div>
+                            {legacyDescription ? (
+                              <pre className="whitespace-pre-wrap rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-300">
+                                {legacyDescription}
+                              </pre>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {!showTrash && !showTombstones && isOpen && !isLegacyAsset && (
                     <div className="border-t border-neutral-800 px-3 py-3 space-y-3">
                       {(() => {
                         const preview = previewByContent[it.id] || null;

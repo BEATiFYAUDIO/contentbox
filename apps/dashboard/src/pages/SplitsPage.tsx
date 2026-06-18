@@ -38,6 +38,7 @@ function formatDateLabel(value?: string | null) {
 
 export default function SplitsPage(props: {
   onEditContent?: (id: string) => void;
+  onOpenInvites?: () => void;
   identityLevel?: string | null;
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
@@ -45,7 +46,7 @@ export default function SplitsPage(props: {
   capabilityReasons?: Record<string, string>;
   nodeMode?: NodeMode | null;
 }) {
-  const { onEditContent, features, lockReasons, capabilities, capabilityReasons } = props;
+  const { onEditContent, onOpenInvites, features, lockReasons, capabilities, capabilityReasons } = props;
   const canAdvancedSplits = features?.advancedSplits ?? false;
   const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
   const splitsReason =
@@ -170,7 +171,15 @@ export default function SplitsPage(props: {
       ) : null}
       {splitsAllowed ? (
       <>
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {onOpenInvites ? (
+          <button
+            onClick={onOpenInvites}
+            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+          >
+            Split Invites
+          </button>
+        ) : null}
         <button
           onClick={() => setShowTombstones((s) => !s)}
           className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"

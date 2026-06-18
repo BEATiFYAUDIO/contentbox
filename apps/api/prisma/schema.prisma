@@ -252,6 +252,18 @@ model ContentItem {
   description   String?
   primaryTopic  String?
   type          ContentType
+  assetOrigin   String        @default("native")
+  legacyArtist  String?
+  legacyReleaseTitle String?
+  legacyReleaseDate String?
+  legacyProvider String?
+  legacyArtworkUrl String?
+  legacyExternalUrl String?
+  legacySpotifyUrl String?
+  legacyAppleMusicUrl String?
+  legacyYoutubeUrl String?
+  legacyMusicBrainzUrl String?
+  legacyDiscogsUrl String?
   status        ContentStatus @default(draft)
   featureOnProfile Boolean    @default(false)
   storefrontStatus StorefrontStatus @default(DISABLED)
@@ -288,6 +300,7 @@ model ContentItem {
   externalIdentifiers ContentExternalIdentifier[]
 
   @@index([ownerUserId])
+  @@index([assetOrigin])
   @@index([previousVersionContentId])
   @@index([repoPath])
   @@index([deletedAt])
@@ -796,6 +809,19 @@ model LightningNodeConfig {
   lastError          String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+}
+
+model MetadataProviderConfig {
+  provider               String   @id
+  clientId               String?
+  clientSecretCiphertext String?
+  clientSecretIv         String?
+  clientSecretTag        String?
+  lastTestedAt           DateTime?
+  lastStatus             String?
+  lastError              String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 }
 
 model Entitlement {

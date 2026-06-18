@@ -3,6 +3,7 @@ import AuthPage from "./pages/AuthPage";
 import PayoutRailsPage from "./pages/PayoutRailsPage";
 import ContentLibraryPage from "./pages/ContentLibraryPage";
 import SplitsPage from "./pages/SplitsPage";
+import RightsHoldersPage from "./pages/RightsHoldersPage";
 import SplitEditorPage from "./pages/SplitEditorPage";
 import InvitePage from "./pages/InvitePage"; // Ensure this is imported
 import StorePage from "./pages/StorePage";
@@ -99,6 +100,7 @@ type PageKey =
   | "provider-console"
   | "finance"
   | "audience"
+  | "rights-holders"
   | "receipt"
   | "invite"
   | "profile"
@@ -234,6 +236,7 @@ export default function App() {
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
   const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
+  const [requestedCatalogAssetOrigin, setRequestedCatalogAssetOrigin] = useState<"native" | "legacy" | null>(null);
   const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(() => {
     try {
       const raw = window.localStorage.getItem("contentbox.identityDetail");
@@ -606,7 +609,7 @@ export default function App() {
   const accountNav = [{ key: "profile" as const, label: "Profile", hint: "Identity" }];
 
   const contentNav = [
-    { key: "content" as const, label: "Catalog", hint: "Your content catalog" },
+    { key: "content" as const, label: "Works", hint: "Certifyd and Legacy works" },
     { key: "library" as const, label: "Library", hint: "What I own" }
   ];
 
@@ -636,16 +639,16 @@ export default function App() {
       requiresSplits: false
     },
     {
+      key: "rights-holders" as const,
+      label: "Rights Holders",
+      hint: "People, publishers, labels, and organizations",
+      requiresCommerce: true,
+      requiresSplits: false
+    },
+    {
       key: "splits" as const,
       label: "Manage Splits",
       hint: "Draft, lock, history",
-      requiresCommerce: true,
-      requiresSplits: true
-    },
-    {
-      key: "invite" as const,
-      label: "Split Invites",
-      hint: "Split requests",
       requiresCommerce: true,
       requiresSplits: true
     }
@@ -681,12 +684,13 @@ export default function App() {
     page === "sales" ? "Sales" :
     page === "audience" ? "Audience" :
     page === "finance" ? "Revenue" :
+    page === "rights-holders" ? "Rights Holders" :
     page === "splits" ? "Splits" :
     page === "split-editor" ? "Splits" :
     page === "profile" ? "Profile" :
     page === "royalties-terms" ? "Split terms" :
     page === "payouts" ? PAYOUT_DESTINATIONS_LABEL :
-    page === "content" ? "Content catalog" :
+    page === "content" ? "Works catalog" :
     page === "receipt" ? "Receipt" :
     page === "invite" ? "Invite" : "Dashboard";
 
@@ -784,7 +788,7 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Works</div>
               <div className="space-y-1">
               {contentNav.map((item) => {
                 const active = item.key === page;
@@ -1283,6 +1287,15 @@ export default function App() {
 
               {page === "payouts" && !isCommerceLockedPage && <PayoutRailsPage />}
 
+              {page === "rights-holders" && !isCommerceLockedPage && (
+                <RightsHoldersPage
+                  onOpenLegacyCatalog={() => {
+                    setRequestedCatalogAssetOrigin("legacy");
+                    setPage("content");
+                  }}
+                />
+              )}
+
               {page === "content" && (
                 <ContentLibraryPage
                   identityLevel={identityLevel}
@@ -1292,6 +1305,7 @@ export default function App() {
                   capabilityReasons={capabilityReasons}
                   productTier={productTier}
                   currentUserEmail={me?.email || null}
+                  requestedAssetOriginFilter={requestedCatalogAssetOrigin}
                   onOpenSplits={(contentId) => {
                     window.history.pushState({}, "", `/content/${encodeURIComponent(contentId)}/splits`);
                     setSelectedContentId(contentId);
@@ -1308,6 +1322,7 @@ export default function App() {
                   capabilities={capabilities}
                   capabilityReasons={capabilityReasons}
                   nodeMode={nodeMode}
+                  onOpenInvites={() => setPage("invite")}
                   onEditContent={(id) => {
                     window.history.pushState({}, "", `/content/${encodeURIComponent(id)}/splits`);
                     setSelectedContentId(id);

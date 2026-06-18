@@ -73,6 +73,7 @@ import {
   type PublicMode,
   type PublicLinkState
 } from "./lib/publicLinkState.js";
+import { decryptSecret, encryptSecret } from "./lib/cryptoConfig.js";
 import {
   type ParentPublishAnchor,
   type ProofBundleV1,
@@ -22539,11 +22540,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const userId = (req.user as JwtUser).sub;
   const commerceAuthority = await resolveCommerceAuthorityForUser(userId);
 
-  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string; type?: string };
+  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string; type?: string; assetOrigin?: string };
   const trash = q.trash === "1";
   const tombstones = q.tombstones === "1";
   const scope = String(q.scope || "mine").toLowerCase();
   const requestedType = String(q.type || "all").toLowerCase();
+  const requestedAssetOrigin = String(q.assetOrigin || "native").toLowerCase();
   const allowedTypeFilters = new Set(["all", "songs", "videos", "books", "files"]);
   if (!allowedTypeFilters.has(requestedType)) {
     return reply.code(400).send({
@@ -22551,6 +22553,17 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       message: "Invalid type filter. Use one of: all, songs, videos, books, files."
     });
   }
+  const allowedAssetOriginFilters = new Set(["native", "legacy"]);
+  if (!allowedAssetOriginFilters.has(requestedAssetOrigin)) {
+    return reply.code(400).send({
+      error: "INVALID_ASSET_ORIGIN",
+      message: "Invalid assetOrigin filter. Use one of: native, legacy."
+    });
+  }
+  const assetOriginWhere =
+    requestedAssetOrigin === "legacy"
+      ? { assetOrigin: "legacy_import" as const }
+      : { assetOrigin: "native" as const };
   const contentTypeWhere =
     requestedType === "songs"
       ? { type: "song" as const }
@@ -22580,6 +22593,18 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     title: true,
     description: true,
     type: true,
+    assetOrigin: true,
+    legacyArtist: true,
+    legacyReleaseTitle: true,
+    legacyReleaseDate: true,
+    legacyProvider: true,
+    legacyArtworkUrl: true,
+    legacyExternalUrl: true,
+    legacySpotifyUrl: true,
+    legacyAppleMusicUrl: true,
+    legacyYoutubeUrl: true,
+    legacyMusicBrainzUrl: true,
+    legacyDiscogsUrl: true,
     status: true,
     previousVersionContentId: true,
     previousVersion: { select: { id: true, title: true, status: true } },
@@ -22820,7 +22845,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
 
   if (scope === "local") {
     const local = await prisma.contentItem.findMany({
-      where: { ...stateWhere, ...contentTypeWhere },
+      where: { ...stateWhere, ...contentTypeWhere, ...assetOriginWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
@@ -22835,7 +22860,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     );
   } else if (scope === "mine") {
     const owned = await prisma.contentItem.findMany({
-      where: { ownerUserId: userId, ...stateWhere, ...contentTypeWhere },
+      where: { ownerUserId: userId, ...stateWhere, ...contentTypeWhere, ...assetOriginWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
@@ -22857,6 +22882,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       prisma.contentItem.findMany({
         where: {
           ownerUserId: userId,
+          ...assetOriginWhere,
           status: "published",
           deletedAt: null,
           ...contentTypeWhere
@@ -22867,7 +22893,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       prisma.entitlement.findMany({
         where: {
           buyerUserId: userId,
-          content: { is: { status: "published", ...contentTypeWhere } } as any
+          content: { is: { status: "published", ...contentTypeWhere, ...assetOriginWhere } } as any
         },
         include: { content: { select: selectBase } },
         orderBy: { grantedAt: "desc" }
@@ -22875,6 +22901,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       prisma.contentItem.findMany({
         where: {
           storefrontStatus: { in: ["LISTED", "UNLISTED"] },
+          ...assetOriginWhere,
           status: "published",
           deletedAt: null,
           ...contentTypeWhere
@@ -22888,6 +22915,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
             status: "locked",
             content: {
               ownerUserId: { not: userId },
+              ...assetOriginWhere,
               status: "published",
               deletedAt: null,
               ...contentTypeWhere
@@ -22949,6 +22977,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
               status: "locked",
               content: {
                 ownerUserId: { not: userId },
+                ...assetOriginWhere,
                 status: "published",
                 deletedAt: null,
                 ...contentTypeWhere
@@ -22984,6 +23013,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       const participantContent = await prisma.contentItem.findMany({
         where: {
           id: { in: participantIds },
+          ...assetOriginWhere,
           status: "published",
           deletedAt: null,
           ...contentTypeWhere
@@ -23446,7 +23476,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         Boolean(fallback?.isParentOfDerivative)
     });
   }
+  const matchesRequestedAssetOrigin = (row: any): boolean => {
+    const assetOrigin = asString(row?.assetOrigin || "native").trim().toLowerCase();
+    if (requestedAssetOrigin === "legacy") return assetOrigin === "legacy_import";
+    return !assetOrigin || assetOrigin === "native";
+  };
   const unique = Array.from(deduped.values()).filter((row: any) =>
+    matchesRequestedAssetOrigin(row) &&
     isLibraryRowEligible(
       row,
       asString((Array.isArray(row?.appearsBecause) ? row.appearsBecause[0] : "") || "").trim() || "unknown",
@@ -23722,6 +23758,103 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   }));
 });
 
+app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const baseWhere = { ownerUserId: userId, deletedAt: null as any };
+  const [certifydRows, legacyRows] = await Promise.all([
+    prisma.contentItem.findMany({
+      where: { ...baseWhere, assetOrigin: "native" },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: 100,
+      select: {
+        id: true,
+        title: true,
+        type: true,
+        status: true,
+        assetOrigin: true,
+        featureOnProfile: true,
+        storefrontStatus: true,
+        createdAt: true,
+        updatedAt: true,
+        manifest: { select: { sha256: true } }
+      }
+    }),
+    prisma.contentItem.findMany({
+      where: { ...baseWhere, assetOrigin: "legacy_import" },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: 100,
+      select: {
+        id: true,
+        title: true,
+        assetOrigin: true,
+        legacyArtist: true,
+        legacyReleaseTitle: true,
+        legacyReleaseDate: true,
+        legacyProvider: true,
+        legacyArtworkUrl: true,
+        legacyExternalUrl: true,
+        legacySpotifyUrl: true,
+        legacyAppleMusicUrl: true,
+        legacyYoutubeUrl: true,
+        legacyMusicBrainzUrl: true,
+        legacyDiscogsUrl: true,
+        createdAt: true,
+        updatedAt: true,
+        externalIdentifiers: {
+          select: {
+            type: true,
+            displayValue: true,
+            normalizedValue: true
+          },
+          orderBy: [{ type: "asc" }, { createdAt: "asc" }]
+        }
+      }
+    })
+  ]);
+
+  return reply.send({
+    note: "Certifyd Works are sovereign/native catalog records. Legacy works are connected metadata references and are not ownership verification.",
+    certifydWorks: certifydRows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      type: row.type,
+      status: row.status,
+      assetOrigin: row.assetOrigin || "native",
+      featureOnProfile: Boolean(row.featureOnProfile),
+      storefrontStatus: row.storefrontStatus || "DISABLED",
+      manifestSha256: row.manifest?.sha256 || null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    })),
+    legacyWorks: legacyRows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      assetOrigin: row.assetOrigin || "legacy_import",
+      displayLabel: row.legacyProvider ? `Connected from ${row.legacyProvider}` : "Connected legacy work",
+      artist: row.legacyArtist || null,
+      releaseTitle: row.legacyReleaseTitle || null,
+      releaseDate: row.legacyReleaseDate || null,
+      artworkUrl: row.legacyArtworkUrl || null,
+      provider: row.legacyProvider || null,
+      externalUrl: row.legacyExternalUrl || null,
+      platformUrls: {
+        spotify: row.legacySpotifyUrl || null,
+        appleMusic: row.legacyAppleMusicUrl || null,
+        youtube: row.legacyYoutubeUrl || null,
+        musicBrainz: row.legacyMusicBrainzUrl || null,
+        discogs: row.legacyDiscogsUrl || null
+      },
+      identifiers: row.externalIdentifiers.map((identifier) => ({
+        type: identifier.type,
+        displayValue: identifier.displayValue,
+        normalizedValue: identifier.normalizedValue
+      })),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    }))
+  });
+});
+
 // Create a new content item and initialize a repo for it
 app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
@@ -23738,7 +23871,7 @@ app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
 
   // create DB row first
   const content = await prisma.contentItem.create({
-    data: { ownerUserId: userId, title, type: type as any, description, primaryTopic } as any
+    data: { ownerUserId: userId, title, type: type as any, assetOrigin: "native", description, primaryTopic } as any
   });
 
   try {
@@ -24188,6 +24321,914 @@ function normalizeExternalIdentifierIssuer(value: unknown): string | null {
   if (!issuer) return null;
   return issuer.slice(0, 80);
 }
+
+type ConnectWorkDiscovery = {
+  title: string | null;
+  artist: string | null;
+  artworkUrl: string | null;
+  releaseTitle: string | null;
+  releaseDate: string | null;
+  description: string | null;
+  identifiers: Array<{ type: string; value: string }>;
+  externalUrl: string | null;
+  spotifyUrl: string | null;
+  appleMusicUrl: string | null;
+  youtubeUrl: string | null;
+  musicBrainzUrl: string | null;
+  discogsUrl: string | null;
+  provider: string;
+};
+
+type ConnectWorkIdentifier = {
+  type: string;
+  value: string;
+  normalizedValue?: string;
+  displayValue?: string;
+};
+
+type NormalizedConnectWorkIdentifier = {
+  type: string;
+  value: string;
+  normalizedValue: string;
+  displayValue: string;
+};
+
+function musicBrainzHeaders() {
+  return {
+    Accept: "application/json",
+    "User-Agent": "ContentBox-Certifyd/0.1 (https://certifyd.me)"
+  };
+}
+
+function musicBrainzEntityUrl(entity: string, id: unknown): string | null {
+  const mbid = asString(id || "").trim();
+  if (!mbid) return null;
+  return `https://musicbrainz.org/${entity}/${encodeURIComponent(mbid)}`;
+}
+
+function sanitizeExternalMetadataUrl(value: unknown): string | null {
+  const raw = asString(value || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeLegacyMetadataText(value: unknown, maxLength = 240): string | null {
+  const text = asString(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return text.slice(0, maxLength);
+}
+
+function pickPrimaryLegacyExternalUrl(input: {
+  youtubeUrl?: string | null;
+  spotifyUrl?: string | null;
+  appleMusicUrl?: string | null;
+  discogsUrl?: string | null;
+  musicBrainzUrl?: string | null;
+  fallbackUrl?: string | null;
+}): string | null {
+  return (
+    input.youtubeUrl ||
+    input.spotifyUrl ||
+    input.appleMusicUrl ||
+    input.discogsUrl ||
+    input.musicBrainzUrl ||
+    input.fallbackUrl ||
+    null
+  );
+}
+
+function extractMusicBrainzRelationUrls(entity: any): {
+  spotifyUrl: string | null;
+  appleMusicUrl: string | null;
+  youtubeUrl: string | null;
+} {
+  const relations = Array.isArray(entity?.relations) ? entity.relations : [];
+  let spotifyUrl: string | null = null;
+  let appleMusicUrl: string | null = null;
+  let youtubeUrl: string | null = null;
+  for (const relation of relations) {
+    const url = sanitizeExternalMetadataUrl(relation?.url?.resource);
+    if (!url) continue;
+    const host = (() => {
+      try {
+        return new URL(url).hostname.toLowerCase();
+      } catch {
+        return "";
+      }
+    })();
+    if (!spotifyUrl && host.includes("spotify.com")) spotifyUrl = url;
+    if (!appleMusicUrl && (host.includes("music.apple.com") || host.includes("itunes.apple.com"))) appleMusicUrl = url;
+    if (!youtubeUrl && (host.includes("youtube.com") || host.includes("youtu.be"))) youtubeUrl = url;
+  }
+  return { spotifyUrl, appleMusicUrl, youtubeUrl };
+}
+
+function parseConnectWorkUrl(value: unknown): URL | null {
+  const raw = asString(value || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function spotifyUrlParts(url: URL): { kind: "track" | "album"; id: string } | null {
+  const host = url.hostname.toLowerCase();
+  if (!host.endsWith("spotify.com") && host !== "spotify.link") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  const index = parts.findIndex((part) => part === "track" || part === "album");
+  if (index < 0) return null;
+  const kind = parts[index] as "track" | "album";
+  const id = asString(parts[index + 1] || "").replace(/[^A-Za-z0-9]/g, "");
+  if (!id) return null;
+  return { kind, id };
+}
+
+function youtubeVideoIdFromUrl(url: URL): string | null {
+  const host = url.hostname.toLowerCase();
+  if (host === "youtu.be") return asString(url.pathname.split("/").filter(Boolean)[0] || "").trim() || null;
+  if (!host.endsWith("youtube.com") && !host.endsWith("youtube-nocookie.com")) return null;
+  return asString(url.searchParams.get("v") || "").trim() || null;
+}
+
+function appleMusicIdFromUrl(url: URL): { id: string; kind: "track" | "album" } | null {
+  const host = url.hostname.toLowerCase();
+  if (!host.includes("music.apple.com") && !host.includes("itunes.apple.com")) return null;
+  const trackId = asString(url.searchParams.get("i") || "").trim();
+  if (/^\d+$/.test(trackId)) return { id: trackId, kind: "track" };
+  const parts = url.pathname.split("/").filter(Boolean);
+  const id = [...parts].reverse().find((part) => /^\d+$/.test(part));
+  if (!id) return null;
+  return { id, kind: "album" };
+}
+
+async function fetchResolverJsonWithTimeout(url: string, headers?: Record<string, string>, timeoutMs = 6000): Promise<any | null> {
+  try {
+    const res = await fetchWithTimeout(url, { headers: { Accept: "application/json", ...(headers || {}) } as any } as any, timeoutMs);
+    if (!res.ok) return null;
+    return res.json().catch(() => null);
+  } catch {
+    return null;
+  }
+}
+
+type SpotifyMetadataProviderConfig = {
+  clientId: string;
+  clientSecret: string;
+  source: "dashboard" | "env";
+};
+
+function normalizeSpotifyClientId(value: unknown): string {
+  return asString(value || "").replace(/\s+/g, "").trim().slice(0, 200);
+}
+
+function normalizeSpotifyClientSecret(value: unknown): string {
+  return asString(value || "").trim().slice(0, 500);
+}
+
+async function readStoredSpotifyMetadataProviderConfig(): Promise<SpotifyMetadataProviderConfig | null> {
+  const row = await prisma.metadataProviderConfig.findUnique({ where: { provider: "spotify" } });
+  if (!row?.clientId || !row.clientSecretCiphertext || !row.clientSecretIv || !row.clientSecretTag) return null;
+  try {
+    const decrypted = decryptSecret({
+      ciphertextB64: row.clientSecretCiphertext,
+      ivB64: row.clientSecretIv,
+      tagB64: row.clientSecretTag
+    }).toString("utf8");
+    const clientId = normalizeSpotifyClientId(row.clientId);
+    const clientSecret = normalizeSpotifyClientSecret(decrypted);
+    if (!clientId || !clientSecret) return null;
+    return { clientId, clientSecret, source: "dashboard" };
+  } catch {
+    return null;
+  }
+}
+
+function readEnvSpotifyMetadataProviderConfig(): SpotifyMetadataProviderConfig | null {
+  const clientId = normalizeSpotifyClientId(process.env.SPOTIFY_CLIENT_ID);
+  const clientSecret = normalizeSpotifyClientSecret(process.env.SPOTIFY_CLIENT_SECRET);
+  if (!clientId || !clientSecret) return null;
+  return { clientId, clientSecret, source: "env" };
+}
+
+async function readEffectiveSpotifyMetadataProviderConfig(): Promise<SpotifyMetadataProviderConfig | null> {
+  return (await readStoredSpotifyMetadataProviderConfig()) || readEnvSpotifyMetadataProviderConfig();
+}
+
+async function fetchSpotifyAccessTokenFromCredentials(config: SpotifyMetadataProviderConfig): Promise<string | null> {
+  try {
+    const encoded = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64");
+    const res = await fetchWithTimeout("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${encoded}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json"
+      } as any,
+      body: "grant_type=client_credentials"
+    } as any, 6000);
+    if (!res.ok) return null;
+    const data: any = await res.json().catch(() => null);
+    return asString(data?.access_token || "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchSpotifyAccessToken(): Promise<string | null> {
+  const config = await readEffectiveSpotifyMetadataProviderConfig();
+  if (!config) return null;
+  return fetchSpotifyAccessTokenFromCredentials(config);
+}
+
+function discoveryWithPrimaryUrl(discovery: Omit<ConnectWorkDiscovery, "externalUrl"> & { externalUrl?: string | null }): ConnectWorkDiscovery {
+  return {
+    ...discovery,
+    externalUrl: pickPrimaryLegacyExternalUrl({
+      youtubeUrl: discovery.youtubeUrl,
+      spotifyUrl: discovery.spotifyUrl,
+      appleMusicUrl: discovery.appleMusicUrl,
+      discogsUrl: discovery.discogsUrl,
+      musicBrainzUrl: discovery.musicBrainzUrl,
+      fallbackUrl: discovery.externalUrl
+    })
+  };
+}
+
+function spotifyUpcIdentifier(value: unknown): ConnectWorkIdentifier | null {
+  const raw = asString(value || "").replace(/[\s-]+/g, "").trim();
+  if (!raw) return null;
+  const candidates = [raw];
+  if (/^\d{13,14}$/.test(raw)) {
+    const trimmedToUpcA = raw.replace(/^0+/, "");
+    if (trimmedToUpcA.length === 12) candidates.push(trimmedToUpcA);
+    if (raw.length > 12) candidates.push(raw.slice(-12));
+  }
+  for (const candidate of candidates) {
+    const validated = validateAndNormalizeExternalIdentifier({ type: "UPC", value: candidate });
+    if (validated.ok) {
+      return { type: "UPC", value: validated.identifier.displayValue };
+    }
+  }
+  return null;
+}
+
+async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null> {
+  const parts = spotifyUrlParts(url);
+  if (!parts) return null;
+  const spotifyUrl = sanitizeExternalMetadataUrl(url.toString());
+  const token = await fetchSpotifyAccessToken();
+  if (token) {
+    const endpoint = `https://api.spotify.com/v1/${parts.kind}s/${encodeURIComponent(parts.id)}`;
+    const data = await fetchResolverJsonWithTimeout(endpoint, { Authorization: `Bearer ${token}` });
+    if (data) {
+      const trackAlbumId = parts.kind === "track" ? asString(data?.album?.id || "").trim() : "";
+      const albumData = parts.kind === "track" && trackAlbumId
+        ? await fetchResolverJsonWithTimeout(`https://api.spotify.com/v1/albums/${encodeURIComponent(trackAlbumId)}`, { Authorization: `Bearer ${token}` })
+        : parts.kind === "album"
+          ? data
+          : null;
+      const images = parts.kind === "track" ? (albumData?.images || data?.album?.images) : data?.images;
+      const image = Array.isArray(images) ? images[0]?.url : null;
+      const artists = Array.isArray(data?.artists) ? data.artists.map((artist: any) => asString(artist?.name || "").trim()).filter(Boolean).join(", ") : null;
+      const identifiers: ConnectWorkIdentifier[] = [];
+      const isrc = asString(data?.external_ids?.isrc || "").trim();
+      const upc = asString(albumData?.external_ids?.upc || albumData?.external_ids?.ean || data?.external_ids?.upc || data?.external_ids?.ean || "").trim();
+      const releaseTitle = sanitizeLegacyMetadataText(parts.kind === "track" ? (albumData?.name || data?.album?.name) : data?.name, 280);
+      if (isrc) identifiers.push({ type: "ISRC", value: isrc });
+      const upcIdentifier = spotifyUpcIdentifier(upc);
+      if (upcIdentifier) identifiers.push(upcIdentifier);
+      return discoveryWithPrimaryUrl({
+        title: sanitizeLegacyMetadataText(data?.name, 280),
+        artist: artists || null,
+        artworkUrl: sanitizeExternalMetadataUrl(image),
+        releaseTitle,
+        releaseDate: sanitizeLegacyMetadataText(parts.kind === "track" ? (albumData?.release_date || data?.album?.release_date) : data?.release_date, 40),
+        description: releaseTitle ? `Release: ${releaseTitle}\nSpotify metadata resolved through Spotify Web API.` : "Spotify metadata resolved through Spotify Web API.",
+        identifiers,
+        spotifyUrl: sanitizeExternalMetadataUrl(data?.external_urls?.spotify) || spotifyUrl,
+        appleMusicUrl: null,
+        youtubeUrl: null,
+        musicBrainzUrl: null,
+        discogsUrl: null,
+        provider: "Spotify"
+      });
+    }
+  }
+  const oembedUrl = new URL("https://open.spotify.com/oembed");
+  oembedUrl.searchParams.set("url", url.toString());
+  const data = await fetchResolverJsonWithTimeout(oembedUrl.toString());
+  if (!data) return null;
+  return discoveryWithPrimaryUrl({
+    title: sanitizeLegacyMetadataText(data?.title, 280),
+    artist: sanitizeLegacyMetadataText(data?.author_name, 180),
+    artworkUrl: sanitizeExternalMetadataUrl(data?.thumbnail_url),
+    releaseTitle: null,
+    releaseDate: null,
+    description: "Spotify URL metadata resolved through Spotify oEmbed. ISRC/UPC requires optional Spotify Web API credentials.",
+    identifiers: [],
+    spotifyUrl,
+    appleMusicUrl: null,
+    youtubeUrl: null,
+    musicBrainzUrl: null,
+    discogsUrl: null,
+    provider: "Spotify"
+  });
+}
+
+async function resolveAppleMusicUrl(url: URL): Promise<ConnectWorkDiscovery | null> {
+  const parsed = appleMusicIdFromUrl(url);
+  if (!parsed) return null;
+  const lookup = new URL("https://itunes.apple.com/lookup");
+  lookup.searchParams.set("id", parsed.id);
+  if (parsed.kind === "album") lookup.searchParams.set("entity", "song");
+  const data = await fetchResolverJsonWithTimeout(lookup.toString());
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const result = results.find((item: any) => parsed.kind === "track" ? item?.wrapperType === "track" : item?.collectionId || item?.wrapperType === "collection") || results[0] || null;
+  if (!result) return null;
+  const appleMusicUrl = sanitizeExternalMetadataUrl(result?.trackViewUrl || result?.collectionViewUrl || url.toString());
+  return discoveryWithPrimaryUrl({
+    title: sanitizeLegacyMetadataText(result?.trackName || result?.collectionName, 280),
+    artist: sanitizeLegacyMetadataText(result?.artistName, 180),
+    artworkUrl: sanitizeExternalMetadataUrl(asString(result?.artworkUrl100 || "").replace("100x100", "600x600")),
+    releaseTitle: sanitizeLegacyMetadataText(result?.collectionName, 280),
+    releaseDate: sanitizeLegacyMetadataText(result?.releaseDate, 40),
+    description: "Apple Music metadata resolved through the iTunes Lookup API.",
+    identifiers: [],
+    spotifyUrl: null,
+    appleMusicUrl,
+    youtubeUrl: null,
+    musicBrainzUrl: null,
+    discogsUrl: null,
+    provider: "Apple Music"
+  });
+}
+
+async function resolveYoutubeUrl(url: URL): Promise<ConnectWorkDiscovery | null> {
+  const videoId = youtubeVideoIdFromUrl(url);
+  if (!videoId) return null;
+  const canonical = sanitizeExternalMetadataUrl(`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`);
+  const oembed = new URL("https://www.youtube.com/oembed");
+  oembed.searchParams.set("url", canonical || url.toString());
+  oembed.searchParams.set("format", "json");
+  const data = await fetchResolverJsonWithTimeout(oembed.toString());
+  if (!data) return null;
+  return discoveryWithPrimaryUrl({
+    title: sanitizeLegacyMetadataText(data?.title, 280),
+    artist: sanitizeLegacyMetadataText(data?.author_name, 180),
+    artworkUrl: sanitizeExternalMetadataUrl(data?.thumbnail_url),
+    releaseTitle: null,
+    releaseDate: null,
+    description: "YouTube URL metadata resolved through YouTube oEmbed.",
+    identifiers: [],
+    spotifyUrl: null,
+    appleMusicUrl: null,
+    youtubeUrl: canonical,
+    musicBrainzUrl: null,
+    discogsUrl: null,
+    provider: "YouTube"
+  });
+}
+
+async function resolveConnectWorkUrl(rawUrl: unknown): Promise<ConnectWorkDiscovery | null> {
+  const url = parseConnectWorkUrl(rawUrl);
+  if (!url) return null;
+  return (
+    await resolveSpotifyUrl(url) ||
+    await resolveAppleMusicUrl(url) ||
+    await resolveYoutubeUrl(url)
+  );
+}
+
+async function fetchMusicBrainzJson(pathname: string): Promise<any | null> {
+  const url = `https://musicbrainz.org/ws/2/${pathname}${pathname.includes("?") ? "&" : "?"}fmt=json`;
+  const res = await fetchWithTimeout(url, { headers: musicBrainzHeaders() as any } as any, 6000);
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+async function lookupMusicBrainzCoverArt(releaseId: string | null): Promise<string | null> {
+  if (!releaseId) return null;
+  try {
+    const res = await fetchWithTimeout(`https://coverartarchive.org/release/${encodeURIComponent(releaseId)}`, {
+      headers: { Accept: "application/json", "User-Agent": "ContentBox-Certifyd/0.1 (https://certifyd.me)" } as any
+    } as any, 6000);
+    if (!res.ok) return null;
+    const data: any = await res.json().catch(() => null);
+    const images = Array.isArray(data?.images) ? data.images : [];
+    const front = images.find((img: any) => Boolean(img?.front)) || images[0] || null;
+    return (
+      asString(front?.thumbnails?.["500"] || "").trim() ||
+      asString(front?.thumbnails?.large || "").trim() ||
+      asString(front?.image || "").trim() ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function discogsUserToken(): string | null {
+  return asString(process.env.DISCOGS_USER_TOKEN || process.env.DISCOGS_TOKEN || "").trim() || null;
+}
+
+async function spotifyApiConfigured(): Promise<boolean> {
+  return Boolean(await readEffectiveSpotifyMetadataProviderConfig());
+}
+
+function discogsEntityUrl(uri: unknown): string | null {
+  const raw = asString(uri || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return sanitizeExternalMetadataUrl(raw);
+  return sanitizeExternalMetadataUrl(`https://www.discogs.com${raw.startsWith("/") ? raw : `/${raw}`}`);
+}
+
+function splitDiscogsTitle(value: unknown): { artist: string | null; title: string | null } {
+  const title = sanitizeLegacyMetadataText(value, 280);
+  if (!title) return { artist: null, title: null };
+  const parts = title.split(" - ");
+  if (parts.length < 2) return { artist: null, title };
+  const artist = parts.shift()?.trim() || null;
+  const releaseTitle = parts.join(" - ").trim() || null;
+  return { artist, title: releaseTitle || title };
+}
+
+async function lookupDiscogsDiscovery(identifier: { type: string; normalizedValue: string; displayValue: string }): Promise<ConnectWorkDiscovery | null> {
+  const token = discogsUserToken();
+  if (!token) return null;
+  const type = identifier.type.toUpperCase();
+  if (type !== "UPC") return null;
+  try {
+    const url = new URL("https://api.discogs.com/database/search");
+    url.searchParams.set("barcode", identifier.normalizedValue);
+    url.searchParams.set("type", "release");
+    url.searchParams.set("per_page", "1");
+    const res = await fetchWithTimeout(url.toString(), {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Discogs token=${token}`,
+        "User-Agent": "ContentBox-Certifyd/0.1 (https://certifyd.me)"
+      } as any
+    } as any, 6000);
+    if (!res.ok) return null;
+    const data: any = await res.json().catch(() => null);
+    const result = Array.isArray(data?.results) ? data.results[0] : null;
+    if (!result) return null;
+    const titleParts = splitDiscogsTitle(result?.title);
+    return {
+      title: titleParts.title,
+      artist: titleParts.artist,
+      artworkUrl: sanitizeExternalMetadataUrl(result?.cover_image || result?.thumb),
+      releaseTitle: titleParts.title,
+      releaseDate: result?.year ? String(result.year) : null,
+      description: "Release metadata from Discogs barcode lookup.",
+      identifiers: [{ type, value: identifier.displayValue }],
+      externalUrl: discogsEntityUrl(result?.uri),
+      spotifyUrl: null,
+      appleMusicUrl: null,
+      youtubeUrl: null,
+      musicBrainzUrl: null,
+      discogsUrl: discogsEntityUrl(result?.uri),
+      provider: "Discogs"
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function enrichWithDiscogsFallback(discovery: ConnectWorkDiscovery, identifier: { type: string; normalizedValue: string; displayValue: string }): Promise<ConnectWorkDiscovery> {
+  const fallback = await lookupDiscogsDiscovery(identifier);
+  if (!fallback) return discovery;
+  if (discovery.title) {
+    return {
+      ...discovery,
+      artworkUrl: discovery.artworkUrl || fallback.artworkUrl,
+      releaseTitle: discovery.releaseTitle || fallback.releaseTitle,
+      releaseDate: discovery.releaseDate || fallback.releaseDate,
+      spotifyUrl: discovery.spotifyUrl || fallback.spotifyUrl,
+      appleMusicUrl: discovery.appleMusicUrl || fallback.appleMusicUrl,
+      youtubeUrl: discovery.youtubeUrl || fallback.youtubeUrl,
+      musicBrainzUrl: discovery.musicBrainzUrl || fallback.musicBrainzUrl,
+      discogsUrl: discovery.discogsUrl || fallback.discogsUrl,
+      externalUrl: pickPrimaryLegacyExternalUrl({
+        youtubeUrl: discovery.youtubeUrl || fallback.youtubeUrl,
+        spotifyUrl: discovery.spotifyUrl || fallback.spotifyUrl,
+        appleMusicUrl: discovery.appleMusicUrl || fallback.appleMusicUrl,
+        discogsUrl: discovery.discogsUrl || fallback.discogsUrl,
+        musicBrainzUrl: discovery.musicBrainzUrl || fallback.musicBrainzUrl,
+        fallbackUrl: discovery.externalUrl || fallback.externalUrl
+      })
+    };
+  }
+  return fallback;
+}
+
+function firstReleaseFromRecording(recording: any): any | null {
+  const releases = Array.isArray(recording?.releases) ? recording.releases : [];
+  return releases[0] || null;
+}
+
+function artistCreditName(value: any): string | null {
+  const credits = Array.isArray(value?.["artist-credit"]) ? value["artist-credit"] : [];
+  const joined = credits
+    .map((credit: any) => {
+      if (typeof credit === "string") return credit;
+      return asString(credit?.name || credit?.artist?.name || "").trim();
+    })
+    .filter(Boolean)
+    .join("");
+  return joined || null;
+}
+
+async function lookupMusicBrainzDiscovery(identifier: { type: string; normalizedValue: string; displayValue: string }): Promise<ConnectWorkDiscovery> {
+  const type = identifier.type.toUpperCase();
+  const value = identifier.normalizedValue;
+  if (type === "ISRC") {
+    const data = await fetchMusicBrainzJson(`isrc/${encodeURIComponent(value)}?inc=artist-credits+releases+isrcs+url-rels`);
+    const recordings = Array.isArray(data?.recordings) ? data.recordings : [];
+    const recording = recordings[0] || null;
+    const release = firstReleaseFromRecording(recording);
+    const artworkUrl = await lookupMusicBrainzCoverArt(asString(release?.id || "").trim() || null);
+    const platformUrls = extractMusicBrainzRelationUrls(release || recording);
+    const musicBrainzUrl = musicBrainzEntityUrl("recording", recording?.id);
+    return enrichWithDiscogsFallback({
+      title: asString(recording?.title || "").trim() || null,
+      artist: artistCreditName(recording),
+      artworkUrl,
+      releaseTitle: sanitizeLegacyMetadataText(release?.title, 280),
+      releaseDate: asString(release?.date || recording?.["first-release-date"] || "").trim() || null,
+      description: release?.title ? `Release: ${asString(release.title).trim()}` : null,
+      identifiers: [{ type, value: identifier.displayValue }],
+      externalUrl: pickPrimaryLegacyExternalUrl({ ...platformUrls, musicBrainzUrl }),
+      spotifyUrl: platformUrls.spotifyUrl,
+      appleMusicUrl: platformUrls.appleMusicUrl,
+      youtubeUrl: platformUrls.youtubeUrl,
+      musicBrainzUrl,
+      discogsUrl: null,
+      provider: "MusicBrainz"
+    }, identifier);
+  }
+  if (type === "ISWC") {
+    const data = await fetchMusicBrainzJson(`iswc/${encodeURIComponent(value)}?inc=artist-rels+url-rels`);
+    const works = Array.isArray(data?.works) ? data.works : [];
+    const work = works[0] || null;
+    const platformUrls = extractMusicBrainzRelationUrls(work);
+    const musicBrainzUrl = musicBrainzEntityUrl("work", work?.id);
+    return {
+      title: asString(work?.title || "").trim() || null,
+      artist: null,
+      artworkUrl: null,
+      releaseTitle: null,
+      releaseDate: null,
+      description: "Musical work metadata from MusicBrainz.",
+      identifiers: [{ type, value: identifier.displayValue }],
+      externalUrl: pickPrimaryLegacyExternalUrl({ ...platformUrls, musicBrainzUrl }),
+      spotifyUrl: platformUrls.spotifyUrl,
+      appleMusicUrl: platformUrls.appleMusicUrl,
+      youtubeUrl: platformUrls.youtubeUrl,
+      musicBrainzUrl,
+      discogsUrl: null,
+      provider: "MusicBrainz"
+    };
+  }
+  if (type === "UPC") {
+    const data = await fetchMusicBrainzJson(`release?query=barcode:${encodeURIComponent(value)}&limit=1&inc=url-rels+artist-credits`);
+    const releases = Array.isArray(data?.releases) ? data.releases : [];
+    const release = releases[0] || null;
+    const artworkUrl = await lookupMusicBrainzCoverArt(asString(release?.id || "").trim() || null);
+    const platformUrls = extractMusicBrainzRelationUrls(release);
+    const musicBrainzUrl = musicBrainzEntityUrl("release", release?.id);
+    return enrichWithDiscogsFallback({
+      title: asString(release?.title || "").trim() || null,
+      artist: artistCreditName(release),
+      artworkUrl,
+      releaseTitle: sanitizeLegacyMetadataText(release?.title, 280),
+      releaseDate: asString(release?.date || "").trim() || null,
+      description: "Release metadata from MusicBrainz barcode lookup.",
+      identifiers: [{ type, value: identifier.displayValue }],
+      externalUrl: pickPrimaryLegacyExternalUrl({ ...platformUrls, musicBrainzUrl }),
+      spotifyUrl: platformUrls.spotifyUrl,
+      appleMusicUrl: platformUrls.appleMusicUrl,
+      youtubeUrl: platformUrls.youtubeUrl,
+      musicBrainzUrl,
+      discogsUrl: null,
+      provider: "MusicBrainz"
+    }, identifier);
+  }
+  return {
+    title: null,
+    artist: null,
+    artworkUrl: null,
+    releaseTitle: null,
+    releaseDate: null,
+    description: `${type} lookup is validated locally. Provider metadata is not available in V1.`,
+    identifiers: [{ type, value: identifier.displayValue }],
+    externalUrl: null,
+    spotifyUrl: null,
+    appleMusicUrl: null,
+    youtubeUrl: null,
+    musicBrainzUrl: null,
+    discogsUrl: null,
+    provider: "MusicBrainz"
+  };
+}
+
+app.post("/api/connect-work/lookup", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body || {}) as { type?: unknown; value?: unknown };
+  const validated = validateAndNormalizeExternalIdentifier({ type: body.type, value: body.value });
+  const lookupType = asString(body.type || "").trim().toUpperCase();
+  const lookupValue = asString(body.value || "").trim();
+  if (!validated.ok && lookupType === "UPC") {
+    const normalizedValue = lookupValue.replace(/[\s-]+/g, "");
+    if (/^\d{12,14}$/.test(normalizedValue)) {
+      const discovery = await lookupMusicBrainzDiscovery({
+        type: "UPC",
+        normalizedValue,
+        displayValue: lookupValue
+      });
+      return reply.send({
+        identifier: {
+          type: "UPC",
+          value: lookupValue,
+          normalizedValue,
+          displayValue: lookupValue
+        },
+        discovery: {
+          ...discovery,
+          description: discovery.title
+            ? discovery.description
+            : "No metadata found for this UPC/barcode in MusicBrainz."
+        }
+      });
+    }
+  }
+  if (!validated.ok) return badRequest(reply, validated.error);
+  const discovery = await lookupMusicBrainzDiscovery(validated.identifier);
+  return reply.send({ identifier: validated.identifier, discovery });
+});
+
+async function spotifyMetadataProviderStatus() {
+  const row = await prisma.metadataProviderConfig.findUnique({ where: { provider: "spotify" } });
+  const storedConfigured = Boolean(row?.clientId && row.clientSecretCiphertext && row.clientSecretIv && row.clientSecretTag);
+  const envConfigured = Boolean(readEnvSpotifyMetadataProviderConfig());
+  return {
+    configured: storedConfigured || envConfigured,
+    richMetadata: storedConfigured || envConfigured ? "configured" : "fallback_only",
+    source: storedConfigured ? "dashboard" : envConfigured ? "env" : "fallback",
+    clientId: row?.clientId || null,
+    clientSecretConfigured: Boolean(row?.clientSecretCiphertext),
+    clientSecretMasked: row?.clientSecretCiphertext ? "••••••••" : null,
+    envConfigured,
+    lastTestedAt: row?.lastTestedAt ? row.lastTestedAt.toISOString() : null,
+    lastStatus: row?.lastStatus || null,
+    lastError: row?.lastError || null
+  };
+}
+
+app.get("/api/settings/metadata-providers", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const spotify = await spotifyMetadataProviderStatus();
+  return reply.send({ spotify });
+});
+
+app.patch("/api/settings/metadata-providers/spotify", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body || {}) as { clientId?: unknown; clientSecret?: unknown };
+  const clientId = normalizeSpotifyClientId(body.clientId);
+  const clientSecret = normalizeSpotifyClientSecret(body.clientSecret);
+  if (!clientId) return badRequest(reply, "Spotify clientId is required.");
+  if (!clientSecret) return badRequest(reply, "Spotify clientSecret is required.");
+  const encrypted = encryptSecret(Buffer.from(clientSecret, "utf8"));
+  await prisma.metadataProviderConfig.upsert({
+    where: { provider: "spotify" },
+    create: {
+      provider: "spotify",
+      clientId,
+      clientSecretCiphertext: encrypted.ciphertextB64,
+      clientSecretIv: encrypted.ivB64,
+      clientSecretTag: encrypted.tagB64
+    },
+    update: {
+      clientId,
+      clientSecretCiphertext: encrypted.ciphertextB64,
+      clientSecretIv: encrypted.ivB64,
+      clientSecretTag: encrypted.tagB64,
+      lastStatus: null,
+      lastError: null
+    }
+  });
+  return reply.send({ ok: true, spotify: await spotifyMetadataProviderStatus() });
+});
+
+app.post("/api/settings/metadata-providers/spotify/test", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const config = await readStoredSpotifyMetadataProviderConfig();
+  if (!config) return badRequest(reply, "Spotify dashboard configuration is incomplete.");
+  const token = await fetchSpotifyAccessTokenFromCredentials(config);
+  const now = new Date();
+  await prisma.metadataProviderConfig.update({
+    where: { provider: "spotify" },
+    data: {
+      lastTestedAt: now,
+      lastStatus: token ? "connected" : "error",
+      lastError: token ? null : "Spotify token request failed."
+    }
+  });
+  return reply.send({
+    ok: Boolean(token),
+    status: token ? "connected" : "error",
+    error: token ? null : "Spotify token request failed.",
+    spotify: await spotifyMetadataProviderStatus()
+  });
+});
+
+app.get("/api/connect-work/provider-status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const configured = await spotifyApiConfigured();
+  return reply.send({
+    spotify: {
+      richMetadata: configured ? "configured" : "fallback_only",
+      configured
+    }
+  });
+});
+
+app.post("/api/connect-work/resolve-url", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body || {}) as { url?: unknown };
+  const url = parseConnectWorkUrl(body.url);
+  if (!url) return badRequest(reply, "Supported Spotify, Apple Music, or YouTube URL required.");
+  const discovery = await resolveConnectWorkUrl(url.toString());
+  if (!discovery) {
+    return reply.send({
+      url: url.toString(),
+      discovery: {
+        title: null,
+        artist: null,
+        artworkUrl: null,
+        releaseTitle: null,
+        releaseDate: null,
+        description: "No metadata found for this URL.",
+        identifiers: [],
+        externalUrl: sanitizeExternalMetadataUrl(url.toString()),
+        spotifyUrl: spotifyUrlParts(url) ? sanitizeExternalMetadataUrl(url.toString()) : null,
+        appleMusicUrl: appleMusicIdFromUrl(url) ? sanitizeExternalMetadataUrl(url.toString()) : null,
+        youtubeUrl: youtubeVideoIdFromUrl(url) ? sanitizeExternalMetadataUrl(url.toString()) : null,
+        musicBrainzUrl: null,
+        discogsUrl: null,
+        provider: "URL"
+      }
+    });
+  }
+  return reply.send({ url: url.toString(), discovery });
+});
+
+app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body || {}) as {
+    type?: unknown;
+    value?: unknown;
+    identifiers?: unknown;
+    title?: unknown;
+    artist?: unknown;
+    releaseTitle?: unknown;
+    releaseDate?: unknown;
+    artworkUrl?: unknown;
+    description?: unknown;
+    externalUrl?: unknown;
+    spotifyUrl?: unknown;
+    appleMusicUrl?: unknown;
+    youtubeUrl?: unknown;
+    musicBrainzUrl?: unknown;
+    discogsUrl?: unknown;
+    provider?: unknown;
+  };
+  const identifierInputs = Array.isArray(body.identifiers)
+    ? body.identifiers
+    : body.type || body.value
+      ? [{ type: body.type, value: body.value }]
+      : [];
+  const identifiers: NormalizedConnectWorkIdentifier[] = [];
+  let firstIdentifierError: string | null = null;
+  for (const input of identifierInputs) {
+    const validated = validateAndNormalizeExternalIdentifier({
+      type: (input as any)?.type,
+      value: (input as any)?.value,
+      displayValue: (input as any)?.displayValue
+    });
+    if (!validated.ok) {
+      firstIdentifierError ||= validated.error;
+      continue;
+    }
+    identifiers.push(validated.identifier);
+  }
+  if (!identifiers.length && firstIdentifierError) return badRequest(reply, firstIdentifierError);
+  const primaryIdentifier = identifiers[0] || null;
+  const title = asString(body.title || "").trim() || (primaryIdentifier ? `${primaryIdentifier.type} ${primaryIdentifier.displayValue}` : "Connected legacy asset");
+  const artist = sanitizeLegacyMetadataText(body.artist, 180) || "";
+  const releaseTitle = sanitizeLegacyMetadataText(body.releaseTitle, 280) || "";
+  const releaseDate = sanitizeLegacyMetadataText(body.releaseDate, 40) || "";
+  const artworkUrl = sanitizeExternalMetadataUrl(body.artworkUrl);
+  const spotifyUrl = sanitizeExternalMetadataUrl(body.spotifyUrl);
+  const appleMusicUrl = sanitizeExternalMetadataUrl(body.appleMusicUrl);
+  const youtubeUrl = sanitizeExternalMetadataUrl(body.youtubeUrl);
+  const musicBrainzUrl = sanitizeExternalMetadataUrl(body.musicBrainzUrl);
+  const discogsUrl = sanitizeExternalMetadataUrl(body.discogsUrl);
+  const externalUrl = pickPrimaryLegacyExternalUrl({
+    youtubeUrl,
+    spotifyUrl,
+    appleMusicUrl,
+    discogsUrl,
+    musicBrainzUrl,
+    fallbackUrl: sanitizeExternalMetadataUrl(body.externalUrl)
+  });
+  const provider = sanitizeLegacyMetadataText(body.provider, 80) || "MusicBrainz";
+  const descriptionParts = [
+    artist ? `Artist: ${artist}` : null,
+    releaseTitle ? `Release: ${releaseTitle}` : null,
+    releaseDate ? `Release date: ${releaseDate}` : null,
+    externalUrl ? `External URL: ${externalUrl}` : null,
+    sanitizeLegacyMetadataText(body.description, 1000) || null
+  ].filter(Boolean);
+  const description = descriptionParts.join("\n");
+
+  const result = await prisma.$transaction(async (tx) => {
+    const content = await tx.contentItem.create({
+      data: {
+        ownerUserId: userId,
+        title,
+        type: "file" as any,
+        status: "draft" as any,
+        assetOrigin: "legacy_import",
+        legacyArtist: artist || null,
+        legacyReleaseTitle: releaseTitle || null,
+        legacyReleaseDate: releaseDate || null,
+        legacyProvider: provider,
+        legacyArtworkUrl: artworkUrl,
+        legacyExternalUrl: externalUrl,
+        legacySpotifyUrl: spotifyUrl,
+        legacyAppleMusicUrl: appleMusicUrl,
+        legacyYoutubeUrl: youtubeUrl,
+        legacyMusicBrainzUrl: musicBrainzUrl,
+        legacyDiscogsUrl: discogsUrl,
+        description: description || null
+      }
+    });
+    const identifierRows = [];
+    for (const identifier of identifiers) {
+      const identifierRow = await tx.contentExternalIdentifier.create({
+        data: {
+          contentId: content.id,
+          type: identifier.type,
+          value: identifier.value,
+          normalizedValue: identifier.normalizedValue,
+          displayValue: identifier.displayValue,
+          source: "manual",
+          issuer: provider,
+          publicVisible: false,
+          creatorApprovedAt: new Date()
+        }
+      });
+      identifierRows.push(identifierRow);
+    }
+    await tx.splitVersion.create({
+      data: { contentId: content.id, versionNumber: 1, createdByUserId: userId, status: "draft" as any }
+    });
+    await tx.auditEvent.create({
+      data: {
+        userId,
+        action: "connect_work.create_legacy_asset",
+        entityType: "ContentItem",
+        entityId: content.id,
+        payloadJson: {
+          assetOrigin: "legacy_import",
+          identifiers: identifiers.map((identifier) => ({ type: identifier.type, normalizedValue: identifier.normalizedValue })),
+          provider,
+          artworkUrl: artworkUrl || null,
+          externalUrl: externalUrl || null,
+          platformUrls: {
+            youtubeUrl,
+            spotifyUrl,
+            appleMusicUrl,
+            musicBrainzUrl,
+            discogsUrl
+          }
+        } as any
+      }
+    }).catch(() => null);
+    return { content, identifiers: identifierRows };
+  });
+
+  return reply.code(201).send({
+    content: result.content,
+    identifier: result.identifiers[0] ? serializeContentExternalIdentifier(result.identifiers[0]) : null,
+    identifiers: result.identifiers.map(serializeContentExternalIdentifier)
+  });
+});
 
 app.get("/api/content/:contentId/external-identifiers", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const content = await requireOwnedContentForExternalIdentifiers(req, reply);
