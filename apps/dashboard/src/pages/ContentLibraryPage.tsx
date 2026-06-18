@@ -71,6 +71,7 @@ type ContentItem = {
   primaryTopic?: PrimaryTopic | null;
   assetOrigin?: "native" | "legacy_import" | string | null;
   legacyArtist?: string | null;
+  legacyReleaseTitle?: string | null;
   legacyReleaseDate?: string | null;
   legacyProvider?: string | null;
   legacyArtworkUrl?: string | null;
@@ -3118,6 +3119,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const isLegacyAsset = String(it.assetOrigin || "").trim().toLowerCase() === "legacy_import";
               const legacyDescription = String(it.description || "").trim();
               const legacyArtist = String(it.legacyArtist || "").trim() || null;
+              const legacyReleaseTitle = String(it.legacyReleaseTitle || "").trim() || null;
               const legacyReleaseDate = String(it.legacyReleaseDate || "").trim() || null;
               const legacyProvider = String(it.legacyProvider || "").trim() || null;
               const legacyArtworkUrl = String(it.legacyArtworkUrl || "").trim() || null;
@@ -3243,6 +3245,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-xs text-neutral-400">
                           {[
                             legacyArtist,
+                            legacyReleaseTitle,
                             legacyReleaseDate,
                             "Connected legacy asset"
                           ].filter(Boolean).join(" • ")}
@@ -3564,6 +3567,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <div>
                                 <span className="text-neutral-500">Artist</span>
                                 <div>{legacyArtist || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Release</span>
+                                <div>{legacyReleaseTitle || "Not provided"}</div>
                               </div>
                               <div>
                                 <span className="text-neutral-500">Release date</span>

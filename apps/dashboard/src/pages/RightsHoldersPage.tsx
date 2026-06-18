@@ -9,6 +9,7 @@ type Discovery = {
   title?: string | null;
   artist?: string | null;
   artworkUrl?: string | null;
+  releaseTitle?: string | null;
   releaseDate?: string | null;
   description?: string | null;
   identifiers?: Array<{ type: string; value: string }>;
@@ -36,6 +37,13 @@ type ConnectResponse = {
   content?: { id?: string; title?: string; assetOrigin?: string | null };
 };
 
+type ProviderStatus = {
+  spotify?: {
+    richMetadata?: "configured" | "fallback_only" | string;
+    configured?: boolean;
+  };
+};
+
 export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegacyCatalog?: () => void }) {
   const [mode, setMode] = React.useState<"identifier" | "url">("identifier");
   const [type, setType] = React.useState<IdentifierType>("ISRC");
@@ -44,8 +52,23 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
   const [lookup, setLookup] = React.useState<LookupResponse | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [connecting, setConnecting] = React.useState(false);
+  const [providerStatus, setProviderStatus] = React.useState<ProviderStatus | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let alive = true;
+    api<ProviderStatus>("/api/connect-work/provider-status", "GET")
+      .then((result) => {
+        if (alive) setProviderStatus(result);
+      })
+      .catch(() => {
+        if (alive) setProviderStatus(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   async function discover(e: React.FormEvent) {
     e.preventDefault();
@@ -87,6 +110,7 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
         identifiers: identifiers.length ? identifiers : lookup.identifier ? [lookup.identifier] : [],
         title: discovery.title || (lookup.identifier ? `${lookup.identifier.type} ${lookup.identifier.displayValue}` : "Connected legacy asset"),
         artist: discovery.artist || null,
+        releaseTitle: discovery.releaseTitle || null,
         releaseDate: discovery.releaseDate || null,
         artworkUrl: discovery.artworkUrl || null,
         description: discovery.description || null,
@@ -123,6 +147,12 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
         <div className="text-sm font-semibold uppercase tracking-wide text-neutral-400">Connect Work</div>
         <div className="mt-1 text-sm text-neutral-400">
           Paste a Spotify, Apple Music, or YouTube URL, or enter an industry identifier. Review discovered metadata, then create a private Legacy asset in your catalog.
+        </div>
+        <div className="mt-3 inline-flex rounded-full border border-neutral-800 bg-neutral-950/50 px-3 py-1 text-xs text-neutral-400">
+          Spotify rich metadata:{" "}
+          <span className={providerStatus?.spotify?.configured ? "ml-1 text-emerald-300" : "ml-1 text-amber-300"}>
+            {providerStatus?.spotify?.configured ? "configured" : "fallback only"}
+          </span>
         </div>
 
         <div className="mt-4 inline-flex overflow-hidden rounded-lg border border-neutral-800">
@@ -227,6 +257,10 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
                 <div>
                   <div className="text-xs text-neutral-500">Artist</div>
                   <div className="text-neutral-300">{discovery.artist || "—"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-neutral-500">Release</div>
+                  <div className="text-neutral-300">{discovery.releaseTitle || "—"}</div>
                 </div>
                 <div>
                   <div className="text-xs text-neutral-500">Release date</div>

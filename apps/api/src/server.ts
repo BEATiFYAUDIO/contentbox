@@ -22594,6 +22594,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     type: true,
     assetOrigin: true,
     legacyArtist: true,
+    legacyReleaseTitle: true,
     legacyReleaseDate: true,
     legacyProvider: true,
     legacyArtworkUrl: true,
@@ -23786,6 +23787,7 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
         title: true,
         assetOrigin: true,
         legacyArtist: true,
+        legacyReleaseTitle: true,
         legacyReleaseDate: true,
         legacyProvider: true,
         legacyArtworkUrl: true,
@@ -23829,6 +23831,7 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
       assetOrigin: row.assetOrigin || "legacy_import",
       displayLabel: row.legacyProvider ? `Connected from ${row.legacyProvider}` : "Connected legacy work",
       artist: row.legacyArtist || null,
+      releaseTitle: row.legacyReleaseTitle || null,
       releaseDate: row.legacyReleaseDate || null,
       artworkUrl: row.legacyArtworkUrl || null,
       provider: row.legacyProvider || null,
@@ -24322,6 +24325,7 @@ type ConnectWorkDiscovery = {
   title: string | null;
   artist: string | null;
   artworkUrl: string | null;
+  releaseTitle: string | null;
   releaseDate: string | null;
   description: string | null;
   identifiers: Array<{ type: string; value: string }>;
@@ -24520,22 +24524,30 @@ async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null>
   const token = await fetchSpotifyAccessToken();
   if (token) {
     const endpoint = `https://api.spotify.com/v1/${parts.kind}s/${encodeURIComponent(parts.id)}`;
-    const data = await fetchResolverJsonWithTimeout(endpoint, { Authorization: `Bearer ` });
+    const data = await fetchResolverJsonWithTimeout(endpoint, { Authorization: `Bearer ${token}` });
     if (data) {
-      const images = parts.kind === "track" ? data?.album?.images : data?.images;
+      const trackAlbumId = parts.kind === "track" ? asString(data?.album?.id || "").trim() : "";
+      const albumData = parts.kind === "track" && trackAlbumId
+        ? await fetchResolverJsonWithTimeout(`https://api.spotify.com/v1/albums/${encodeURIComponent(trackAlbumId)}`, { Authorization: `Bearer ${token}` })
+        : parts.kind === "album"
+          ? data
+          : null;
+      const images = parts.kind === "track" ? (albumData?.images || data?.album?.images) : data?.images;
       const image = Array.isArray(images) ? images[0]?.url : null;
       const artists = Array.isArray(data?.artists) ? data.artists.map((artist: any) => asString(artist?.name || "").trim()).filter(Boolean).join(", ") : null;
       const identifiers: ConnectWorkIdentifier[] = [];
       const isrc = asString(data?.external_ids?.isrc || "").trim();
-      const upc = asString(data?.external_ids?.upc || data?.external_ids?.ean || "").trim();
+      const upc = asString(albumData?.external_ids?.upc || albumData?.external_ids?.ean || data?.external_ids?.upc || data?.external_ids?.ean || "").trim();
+      const releaseTitle = sanitizeLegacyMetadataText(parts.kind === "track" ? (albumData?.name || data?.album?.name) : data?.name, 280);
       if (isrc) identifiers.push({ type: "ISRC", value: isrc });
       if (upc) identifiers.push({ type: "UPC", value: upc });
       return discoveryWithPrimaryUrl({
         title: sanitizeLegacyMetadataText(data?.name, 280),
         artist: artists || null,
         artworkUrl: sanitizeExternalMetadataUrl(image),
-        releaseDate: sanitizeLegacyMetadataText(parts.kind === "track" ? data?.album?.release_date : data?.release_date, 40),
-        description: token ? "Spotify metadata resolved through Spotify Web API." : "Spotify metadata resolved from URL.",
+        releaseTitle,
+        releaseDate: sanitizeLegacyMetadataText(parts.kind === "track" ? (albumData?.release_date || data?.album?.release_date) : data?.release_date, 40),
+        description: releaseTitle ? `Release: ${releaseTitle}\nSpotify metadata resolved through Spotify Web API.` : "Spotify metadata resolved through Spotify Web API.",
         identifiers,
         spotifyUrl: sanitizeExternalMetadataUrl(data?.external_urls?.spotify) || spotifyUrl,
         appleMusicUrl: null,
@@ -24554,6 +24566,7 @@ async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null>
     title: sanitizeLegacyMetadataText(data?.title, 280),
     artist: sanitizeLegacyMetadataText(data?.author_name, 180),
     artworkUrl: sanitizeExternalMetadataUrl(data?.thumbnail_url),
+    releaseTitle: null,
     releaseDate: null,
     description: "Spotify URL metadata resolved through Spotify oEmbed. ISRC/UPC requires optional Spotify Web API credentials.",
     identifiers: [],
@@ -24581,6 +24594,7 @@ async function resolveAppleMusicUrl(url: URL): Promise<ConnectWorkDiscovery | nu
     title: sanitizeLegacyMetadataText(result?.trackName || result?.collectionName, 280),
     artist: sanitizeLegacyMetadataText(result?.artistName, 180),
     artworkUrl: sanitizeExternalMetadataUrl(asString(result?.artworkUrl100 || "").replace("100x100", "600x600")),
+    releaseTitle: sanitizeLegacyMetadataText(result?.collectionName, 280),
     releaseDate: sanitizeLegacyMetadataText(result?.releaseDate, 40),
     description: "Apple Music metadata resolved through the iTunes Lookup API.",
     identifiers: [],
@@ -24606,6 +24620,7 @@ async function resolveYoutubeUrl(url: URL): Promise<ConnectWorkDiscovery | null>
     title: sanitizeLegacyMetadataText(data?.title, 280),
     artist: sanitizeLegacyMetadataText(data?.author_name, 180),
     artworkUrl: sanitizeExternalMetadataUrl(data?.thumbnail_url),
+    releaseTitle: null,
     releaseDate: null,
     description: "YouTube URL metadata resolved through YouTube oEmbed.",
     identifiers: [],
@@ -24660,6 +24675,13 @@ function discogsUserToken(): string | null {
   return asString(process.env.DISCOGS_USER_TOKEN || process.env.DISCOGS_TOKEN || "").trim() || null;
 }
 
+function spotifyApiConfigured(): boolean {
+  return Boolean(
+    asString(process.env.SPOTIFY_CLIENT_ID || "").trim() &&
+    asString(process.env.SPOTIFY_CLIENT_SECRET || "").trim()
+  );
+}
+
 function discogsEntityUrl(uri: unknown): string | null {
   const raw = asString(uri || "").trim();
   if (!raw) return null;
@@ -24703,6 +24725,7 @@ async function lookupDiscogsDiscovery(identifier: { type: string; normalizedValu
       title: titleParts.title,
       artist: titleParts.artist,
       artworkUrl: sanitizeExternalMetadataUrl(result?.cover_image || result?.thumb),
+      releaseTitle: titleParts.title,
       releaseDate: result?.year ? String(result.year) : null,
       description: "Release metadata from Discogs barcode lookup.",
       identifiers: [{ type, value: identifier.displayValue }],
@@ -24726,6 +24749,8 @@ async function enrichWithDiscogsFallback(discovery: ConnectWorkDiscovery, identi
     return {
       ...discovery,
       artworkUrl: discovery.artworkUrl || fallback.artworkUrl,
+      releaseTitle: discovery.releaseTitle || fallback.releaseTitle,
+      releaseDate: discovery.releaseDate || fallback.releaseDate,
       spotifyUrl: discovery.spotifyUrl || fallback.spotifyUrl,
       appleMusicUrl: discovery.appleMusicUrl || fallback.appleMusicUrl,
       youtubeUrl: discovery.youtubeUrl || fallback.youtubeUrl,
@@ -24776,6 +24801,7 @@ async function lookupMusicBrainzDiscovery(identifier: { type: string; normalized
       title: asString(recording?.title || "").trim() || null,
       artist: artistCreditName(recording),
       artworkUrl,
+      releaseTitle: sanitizeLegacyMetadataText(release?.title, 280),
       releaseDate: asString(release?.date || recording?.["first-release-date"] || "").trim() || null,
       description: release?.title ? `Release: ${asString(release.title).trim()}` : null,
       identifiers: [{ type, value: identifier.displayValue }],
@@ -24798,6 +24824,7 @@ async function lookupMusicBrainzDiscovery(identifier: { type: string; normalized
       title: asString(work?.title || "").trim() || null,
       artist: null,
       artworkUrl: null,
+      releaseTitle: null,
       releaseDate: null,
       description: "Musical work metadata from MusicBrainz.",
       identifiers: [{ type, value: identifier.displayValue }],
@@ -24821,6 +24848,7 @@ async function lookupMusicBrainzDiscovery(identifier: { type: string; normalized
       title: asString(release?.title || "").trim() || null,
       artist: artistCreditName(release),
       artworkUrl,
+      releaseTitle: sanitizeLegacyMetadataText(release?.title, 280),
       releaseDate: asString(release?.date || "").trim() || null,
       description: "Release metadata from MusicBrainz barcode lookup.",
       identifiers: [{ type, value: identifier.displayValue }],
@@ -24837,6 +24865,7 @@ async function lookupMusicBrainzDiscovery(identifier: { type: string; normalized
     title: null,
     artist: null,
     artworkUrl: null,
+    releaseTitle: null,
     releaseDate: null,
     description: `${type} lookup is validated locally. Provider metadata is not available in V1.`,
     identifiers: [{ type, value: identifier.displayValue }],
@@ -24884,6 +24913,16 @@ app.post("/api/connect-work/lookup", { preHandler: requireAuth }, async (req: an
   return reply.send({ identifier: validated.identifier, discovery });
 });
 
+app.get("/api/connect-work/provider-status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const configured = spotifyApiConfigured();
+  return reply.send({
+    spotify: {
+      richMetadata: configured ? "configured" : "fallback_only",
+      configured
+    }
+  });
+});
+
 app.post("/api/connect-work/resolve-url", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const body = (req.body || {}) as { url?: unknown };
   const url = parseConnectWorkUrl(body.url);
@@ -24896,6 +24935,7 @@ app.post("/api/connect-work/resolve-url", { preHandler: requireAuth }, async (re
         title: null,
         artist: null,
         artworkUrl: null,
+        releaseTitle: null,
         releaseDate: null,
         description: "No metadata found for this URL.",
         identifiers: [],
@@ -24920,6 +24960,7 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
     identifiers?: unknown;
     title?: unknown;
     artist?: unknown;
+    releaseTitle?: unknown;
     releaseDate?: unknown;
     artworkUrl?: unknown;
     description?: unknown;
@@ -24949,6 +24990,7 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
   const primaryIdentifier = identifiers[0] || null;
   const title = asString(body.title || "").trim() || (primaryIdentifier ? `${primaryIdentifier.type} ${primaryIdentifier.displayValue}` : "Connected legacy asset");
   const artist = sanitizeLegacyMetadataText(body.artist, 180) || "";
+  const releaseTitle = sanitizeLegacyMetadataText(body.releaseTitle, 280) || "";
   const releaseDate = sanitizeLegacyMetadataText(body.releaseDate, 40) || "";
   const artworkUrl = sanitizeExternalMetadataUrl(body.artworkUrl);
   const spotifyUrl = sanitizeExternalMetadataUrl(body.spotifyUrl);
@@ -24967,6 +25009,7 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
   const provider = sanitizeLegacyMetadataText(body.provider, 80) || "MusicBrainz";
   const descriptionParts = [
     artist ? `Artist: ${artist}` : null,
+    releaseTitle ? `Release: ${releaseTitle}` : null,
     releaseDate ? `Release date: ${releaseDate}` : null,
     externalUrl ? `External URL: ${externalUrl}` : null,
     sanitizeLegacyMetadataText(body.description, 1000) || null
@@ -24982,6 +25025,7 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
         status: "draft" as any,
         assetOrigin: "legacy_import",
         legacyArtist: artist || null,
+        legacyReleaseTitle: releaseTitle || null,
         legacyReleaseDate: releaseDate || null,
         legacyProvider: provider,
         legacyArtworkUrl: artworkUrl,

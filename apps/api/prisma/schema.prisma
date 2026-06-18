@@ -254,6 +254,7 @@ model ContentItem {
   type          ContentType
   assetOrigin   String        @default("native")
   legacyArtist  String?
+  legacyReleaseTitle String?
   legacyReleaseDate String?
   legacyProvider String?
   legacyArtworkUrl String?
