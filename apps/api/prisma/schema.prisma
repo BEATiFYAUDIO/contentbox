@@ -253,6 +253,16 @@ model ContentItem {
   primaryTopic  String?
   type          ContentType
   assetOrigin   String        @default("native")
+  legacyArtist  String?
+  legacyReleaseDate String?
+  legacyProvider String?
+  legacyArtworkUrl String?
+  legacyExternalUrl String?
+  legacySpotifyUrl String?
+  legacyAppleMusicUrl String?
+  legacyYoutubeUrl String?
+  legacyMusicBrainzUrl String?
+  legacyDiscogsUrl String?
   status        ContentStatus @default(draft)
   featureOnProfile Boolean    @default(false)
   storefrontStatus StorefrontStatus @default(DISABLED)

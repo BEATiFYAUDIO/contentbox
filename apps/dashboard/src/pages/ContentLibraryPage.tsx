@@ -70,6 +70,16 @@ type ContentItem = {
   type: ContentType;
   primaryTopic?: PrimaryTopic | null;
   assetOrigin?: "native" | "legacy_import" | string | null;
+  legacyArtist?: string | null;
+  legacyReleaseDate?: string | null;
+  legacyProvider?: string | null;
+  legacyArtworkUrl?: string | null;
+  legacyExternalUrl?: string | null;
+  legacySpotifyUrl?: string | null;
+  legacyAppleMusicUrl?: string | null;
+  legacyYoutubeUrl?: string | null;
+  legacyMusicBrainzUrl?: string | null;
+  legacyDiscogsUrl?: string | null;
   status: "draft" | "published";
   archivedAt?: string | null;
   trashedAt?: string | null;
@@ -3107,13 +3117,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
               const isLegacyAsset = String(it.assetOrigin || "").trim().toLowerCase() === "legacy_import";
               const legacyDescription = String(it.description || "").trim();
-              const legacyArtist =
-                legacyDescription
-                  .split("\n")
-                  .map((line) => line.trim())
-                  .find((line) => /^artist:/i.test(line))
-                  ?.replace(/^artist:\s*/i, "")
-                  .trim() || null;
+              const legacyArtist = String(it.legacyArtist || "").trim() || null;
+              const legacyReleaseDate = String(it.legacyReleaseDate || "").trim() || null;
+              const legacyProvider = String(it.legacyProvider || "").trim() || null;
+              const legacyArtworkUrl = String(it.legacyArtworkUrl || "").trim() || null;
+              const legacyExternalUrl = String(it.legacyExternalUrl || "").trim() || null;
+              const legacyPlatformLinks = [
+                { label: "YouTube", url: String(it.legacyYoutubeUrl || "").trim() },
+                { label: "Spotify", url: String(it.legacySpotifyUrl || "").trim() },
+                { label: "Apple Music", url: String(it.legacyAppleMusicUrl || "").trim() },
+                { label: "Discogs", url: String(it.legacyDiscogsUrl || "").trim() },
+                { label: "MusicBrainz", url: String(it.legacyMusicBrainzUrl || "").trim() }
+              ].filter((link) => Boolean(link.url));
               const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(it.type || ""));
 
               const split = splitByContent[it.id] ?? null;
@@ -3182,9 +3197,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     <div className="min-w-0 flex items-start gap-3">
                       <div className="shrink-0 w-24 h-16 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900/70">
                         {isLegacyAsset ? (
-                          <div className="flex h-full w-full items-center justify-center text-[10px] uppercase tracking-wide text-amber-300">
-                            Legacy
-                          </div>
+                          legacyArtworkUrl ? (
+                            <img
+                              src={legacyArtworkUrl}
+                              alt={`${it.title || "Legacy asset"} artwork`}
+                              className="h-full w-full object-cover"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                const el = e.currentTarget;
+                                const parent = el.parentElement;
+                                if (!parent) return;
+                                parent.innerHTML = `<div class=\"flex h-full w-full items-center justify-center text-[10px] uppercase tracking-wide text-amber-300\">Legacy</div>`;
+                              }}
+                            />
+                          ) : (
+                            <div className="flex h-full w-full items-center justify-center text-[10px] uppercase tracking-wide text-amber-300">
+                              Legacy
+                            </div>
+                          )
                         ) : (
                           <img
                             src={localCoverUrlByContent[it.id] || `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
@@ -3210,7 +3241,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       <div className="text-sm font-medium truncate">{it.title}</div>
                       {isLegacyAsset ? (
                         <div className="text-xs text-neutral-400">
-                          {legacyArtist ? `${legacyArtist} • ` : ""}Connected legacy asset
+                          {[
+                            legacyArtist,
+                            legacyReleaseDate,
+                            "Connected legacy asset"
+                          ].filter(Boolean).join(" • ")}
                         </div>
                       ) : (
                         <div className="text-xs text-neutral-400">
@@ -3220,8 +3255,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </div>
                       )}
                       {isLegacyAsset ? (
-                        <div className="mt-1 inline-flex rounded-full border border-amber-800 bg-amber-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
-                          Connected / Legacy
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <span className="inline-flex rounded-full border border-amber-800 bg-amber-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
+                            Legacy
+                          </span>
+                          {legacyProvider ? (
+                            <span className="inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
+                              {legacyProvider}
+                            </span>
+                          ) : null}
                         </div>
                       ) : null}
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
@@ -3327,6 +3369,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       ? "Show files"
                                       : "Details"}
                               </button>
+
+                              {isLegacyAsset && legacyExternalUrl ? (
+                                <a
+                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 whitespace-nowrap"
+                                  href={legacyExternalUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Open Source
+                                </a>
+                              ) : null}
 
                               {!isLegacyAsset && isOwner && allowUpload ? (
                                 <UploadButton contentId={it.id} disabled={busy} label="Upload" />
@@ -3485,16 +3538,101 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                   {!showTrash && !showTombstones && isOpen && isLegacyAsset && (
                     <div className="border-t border-neutral-800 px-3 py-3">
-                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-sm">
-                        <div className="font-medium text-neutral-200">Connected metadata asset</div>
-                        <div className="mt-1 text-xs text-neutral-400">
-                          This Legacy card was created from an industry identifier. It is private catalog metadata until you attach files or publish through normal Certifyd flows later.
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 text-sm">
+                        <div className="flex flex-col gap-3 md:flex-row">
+                          {legacyArtworkUrl ? (
+                            <img
+                              src={legacyArtworkUrl}
+                              alt={`${it.title || "Legacy asset"} artwork`}
+                              className="h-36 w-36 rounded-lg border border-neutral-800 object-cover"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="flex h-36 w-36 shrink-0 items-center justify-center rounded-lg border border-neutral-800 bg-neutral-900/70 text-[10px] uppercase tracking-wide text-amber-300">
+                              Legacy
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1 space-y-3">
+                            <div>
+                              <div className="font-medium text-neutral-200">{it.title}</div>
+                              <div className="mt-1 text-xs text-neutral-400">
+                                Connected legacy asset. This is private catalog metadata; the Certifyd Asset ID remains the canonical record.
+                              </div>
+                            </div>
+                            <div className="grid gap-2 text-xs text-neutral-300 md:grid-cols-2">
+                              <div>
+                                <span className="text-neutral-500">Artist</span>
+                                <div>{legacyArtist || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Release date</span>
+                                <div>{legacyReleaseDate || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Provider</span>
+                                <div>{legacyProvider || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">External source</span>
+                                <div>
+                                  {legacyExternalUrl ? (
+                                    <a href={legacyExternalUrl} target="_blank" rel="noreferrer" className="break-all text-sky-300 hover:text-sky-200">
+                                      Open Source
+                                    </a>
+                                  ) : (
+                                    "Not provided"
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs font-medium text-neutral-300">Platform links</div>
+                              <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                                {legacyPlatformLinks.length ? (
+                                  legacyPlatformLinks.map((link) => (
+                                    <a
+                                      key={`${link.label}-${link.url}`}
+                                      href={link.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rounded-full border border-neutral-800 px-2 py-1 text-sky-300 hover:bg-neutral-900 hover:text-sky-200"
+                                    >
+                                      {link.label}
+                                    </a>
+                                  ))
+                                ) : (
+                                  <div className="text-neutral-500">No platform links found.</div>
+                                )}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs font-medium text-neutral-300">Identifiers</div>
+                              <div className="mt-2 space-y-2 text-xs">
+                                {externalIdentifierLoading[it.id] && externalIdentifiersByContent[it.id] === undefined ? (
+                                  <div className="text-neutral-500">Loading identifiers…</div>
+                                ) : null}
+                                {(externalIdentifiersByContent[it.id] || []).length ? (
+                                  (externalIdentifiersByContent[it.id] || []).map((identifier) => (
+                                    <div key={identifier.id} className="rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2">
+                                      <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] text-neutral-300">
+                                        {identifier.type}
+                                      </span>{" "}
+                                      <span className="break-all text-neutral-200">{identifier.displayValue || identifier.value}</span>
+                                    </div>
+                                  ))
+                                ) : (
+                                  <div className="text-neutral-500">No identifiers found.</div>
+                                )}
+                              </div>
+                            </div>
+                            {legacyDescription ? (
+                              <pre className="whitespace-pre-wrap rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-300">
+                                {legacyDescription}
+                              </pre>
+                            ) : null}
+                          </div>
                         </div>
-                        {legacyDescription ? (
-                          <pre className="mt-3 whitespace-pre-wrap rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-300">
-                            {legacyDescription}
-                          </pre>
-                        ) : null}
                       </div>
                     </div>
                   )}
