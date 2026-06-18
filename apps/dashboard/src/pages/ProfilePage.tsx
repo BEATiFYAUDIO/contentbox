@@ -12,7 +12,40 @@ type Me = {
   displayName: string | null;
   bio?: string | null;
   avatarUrl?: string | null;
+  profileTheme?: ProfileTheme | null;
   createdAt: string;
+};
+
+type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
+
+type ProfileTheme = {
+  themeWallpaperImageUrl: string | null;
+  themeMode: ProfileThemeMode;
+  themeAccentColor: string;
+  themeBackgroundColor: string;
+  themeCardColor: string;
+  themeBorderColor: string;
+  themeButtonColor: string;
+  themeButtonTextColor: string;
+  themeTextColor: string;
+  themeMutedTextColor: string;
+  themeGeneratedFromImage: boolean;
+  themeUpdatedAt: string | null;
+};
+
+const DEFAULT_PROFILE_THEME: ProfileTheme = {
+  themeWallpaperImageUrl: null,
+  themeMode: "auto",
+  themeAccentColor: "#d4b26a",
+  themeBackgroundColor: "#040506",
+  themeCardColor: "#0a0b0d",
+  themeBorderColor: "#2f2b27",
+  themeButtonColor: "#d4b26a",
+  themeButtonTextColor: "#0b0b0b",
+  themeTextColor: "#f4f2ec",
+  themeMutedTextColor: "#b7afa1",
+  themeGeneratedFromImage: false,
+  themeUpdatedAt: null
 };
 
 type CreatorSignalBreakdown = {
@@ -70,6 +103,11 @@ export default function ProfilePage({
   const [payoutLoading, setPayoutLoading] = useState(false);
   const [avatarUploadMsg, setAvatarUploadMsg] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [profileTheme, setProfileTheme] = useState<ProfileTheme>(me?.profileTheme || DEFAULT_PROFILE_THEME);
+  const [themeMode, setThemeMode] = useState<ProfileThemeMode>((me?.profileTheme?.themeMode as ProfileThemeMode) || "auto");
+  const [themeMsg, setThemeMsg] = useState<string | null>(null);
+  const [themeBusy, setThemeBusy] = useState(false);
+  const [themeAdvancedOpen, setThemeAdvancedOpen] = useState(false);
   const [creatorSignal, setCreatorSignal] = useState<CreatorSignalBreakdown | null>(null);
   const [creatorSignalError, setCreatorSignalError] = useState<string | null>(null);
   const [publicLocationCountry, setPublicLocationCountry] = useState("");
@@ -96,6 +134,26 @@ export default function ProfilePage({
 
   useEffect(() => {
     loadPayoutSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await api<{ theme?: ProfileTheme }>("/api/me/profile-theme", "GET");
+        if (!mounted) return;
+        const nextTheme = res?.theme || me?.profileTheme || DEFAULT_PROFILE_THEME;
+        setProfileTheme(nextTheme);
+        setThemeMode(nextTheme.themeMode || "auto");
+      } catch {
+        if (!mounted) return;
+        setProfileTheme(me?.profileTheme || DEFAULT_PROFILE_THEME);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -211,6 +269,110 @@ export default function ProfilePage({
       setAvatarUploadMsg("Failed to upload profile image.");
     } finally {
       setAvatarUploading(false);
+    }
+  };
+
+  const resolvePublicImageUrl = (raw: string | null | undefined) => {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    const base = apiBase.replace(/\/+$/, "");
+    if (value.startsWith("/public/")) return `${base}${value}`;
+    try {
+      const u = new URL(value);
+      if (u.pathname.startsWith("/public/")) return `${base}${u.pathname}${u.search || ""}`;
+    } catch {}
+    return value;
+  };
+
+  const uploadWallpaper = async (file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/") || file.type.includes("svg")) {
+      setThemeMsg("Choose a PNG, JPG, WebP, or AVIF image.");
+      return;
+    }
+    setThemeBusy(true);
+    setThemeMsg(null);
+    try {
+      const token = getToken();
+      if (!token) {
+        setThemeMsg("Please sign in again before uploading.");
+        return;
+      }
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("mode", themeMode);
+      const res = await fetch(`${apiBase}/api/me/profile-theme/wallpaper/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        setThemeMsg(String(payload?.message || payload?.error || "Failed to upload wallpaper."));
+        return;
+      }
+      const nextTheme = payload?.theme || DEFAULT_PROFILE_THEME;
+      setProfileTheme(nextTheme);
+      setThemeMode(nextTheme.themeMode || themeMode);
+      const refreshed = await api<any>(`/me`, "GET");
+      setMe(refreshed);
+      setThemeMsg("Wallpaper uploaded and theme generated.");
+    } catch {
+      setThemeMsg("Failed to upload wallpaper.");
+    } finally {
+      setThemeBusy(false);
+    }
+  };
+
+  const regenerateTheme = async () => {
+    setThemeBusy(true);
+    setThemeMsg(null);
+    try {
+      const res = await api<{ theme?: ProfileTheme }>("/api/me/profile-theme/generate", "POST", { mode: themeMode });
+      const nextTheme = res?.theme || profileTheme;
+      setProfileTheme(nextTheme);
+      setThemeMsg("Theme regenerated. Save to publish it.");
+    } catch (e: unknown) {
+      setThemeMsg(errorMessage(e, "Failed to regenerate theme."));
+    } finally {
+      setThemeBusy(false);
+    }
+  };
+
+  const saveTheme = async () => {
+    setThemeBusy(true);
+    setThemeMsg(null);
+    try {
+      const res = await api<{ theme?: ProfileTheme }>("/api/me/profile-theme", "PATCH", {
+        theme: { ...profileTheme, themeMode }
+      });
+      const nextTheme = res?.theme || profileTheme;
+      setProfileTheme(nextTheme);
+      const refreshed = await api<any>(`/me`, "GET");
+      setMe(refreshed);
+      setThemeMsg("Profile theme saved.");
+    } catch (e: unknown) {
+      setThemeMsg(errorMessage(e, "Failed to save theme."));
+    } finally {
+      setThemeBusy(false);
+    }
+  };
+
+  const resetTheme = async () => {
+    setThemeBusy(true);
+    setThemeMsg(null);
+    try {
+      const res = await api<{ theme?: ProfileTheme }>("/api/me/profile-theme/reset", "POST");
+      const nextTheme = res?.theme || DEFAULT_PROFILE_THEME;
+      setProfileTheme(nextTheme);
+      setThemeMode(nextTheme.themeMode || "auto");
+      const refreshed = await api<any>(`/me`, "GET");
+      setMe(refreshed);
+      setThemeMsg("Profile theme reset to Certifyd default.");
+    } catch (e: unknown) {
+      setThemeMsg(errorMessage(e, "Failed to reset theme."));
+    } finally {
+      setThemeBusy(false);
     }
   };
 
@@ -540,6 +702,141 @@ export default function ProfilePage({
               {publicLocationMsg ? <div className="mt-2 text-xs text-amber-300">{publicLocationMsg}</div> : null}
             </div>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">Appearance</div>
+              <div className="text-xs text-neutral-500">
+                Upload a public profile wallpaper and generate an accessible color theme automatically.
+              </div>
+            </div>
+            <div className="text-xs rounded-full border border-neutral-800 px-2 py-1 text-neutral-300">
+              {profileTheme.themeGeneratedFromImage ? "Image theme" : "Certifyd default"}
+            </div>
+          </div>
+
+          <div
+            className="mt-3 overflow-hidden rounded-xl border p-4"
+            style={{
+              borderColor: profileTheme.themeBorderColor,
+              background: profileTheme.themeWallpaperImageUrl
+                ? `linear-gradient(90deg, rgba(0,0,0,.78), rgba(0,0,0,.42)), url(${resolvePublicImageUrl(profileTheme.themeWallpaperImageUrl)}) center/cover`
+                : profileTheme.themeBackgroundColor,
+              color: profileTheme.themeTextColor
+            }}
+          >
+            <div className="max-w-xl rounded-lg border p-3" style={{ borderColor: profileTheme.themeBorderColor, background: `${profileTheme.themeCardColor}dd` }}>
+              <div className="text-xs uppercase tracking-wide" style={{ color: profileTheme.themeMutedTextColor }}>
+                Public profile preview
+              </div>
+              <div className="mt-1 text-xl font-semibold">{me?.displayName || "Creator"}</div>
+              <div className="mt-1 text-sm" style={{ color: profileTheme.themeMutedTextColor }}>
+                Trust score, verification cards, works, badges, and buttons keep the current layout with your generated theme.
+              </div>
+              <button
+                type="button"
+                className="mt-3 rounded-lg px-3 py-2 text-sm font-medium"
+                style={{ background: profileTheme.themeButtonColor, color: profileTheme.themeButtonTextColor }}
+              >
+                Preview button
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-neutral-400" htmlFor="profile-theme-mode">
+              Theme mode
+              <select
+                id="profile-theme-mode"
+                value={themeMode}
+                onChange={(e) => setThemeMode(e.target.value as ProfileThemeMode)}
+                className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+              >
+                <option value="auto">Auto</option>
+                <option value="vibrant">Vibrant</option>
+                <option value="dark">Dark</option>
+                <option value="minimal">Minimal</option>
+                <option value="high_contrast">High Contrast</option>
+              </select>
+            </label>
+            <div className="text-xs text-neutral-500 md:self-end">
+              Themes are generated server-side with high-contrast text and button safety checks.
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <label className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 cursor-pointer">
+              {themeBusy ? "Working…" : "Upload/change wallpaper"}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/avif"
+                className="hidden"
+                disabled={themeBusy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) uploadWallpaper(f);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={regenerateTheme}
+              disabled={themeBusy}
+              className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
+            >
+              Regenerate theme
+            </button>
+            <button
+              type="button"
+              onClick={saveTheme}
+              disabled={themeBusy}
+              className="text-xs rounded-lg border border-amber-700 bg-amber-600/15 px-3 py-2 text-amber-100 hover:bg-amber-600/25 disabled:opacity-60"
+            >
+              Save theme
+            </button>
+            <button
+              type="button"
+              onClick={resetTheme}
+              disabled={themeBusy}
+              className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
+            >
+              Reset to Certifyd default
+            </button>
+          </div>
+
+          <details className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/30 p-3" open={themeAdvancedOpen} onToggle={(e) => setThemeAdvancedOpen(e.currentTarget.open)}>
+            <summary className="cursor-pointer text-xs text-neutral-300">Advanced color controls</summary>
+            <div className="mt-3 grid gap-3 md:grid-cols-4">
+              {[
+                ["themeAccentColor", "Accent"],
+                ["themeBackgroundColor", "Background"],
+                ["themeCardColor", "Card"],
+                ["themeBorderColor", "Border"],
+                ["themeButtonColor", "Button"],
+                ["themeButtonTextColor", "Button text"],
+                ["themeTextColor", "Text"],
+                ["themeMutedTextColor", "Muted text"]
+              ].map(([key, label]) => (
+                <label key={key} className="text-xs text-neutral-400">
+                  {label}
+                  <input
+                    type="color"
+                    value={(profileTheme as any)[key] || "#000000"}
+                    onChange={(e) => setProfileTheme((theme) => ({ ...theme, [key]: e.target.value }))}
+                    className="mt-1 h-9 w-full rounded border border-neutral-800 bg-neutral-950"
+                  />
+                </label>
+              ))}
+            </div>
+          </details>
+
+          <div className="mt-2 text-xs text-neutral-500">
+            Wallpaper appears behind the existing profile header with a dark readability overlay. SVG wallpapers are not accepted.
+          </div>
+          {themeMsg ? <div className="mt-2 text-xs text-amber-300">{themeMsg}</div> : null}
         </div>
 
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
