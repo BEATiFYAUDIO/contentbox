@@ -3,6 +3,7 @@ import AuthPage from "./pages/AuthPage";
 import PayoutRailsPage from "./pages/PayoutRailsPage";
 import ContentLibraryPage from "./pages/ContentLibraryPage";
 import SplitsPage from "./pages/SplitsPage";
+import RightsHoldersPage from "./pages/RightsHoldersPage";
 import SplitEditorPage from "./pages/SplitEditorPage";
 import InvitePage from "./pages/InvitePage"; // Ensure this is imported
 import StorePage from "./pages/StorePage";
@@ -235,6 +236,7 @@ export default function App() {
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
   const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
+  const [requestedCatalogAssetOrigin, setRequestedCatalogAssetOrigin] = useState<"native" | "legacy" | null>(null);
   const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(() => {
     try {
       const raw = window.localStorage.getItem("contentbox.identityDetail");
@@ -1286,16 +1288,12 @@ export default function App() {
               {page === "payouts" && !isCommerceLockedPage && <PayoutRailsPage />}
 
               {page === "rights-holders" && !isCommerceLockedPage && (
-                <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-                  <div className="text-lg font-semibold">Rights Holders</div>
-                  <div className="mt-2 max-w-2xl text-sm text-neutral-400">
-                    A standalone registry for people, publishers, labels, organizations, and collecting societies will live here.
-                    Rights-holder records are separate from catalog identifiers, splits, payouts, settlements, and public attribution.
-                  </div>
-                  <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/50 p-4 text-xs text-neutral-500">
-                    Placeholder only. No rights-holder storage or APIs are active yet.
-                  </div>
-                </div>
+                <RightsHoldersPage
+                  onOpenLegacyCatalog={() => {
+                    setRequestedCatalogAssetOrigin("legacy");
+                    setPage("content");
+                  }}
+                />
               )}
 
               {page === "content" && (
@@ -1307,6 +1305,7 @@ export default function App() {
                   capabilityReasons={capabilityReasons}
                   productTier={productTier}
                   currentUserEmail={me?.email || null}
+                  requestedAssetOriginFilter={requestedCatalogAssetOrigin}
                   onOpenSplits={(contentId) => {
                     window.history.pushState({}, "", `/content/${encodeURIComponent(contentId)}/splits`);
                     setSelectedContentId(contentId);

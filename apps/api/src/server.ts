@@ -22562,7 +22562,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const assetOriginWhere =
     requestedAssetOrigin === "legacy"
       ? { assetOrigin: "legacy_import" as const }
-      : { OR: [{ assetOrigin: "native" as const }, { assetOrigin: null as any }] };
+      : { assetOrigin: "native" as const };
   const contentTypeWhere =
     requestedType === "songs"
       ? { type: "song" as const }
@@ -24212,6 +24212,250 @@ function normalizeExternalIdentifierIssuer(value: unknown): string | null {
   if (!issuer) return null;
   return issuer.slice(0, 80);
 }
+
+type ConnectWorkDiscovery = {
+  title: string | null;
+  artist: string | null;
+  artworkUrl: string | null;
+  releaseDate: string | null;
+  description: string | null;
+  identifiers: Array<{ type: string; value: string }>;
+  externalUrl: string | null;
+  provider: string;
+};
+
+function musicBrainzHeaders() {
+  return {
+    Accept: "application/json",
+    "User-Agent": "ContentBox-Certifyd/0.1 (https://certifyd.me)"
+  };
+}
+
+function musicBrainzEntityUrl(entity: string, id: unknown): string | null {
+  const mbid = asString(id || "").trim();
+  if (!mbid) return null;
+  return `https://musicbrainz.org/${entity}/${encodeURIComponent(mbid)}`;
+}
+
+async function fetchMusicBrainzJson(pathname: string): Promise<any | null> {
+  const url = `https://musicbrainz.org/ws/2/${pathname}${pathname.includes("?") ? "&" : "?"}fmt=json`;
+  const res = await fetchWithTimeout(url, { headers: musicBrainzHeaders() as any } as any, 6000);
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+async function lookupMusicBrainzCoverArt(releaseId: string | null): Promise<string | null> {
+  if (!releaseId) return null;
+  try {
+    const res = await fetchWithTimeout(`https://coverartarchive.org/release/${encodeURIComponent(releaseId)}`, {
+      headers: { Accept: "application/json", "User-Agent": "ContentBox-Certifyd/0.1 (https://certifyd.me)" } as any
+    } as any, 6000);
+    if (!res.ok) return null;
+    const data: any = await res.json().catch(() => null);
+    const images = Array.isArray(data?.images) ? data.images : [];
+    const front = images.find((img: any) => Boolean(img?.front)) || images[0] || null;
+    return (
+      asString(front?.thumbnails?.["500"] || "").trim() ||
+      asString(front?.thumbnails?.large || "").trim() ||
+      asString(front?.image || "").trim() ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function firstReleaseFromRecording(recording: any): any | null {
+  const releases = Array.isArray(recording?.releases) ? recording.releases : [];
+  return releases[0] || null;
+}
+
+function artistCreditName(value: any): string | null {
+  const credits = Array.isArray(value?.["artist-credit"]) ? value["artist-credit"] : [];
+  const joined = credits
+    .map((credit: any) => {
+      if (typeof credit === "string") return credit;
+      return asString(credit?.name || credit?.artist?.name || "").trim();
+    })
+    .filter(Boolean)
+    .join("");
+  return joined || null;
+}
+
+async function lookupMusicBrainzDiscovery(identifier: { type: string; normalizedValue: string; displayValue: string }): Promise<ConnectWorkDiscovery> {
+  const type = identifier.type.toUpperCase();
+  const value = identifier.normalizedValue;
+  if (type === "ISRC") {
+    const data = await fetchMusicBrainzJson(`isrc/${encodeURIComponent(value)}?inc=artist-credits+releases+isrcs`);
+    const recordings = Array.isArray(data?.recordings) ? data.recordings : [];
+    const recording = recordings[0] || null;
+    const release = firstReleaseFromRecording(recording);
+    const artworkUrl = await lookupMusicBrainzCoverArt(asString(release?.id || "").trim() || null);
+    return {
+      title: asString(recording?.title || "").trim() || null,
+      artist: artistCreditName(recording),
+      artworkUrl,
+      releaseDate: asString(release?.date || recording?.["first-release-date"] || "").trim() || null,
+      description: release?.title ? `Release: ${asString(release.title).trim()}` : null,
+      identifiers: [{ type, value: identifier.displayValue }],
+      externalUrl: musicBrainzEntityUrl("recording", recording?.id),
+      provider: "MusicBrainz"
+    };
+  }
+  if (type === "ISWC") {
+    const data = await fetchMusicBrainzJson(`iswc/${encodeURIComponent(value)}?inc=artist-rels`);
+    const works = Array.isArray(data?.works) ? data.works : [];
+    const work = works[0] || null;
+    return {
+      title: asString(work?.title || "").trim() || null,
+      artist: null,
+      artworkUrl: null,
+      releaseDate: null,
+      description: "Musical work metadata from MusicBrainz.",
+      identifiers: [{ type, value: identifier.displayValue }],
+      externalUrl: musicBrainzEntityUrl("work", work?.id),
+      provider: "MusicBrainz"
+    };
+  }
+  if (type === "UPC") {
+    const data = await fetchMusicBrainzJson(`release?query=barcode:${encodeURIComponent(value)}&limit=1`);
+    const releases = Array.isArray(data?.releases) ? data.releases : [];
+    const release = releases[0] || null;
+    const artworkUrl = await lookupMusicBrainzCoverArt(asString(release?.id || "").trim() || null);
+    return {
+      title: asString(release?.title || "").trim() || null,
+      artist: artistCreditName(release),
+      artworkUrl,
+      releaseDate: asString(release?.date || "").trim() || null,
+      description: "Release metadata from MusicBrainz barcode lookup.",
+      identifiers: [{ type, value: identifier.displayValue }],
+      externalUrl: musicBrainzEntityUrl("release", release?.id),
+      provider: "MusicBrainz"
+    };
+  }
+  return {
+    title: null,
+    artist: null,
+    artworkUrl: null,
+    releaseDate: null,
+    description: `${type} lookup is validated locally. Provider metadata is not available in V1.`,
+    identifiers: [{ type, value: identifier.displayValue }],
+    externalUrl: null,
+    provider: "MusicBrainz"
+  };
+}
+
+app.post("/api/connect-work/lookup", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body || {}) as { type?: unknown; value?: unknown };
+  const validated = validateAndNormalizeExternalIdentifier({ type: body.type, value: body.value });
+  const lookupType = asString(body.type || "").trim().toUpperCase();
+  const lookupValue = asString(body.value || "").trim();
+  if (!validated.ok && lookupType === "UPC") {
+    const normalizedValue = lookupValue.replace(/[\s-]+/g, "");
+    if (/^\d{12,14}$/.test(normalizedValue)) {
+      const discovery = await lookupMusicBrainzDiscovery({
+        type: "UPC",
+        normalizedValue,
+        displayValue: lookupValue
+      });
+      return reply.send({
+        identifier: {
+          type: "UPC",
+          value: lookupValue,
+          normalizedValue,
+          displayValue: lookupValue
+        },
+        discovery: {
+          ...discovery,
+          description: discovery.title
+            ? discovery.description
+            : "No metadata found for this UPC/barcode in MusicBrainz."
+        }
+      });
+    }
+  }
+  if (!validated.ok) return badRequest(reply, validated.error);
+  const discovery = await lookupMusicBrainzDiscovery(validated.identifier);
+  return reply.send({ identifier: validated.identifier, discovery });
+});
+
+app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body || {}) as {
+    type?: unknown;
+    value?: unknown;
+    title?: unknown;
+    artist?: unknown;
+    releaseDate?: unknown;
+    description?: unknown;
+    externalUrl?: unknown;
+    provider?: unknown;
+  };
+  const validated = validateAndNormalizeExternalIdentifier({ type: body.type, value: body.value });
+  if (!validated.ok) return badRequest(reply, validated.error);
+  const identifier = validated.identifier;
+  const title = asString(body.title || "").trim() || `${identifier.type} ${identifier.displayValue}`;
+  const artist = asString(body.artist || "").trim();
+  const releaseDate = asString(body.releaseDate || "").trim();
+  const externalUrl = asString(body.externalUrl || "").trim();
+  const provider = asString(body.provider || "").trim() || "MusicBrainz";
+  const descriptionParts = [
+    artist ? `Artist: ${artist}` : null,
+    releaseDate ? `Release date: ${releaseDate}` : null,
+    externalUrl ? `External URL: ${externalUrl}` : null,
+    asString(body.description || "").trim() || null
+  ].filter(Boolean);
+  const description = descriptionParts.join("\n");
+
+  const result = await prisma.$transaction(async (tx) => {
+    const content = await tx.contentItem.create({
+      data: {
+        ownerUserId: userId,
+        title,
+        type: "file" as any,
+        status: "draft" as any,
+        assetOrigin: "legacy_import",
+        description: description || null
+      }
+    });
+    const identifierRow = await tx.contentExternalIdentifier.create({
+      data: {
+        contentId: content.id,
+        type: identifier.type,
+        value: identifier.value,
+        normalizedValue: identifier.normalizedValue,
+        displayValue: identifier.displayValue,
+        source: "manual",
+        issuer: provider,
+        publicVisible: false,
+        creatorApprovedAt: new Date()
+      }
+    });
+    await tx.splitVersion.create({
+      data: { contentId: content.id, versionNumber: 1, createdByUserId: userId, status: "draft" as any }
+    });
+    await tx.auditEvent.create({
+      data: {
+        userId,
+        action: "connect_work.create_legacy_asset",
+        entityType: "ContentItem",
+        entityId: content.id,
+        payloadJson: {
+          assetOrigin: "legacy_import",
+          identifier: { type: identifier.type, normalizedValue: identifier.normalizedValue },
+          provider,
+          externalUrl: externalUrl || null
+        } as any
+      }
+    }).catch(() => null);
+    return { content, identifier: identifierRow };
+  });
+
+  return reply.code(201).send({
+    content: result.content,
+    identifier: serializeContentExternalIdentifier(result.identifier)
+  });
+});
 
 app.get("/api/content/:contentId/external-identifiers", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const content = await requireOwnedContentForExternalIdentifiers(req, reply);
