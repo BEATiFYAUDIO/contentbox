@@ -2554,7 +2554,15 @@ export default function ConfigPage({
         <div style={{ marginTop: 14, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 14 }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Metadata Providers</div>
           <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
-            Spotify enrichment is optional. Connect Work still works without it using fallback metadata.
+            Spotify enrichment is optional. Connect Work still works without it using fallback metadata. See{" "}
+            <a href="/docs/spotify-metadata-provider.md" target="_blank" rel="noreferrer" style={{ color: "#7dd3fc" }}>
+              Spotify setup
+            </a>
+            {" "}and{" "}
+            <a href="/docs/connect-work.md" target="_blank" rel="noreferrer" style={{ color: "#7dd3fc" }}>
+              Connect Work docs
+            </a>
+            .
           </div>
           <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
