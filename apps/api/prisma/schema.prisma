@@ -298,12 +298,35 @@ model ContentItem {
   shareLinks    ShareLink[]
   publishEvents PublishEvent[]
   externalIdentifiers ContentExternalIdentifier[]
+  sourceReferences ContentSourceReference[]
 
   @@index([ownerUserId])
   @@index([assetOrigin])
   @@index([previousVersionContentId])
   @@index([repoPath])
   @@index([deletedAt])
+}
+
+model ContentSourceReference {
+  id                  String   @id @default(cuid())
+  contentId           String
+  platform            String
+  sourceUrl           String
+  sourceAccount       String?
+  sourceAccountUrl    String?
+  sourceProofSubject  String?
+  sourceProofRecordId String?
+  sourceVerified      Boolean  @default(false)
+  resolver            String
+  resolvedAt          DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  content ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@index([contentId])
+  @@index([platform, sourceAccount])
+  @@index([sourceProofRecordId])
 }
 
 model ContentExternalIdentifier {

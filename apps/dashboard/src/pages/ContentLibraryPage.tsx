@@ -81,6 +81,18 @@ type ContentItem = {
   legacyYoutubeUrl?: string | null;
   legacyMusicBrainzUrl?: string | null;
   legacyDiscogsUrl?: string | null;
+  sourceReferences?: Array<{
+    id?: string;
+    platform?: string | null;
+    sourceUrl?: string | null;
+    sourceAccount?: string | null;
+    sourceAccountUrl?: string | null;
+    sourceProofSubject?: string | null;
+    sourceProofRecordId?: string | null;
+    sourceVerified?: boolean;
+    resolver?: string | null;
+    resolvedAt?: string | null;
+  }>;
   status: "draft" | "published";
   archivedAt?: string | null;
   trashedAt?: string | null;
@@ -3124,6 +3136,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const legacyProvider = String(it.legacyProvider || "").trim() || null;
               const legacyArtworkUrl = String(it.legacyArtworkUrl || "").trim() || null;
               const legacyExternalUrl = String(it.legacyExternalUrl || "").trim() || null;
+              const legacySourceReference = Array.isArray(it.sourceReferences) ? it.sourceReferences[0] || null : null;
+              const legacySourceVerified = Boolean(legacySourceReference?.sourceVerified);
+              const legacySourceLabel = legacySourceReference?.sourceAccount
+                ? `${legacySourceReference.platform || "source"}:${legacySourceReference.sourceAccount}`
+                : null;
               const legacyPlatformLinks = [
                 { label: "YouTube", url: String(it.legacyYoutubeUrl || "").trim() },
                 { label: "Spotify", url: String(it.legacySpotifyUrl || "").trim() },
@@ -3261,6 +3278,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="mt-1 flex flex-wrap gap-1">
                           <span className="inline-flex rounded-full border border-amber-800 bg-amber-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
                             Legacy
+                          </span>
+                          <span className={[
+                            "inline-flex rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                            legacySourceVerified
+                              ? "border-emerald-800 bg-emerald-950/40 text-emerald-200"
+                              : "border-neutral-700 bg-neutral-900 text-neutral-300"
+                          ].join(" ")}>
+                            {legacySourceVerified ? "Source account verified" : "Source not verified"}
                           </span>
                           {legacyProvider ? (
                             <span className="inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
@@ -3579,6 +3604,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <div>
                                 <span className="text-neutral-500">Provider</span>
                                 <div>{legacyProvider || "Not provided"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Source proof</span>
+                                <div>
+                                  {legacySourceVerified ? "Source account verified" : "Source not verified"}
+                                  {legacySourceLabel ? ` · ${legacySourceLabel}` : ""}
+                                </div>
                               </div>
                               <div>
                                 <span className="text-neutral-500">External source</span>

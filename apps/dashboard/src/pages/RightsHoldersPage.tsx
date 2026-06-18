@@ -20,6 +20,12 @@ type Discovery = {
   musicBrainzUrl?: string | null;
   discogsUrl?: string | null;
   provider?: string | null;
+  sourcePlatform?: string | null;
+  sourceAccount?: string | null;
+  sourceAccountUrl?: string | null;
+  sourceProofSubject?: string | null;
+  sourceVerified?: boolean;
+  sourceProofRecordId?: string | null;
 };
 
 type LookupResponse = {
@@ -87,7 +93,7 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
         : await api<LookupResponse>("/api/connect-work/lookup", "POST", { type, value: nextValue });
       setLookup(result);
       if (!result.discovery?.title) {
-        setMessage(mode === "url" ? "No rich metadata was found, but you can still connect the URL as a Legacy asset." : "Identifier validated. No rich metadata was found, but you can still connect the work.");
+        setMessage(mode === "url" ? "No rich metadata was found. Source verification is still required before adding this to Legacy." : "Identifier validated. Source verification is required before adding this to Legacy.");
       }
     } catch (err: any) {
       setError(String(err?.message || "Discovery failed."));
@@ -120,6 +126,9 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
         youtubeUrl: discovery.youtubeUrl || null,
         musicBrainzUrl: discovery.musicBrainzUrl || null,
         discogsUrl: discovery.discogsUrl || null,
+        sourcePlatform: discovery.sourcePlatform || null,
+        sourceAccount: discovery.sourceAccount || null,
+        sourceAccountUrl: discovery.sourceAccountUrl || null,
         provider: discovery.provider || "MusicBrainz"
       });
       setMessage(`Connected legacy asset: ${result.content?.title || "Untitled work"}`);
@@ -132,6 +141,7 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
   }
 
   const discovery = lookup?.discovery || null;
+  const sourceVerified = Boolean(discovery?.sourceVerified);
 
   return (
     <div className="space-y-4">
@@ -235,11 +245,27 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
               <button
                 type="button"
                 onClick={connectWork}
-                disabled={connecting}
+                disabled={connecting || !sourceVerified}
                 className="rounded-lg border border-orange-900 bg-orange-600 px-3 py-2 text-sm font-medium text-black hover:bg-orange-500 disabled:opacity-60"
+                title={!sourceVerified ? "Verify this source account before adding it to your Legacy catalog." : undefined}
               >
                 {connecting ? "Connecting…" : "Connect"}
               </button>
+            </div>
+            <div className={["mb-4 rounded-lg border px-3 py-2 text-xs", sourceVerified ? "border-emerald-900 bg-emerald-950/25 text-emerald-200" : "border-amber-900 bg-amber-950/25 text-amber-200"].join(" ")}>
+              <div className="font-medium">{sourceVerified ? "Source account verified" : "Source account not verified"}</div>
+              {discovery.sourceAccountUrl ? (
+                <a className="mt-1 inline-block break-all text-sky-300 hover:text-sky-200" href={discovery.sourceAccountUrl} target="_blank" rel="noreferrer">
+                  {discovery.sourceAccountUrl}
+                </a>
+              ) : null}
+              {!sourceVerified ? (
+                <div className="mt-1">
+                  You can preview this metadata, but you must verify the source account before adding it to your Legacy catalog.
+                </div>
+              ) : (
+                <div className="mt-1">Connected from verified source. This proves source account control, not rights ownership.</div>
+              )}
             </div>
             <div className="flex flex-col gap-4 md:flex-row">
               <div className="h-32 w-32 shrink-0 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/70">
