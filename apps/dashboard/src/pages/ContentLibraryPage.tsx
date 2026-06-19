@@ -3150,8 +3150,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const proofBundleType = String(it.proofBundleType || "").trim().toLowerCase();
               const publicationManifestSha256 = String(it.publicationManifestSha256 || "").trim() || null;
               const publicationHashShort = publicationManifestSha256 ? shortSha(publicationManifestSha256, 16) : null;
-              const legacySourceReference = Array.isArray(it.sourceReferences) ? it.sourceReferences[0] || null : null;
-              const legacySourceVerified = Boolean(legacySourceReference?.sourceVerified);
+              const legacySourceReferences = Array.isArray(it.sourceReferences) ? it.sourceReferences : [];
+              const legacyVerifiedSourceReference =
+                legacySourceReferences.find((ref) => Boolean(ref?.sourceVerified)) || null;
+              const legacySourceReference = legacyVerifiedSourceReference || legacySourceReferences[0] || null;
+              const legacySourceVerified = Boolean(legacyVerifiedSourceReference);
+              const legacySourceVerifiedLabel =
+                legacySourceVerified && String(legacyVerifiedSourceReference?.platform || "").trim().toLowerCase() === "youtube"
+                  ? "YouTube Verified"
+                  : legacySourceVerified
+                    ? "Source Verified"
+                    : "Source not verified";
               const legacySourceLabel = legacySourceReference?.sourceAccount
                 ? `${legacySourceReference.platform || "source"}:${legacySourceReference.sourceAccount}`
                 : null;
@@ -3304,7 +3313,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ? "border-emerald-800 bg-emerald-950/40 text-emerald-200"
                               : "border-neutral-700 bg-neutral-900 text-neutral-300"
                           ].join(" ")}>
-                            {legacySourceVerified ? "Source account verified" : "Source not verified"}
+                            {legacySourceVerifiedLabel}
                           </span>
                           {legacyProvider ? (
                             <span className="inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
@@ -3642,7 +3651,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <div>
                                 <span className="text-neutral-500">Source proof</span>
                                 <div>
-                                  {legacySourceVerified ? "Source account verified" : "Source not verified"}
+                                  {legacySourceVerifiedLabel}
                                   {legacySourceLabel ? ` · ${legacySourceLabel}` : ""}
                                 </div>
                               </div>
