@@ -76,14 +76,7 @@ export default function VerificationProofsCard({ witness }: Props) {
   const [showNostrBuilder, setShowNostrBuilder] = useState(false);
 
   const canUseProofs = state === "ready" || state === "registeredMissingLocalKey";
-  const socialEnabled =
-    socialProvider === "github" ||
-    socialProvider === "youtube" ||
-    socialProvider === "tiktok" ||
-    socialProvider === "rumble" ||
-    socialProvider === "reddit" ||
-    socialProvider === "substack" ||
-    socialProvider === "hyperfollow";
+  const socialEnabled = socialProvider === "github" || socialProvider === "youtube" || socialProvider === "tiktok" || socialProvider === "rumble" || socialProvider === "reddit" || socialProvider === "substack";
   const youtubeBadAccountUrl = socialProvider === "youtube" && looksLikeYouTubeNonChannelUrl(socialAccountInput);
   const youtubeBadLocationUrl = socialProvider === "youtube" && looksLikeYouTubeNonChannelUrl(socialLocation);
   const tiktokBadAccountUrl = socialProvider === "tiktok" && looksLikeTiktokNonProfileUrl(socialAccountInput);
@@ -344,7 +337,6 @@ export default function VerificationProofsCard({ witness }: Props) {
                 <option value="youtube">YouTube</option>
                 <option value="tiktok">TikTok</option>
                 <option value="rumble">Rumble</option>
-                <option value="hyperfollow">Hyperfollow</option>
                 <option value="reddit">Reddit</option>
                 <option value="substack">Substack</option>
                 <option value="x">X (coming soon)</option>
@@ -358,17 +350,15 @@ export default function VerificationProofsCard({ witness }: Props) {
                     ? "github username"
                     : socialProvider === "youtube"
                       ? "Paste your YouTube channel URL (example: https://www.youtube.com/@yourhandle)"
-                      : socialProvider === "tiktok"
-                        ? "Paste your TikTok profile URL (example: https://www.tiktok.com/@yourhandle)"
-                        : socialProvider === "rumble"
-                          ? "Paste your Rumble profile URL (example: https://rumble.com/c/yourhandle)"
-                          : socialProvider === "hyperfollow"
-                            ? "Paste your Hyperfollow URL (example: https://distrokid.com/hyperfollow/yourname/release)"
+                        : socialProvider === "tiktok"
+                          ? "Paste your TikTok profile URL (example: https://www.tiktok.com/@yourhandle)"
+                          : socialProvider === "rumble"
+                            ? "Paste your Rumble profile URL (example: https://rumble.com/c/yourhandle)"
                             : socialProvider === "reddit"
                               ? "Paste your Reddit profile URL (example: https://www.reddit.com/user/yourname)"
                               : socialProvider === "substack"
                                 ? "Paste your Substack URL (example: https://yourpublication.substack.com)"
-                                : "x username"
+                      : "x username"
                 }
                 className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-600"
               />
@@ -405,8 +395,6 @@ export default function VerificationProofsCard({ witness }: Props) {
                             ? "Enter a TikTok profile URL first."
                             : socialProvider === "rumble"
                               ? "Enter a Rumble profile URL first."
-                              : socialProvider === "hyperfollow"
-                                ? "Enter a Hyperfollow URL first."
                               : socialProvider === "reddit"
                                 ? "Enter a Reddit profile URL first."
                                 : socialProvider === "substack"
@@ -460,10 +448,6 @@ export default function VerificationProofsCard({ witness }: Props) {
                   <div className="mt-2 text-xs text-neutral-500">
                     For Rumble MVP, place this text in your public channel description, then paste your public channel URL below.
                   </div>
-                ) : socialProvider === "hyperfollow" ? (
-                  <div className="mt-2 text-xs text-neutral-500">
-                    For Hyperfollow MVP, place this text on your public Hyperfollow page, then paste your Hyperfollow release or artist URL below.
-                  </div>
                 ) : socialProvider === "reddit" ? (
                   <div className="mt-2 text-xs text-neutral-500">
                     For Reddit MVP, place this text in your public user profile About section, then paste your profile URL below.
@@ -491,11 +475,9 @@ export default function VerificationProofsCard({ witness }: Props) {
                         ? "Paste your TikTok profile URL (example: https://www.tiktok.com/@yourhandle)"
                         : socialProvider === "rumble"
                           ? "Paste your Rumble profile URL (example: https://rumble.com/c/yourhandle)"
-                          : socialProvider === "hyperfollow"
-                            ? "Paste your Hyperfollow URL (example: https://distrokid.com/hyperfollow/yourname/release)"
-                            : socialProvider === "reddit"
-                              ? "Paste your Reddit profile URL (example: https://www.reddit.com/user/yourname)"
-                              : socialProvider === "substack"
+                          : socialProvider === "reddit"
+                            ? "Paste your Reddit profile URL (example: https://www.reddit.com/user/yourname)"
+                            : socialProvider === "substack"
                               ? "Paste your Substack URL (example: https://yourpublication.substack.com)"
                     : "https://x.com/<user>/status/<id>"
               }
@@ -515,8 +497,6 @@ export default function VerificationProofsCard({ witness }: Props) {
                           ? "Enter profile URL and public TikTok URL first."
                           : socialProvider === "rumble"
                             ? "Enter profile URL and public Rumble URL first."
-                            : socialProvider === "hyperfollow"
-                              ? "Enter Hyperfollow URL and public Hyperfollow URL first."
                             : socialProvider === "reddit"
                               ? "Enter profile URL and public Reddit URL first."
                               : socialProvider === "substack"
@@ -557,7 +537,7 @@ export default function VerificationProofsCard({ witness }: Props) {
                             const idx = subjectRaw.indexOf(":");
                             const provider = String(claim?.provider || (idx > 0 ? subjectRaw.slice(0, idx) : "") || "").toLowerCase();
                             const account = String(claim?.account || claim?.username || (idx > 0 ? subjectRaw.slice(idx + 1) : subjectRaw) || "");
-                            const providerLabel = provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "hyperfollow" ? "Hyperfollow" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : "Social";
+                            const providerLabel = provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : "Social";
                             const displayAccount = (provider === "instagram" || provider === "tiktok") && account && !account.startsWith("@") ? `@${account}` : account;
                             return `${providerLabel}: ${displayAccount}`;
                           })()}
