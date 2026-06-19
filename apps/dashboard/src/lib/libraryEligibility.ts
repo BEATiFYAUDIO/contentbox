@@ -11,7 +11,6 @@ export type LibraryExclusionReason =
   | "revoked"
   | "orphaned"
   | "inactive"
-  | "unproven"
   | "relation_invalid";
 
 type ContentLike = {
@@ -26,10 +25,6 @@ type ContentLike = {
   trashedAt?: string | null;
   deletedAt?: string | null;
   tombstonedAt?: string | null;
-  assetOrigin?: string | null;
-  proofBundleType?: string | null;
-  publicationManifestSha256?: string | null;
-  manifest?: { sha256?: string | null } | null;
 };
 
 type ParticipationLike = {
@@ -79,23 +74,6 @@ function isAcceptedParticipation(participation: ParticipationLike | null | undef
   const status = normalizeStatus(participation.status);
   if (status === "accepted" || status === "bound" || status === "locked") return true;
   return hasValue(participation.acceptedAt) || hasValue(participation.verifiedAt);
-}
-
-function hasMediaProofBundle(content: ContentLike | null | undefined): boolean {
-  if (!content) return false;
-  const assetOrigin = normalizeStatus(content.assetOrigin || "native");
-  if (assetOrigin === "legacy_import") return false;
-  const proofBundleType = normalizeStatus(content.proofBundleType);
-  return Boolean(hasValue(content.manifest?.sha256) && (!proofBundleType || proofBundleType === "media"));
-}
-
-function hasPublicationProofBundle(content: ContentLike | null | undefined): boolean {
-  if (!content) return false;
-  return (
-    normalizeStatus(content.assetOrigin) === "legacy_import" &&
-    normalizeStatus(content.proofBundleType) === "publication" &&
-    hasValue(content.publicationManifestSha256)
-  );
 }
 
 export function getContentExclusionReason(content: ContentLike | null | undefined): LibraryExclusionReason | null {
@@ -194,33 +172,18 @@ export function classifyLibraryEligibility(input: {
   const previewEligible = access === "preview";
   const participantCheck = isEligibleSplitParticipation(input.participation);
   const participantEligible = participantCheck.eligible;
-  const mediaProof = hasMediaProofBundle(item);
-  const publicationProof = hasPublicationProofBundle(item);
 
-  if (ownerEligible) {
-    if (mediaProof || publicationProof) return { section: "owned", included: true };
-    return { section: "excluded", included: false, reason: "unproven" };
-  }
-  if (purchasedEligible) {
-    if (mediaProof) return { section: "purchased", included: true };
-    return { section: "excluded", included: false, reason: "unproven" };
-  }
-  if (participantEligible) {
-    if (mediaProof) return { section: "participant", included: true };
-    return { section: "excluded", included: false, reason: "unproven" };
-  }
+  if (ownerEligible) return { section: "owned", included: true };
+  if (purchasedEligible) return { section: "purchased", included: true };
+  if (participantEligible) return { section: "participant", included: true };
   if ((access === "participant" || access === "shared") && !input.participation) {
     // Server-authoritative participant access (for example, parent-shareholder derivative visibility).
-    if (mediaProof) return { section: "participant", included: true };
-    return { section: "excluded", included: false, reason: "unproven" };
+    return { section: "participant", included: true };
   }
   if ((access === "participant" || access === "shared") && !participantEligible) {
     return { section: "excluded", included: false, reason: participantCheck.reason || "relation_invalid" };
   }
-  if (previewEligible) {
-    if (mediaProof) return { section: "preview", included: true };
-    return { section: "excluded", included: false, reason: "unproven" };
-  }
+  if (previewEligible) return { section: "preview", included: true };
   return { section: "excluded", included: false, reason: "relation_invalid" };
 }
 

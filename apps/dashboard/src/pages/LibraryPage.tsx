@@ -73,6 +73,18 @@ type LibraryItem = {
   assetOrigin?: "native" | "legacy_import" | string | null;
   proofBundleType?: "media" | "publication" | "none" | string | null;
   publicationManifestSha256?: string | null;
+  legacyArtist?: string | null;
+  legacyArtworkUrl?: string | null;
+  legacyExternalUrl?: string | null;
+  legacyYoutubeUrl?: string | null;
+  legacySpotifyUrl?: string | null;
+  legacyAppleMusicUrl?: string | null;
+  sourceReferences?: Array<{
+    platform?: string | null;
+    sourceVerified?: boolean | null;
+    sourceAccount?: string | null;
+    sourceUrl?: string | null;
+  }>;
   featureOnProfile?: boolean;
   _count?: { files: number };
 };
@@ -692,6 +704,7 @@ function applyLibraryFilters(
 export default function LibraryPage() {
   const apiBase = getApiBase();
   const [items, setItems] = React.useState<NormalizedLibraryItem[]>([]);
+  const [legacyWorks, setLegacyWorks] = React.useState<LibraryItem[]>([]);
   const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
   const [derivativeApprovalByChildId, setDerivativeApprovalByChildId] = React.useState<Record<string, DerivativeApprovalRow>>({});
   const [ownedSplitSummaryByContentId, setOwnedSplitSummaryByContentId] = React.useState<Record<string, SplitVersionSummary>>({});
@@ -791,8 +804,19 @@ export default function LibraryPage() {
           if (parentContentId) derivativeParentContentIds.add(parentContentId);
         }
 
-        const authoredRows = [...(Array.isArray(mine) ? mine : []), ...(Array.isArray(mineLegacy) ? mineLegacy : [])];
-        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? [...lib, ...authoredRows] : authoredRows;
+        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? [...lib, ...(Array.isArray(mine) ? mine : [])] : mine;
+        const nextLegacyWorks = (Array.isArray(mineLegacy) ? mineLegacy : []).filter((item) => {
+          const sourceReferences = Array.isArray(item.sourceReferences) ? item.sourceReferences : [];
+          return (
+            String(item.assetOrigin || "").trim().toLowerCase() === "legacy_import" &&
+            String(item.status || "").trim().toLowerCase() === "published" &&
+            !item.deletedAt &&
+            String(item.proofBundleType || "").trim().toLowerCase() === "publication" &&
+            Boolean(String(item.publicationManifestSha256 || "").trim()) &&
+            sourceReferences.some((source) => Boolean(source?.sourceVerified))
+          );
+        });
+        setLegacyWorks(nextLegacyWorks);
         const baseList = normalize(baseListRaw || []);
         const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
         const participationByContentId = new Map<string, LibraryParticipation>();
@@ -1552,6 +1576,12 @@ export default function LibraryPage() {
     };
   })();
 
+  const legacyWorksForView = legacyWorks.filter((item) => {
+    const relationshipOk = libraryRelationshipFilter === "all" || libraryRelationshipFilter === "authored_work";
+    const typeOk = libraryTypeFilter === "all" || mapContentType(item.type) === libraryTypeFilter;
+    return relationshipOk && typeOk;
+  });
+
   async function loadPreview(contentId: string) {
     setPreviewLoading((m) => ({ ...m, [contentId]: true }));
     setPreviewError((m) => ({ ...m, [contentId]: "" }));
@@ -1682,6 +1712,12 @@ function formatDateLabel(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
+function shortHash(value?: string | null, length = 16) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.length <= length ? raw : `${raw.slice(0, length)}…`;
 }
 
 function normalizeAssetUrl(
@@ -1987,7 +2023,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
 
       {msg ? <div className="text-sm text-red-300">{msg}</div> : null}
 
-      {items.length === 0 ? (
+      {items.length === 0 && legacyWorksForView.length === 0 ? (
         <div className="text-sm text-neutral-400">No items yet.</div>
       ) : (
         <div className="space-y-6">
@@ -2048,13 +2084,6 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       String(preview?.manifest?.sha256 || "").trim() ||
                       String(it.updatedAt || "").trim() ||
                       String(it.createdAt || "").trim();
-                    const assetOrigin = String(it.assetOrigin || "native").trim().toLowerCase();
-                    const proofBundleType = String(it.proofBundleType || "").trim().toLowerCase();
-                    const hasMediaHash = assetOrigin !== "legacy_import" && Boolean(String(it.manifest?.sha256 || "").trim());
-                    const hasPublicationHash =
-                      assetOrigin === "legacy_import" &&
-                      proofBundleType === "publication" &&
-                      Boolean(String(it.publicationManifestSha256 || "").trim());
                     const remoteAssetOrigin =
                       (participationInfo?.kind === "remote"
                         ? participationInfo.remoteOrigin
@@ -2365,15 +2394,6 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             {hasDiscoveryBadge ? (
                               <span className="inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium border-amber-600/40 bg-amber-500/10 text-amber-200">
                                 Live on Discovery
-                              </span>
-                            ) : null}
-                            {hasPublicationHash ? (
-                              <span className="inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium border-purple-600/40 bg-purple-500/10 text-purple-200">
-                                Proven Legacy Work
-                              </span>
-                            ) : hasMediaHash ? (
-                              <span className="inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium border-emerald-600/40 bg-emerald-500/10 text-emerald-300">
-                                Certified Work
                               </span>
                             ) : null}
                             {showRightsBadge ? (
@@ -2700,11 +2720,107 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                         </div>
                       </div>
                     );
-                  })}
-                </div>
+	                  })}
+	                </div>
+	              </div>
+	            );
+	          })}
+          {legacyWorksForView.length ? (
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">Legacy Works</div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {legacyWorksForView.map((item) => {
+                  const sourceReferences = Array.isArray(item.sourceReferences) ? item.sourceReferences : [];
+                  const verifiedSource = sourceReferences.find((source) => Boolean(source?.sourceVerified)) || null;
+                  const sourcePlatform = String(verifiedSource?.platform || "").trim().toLowerCase();
+                  const sourceLabel = sourcePlatform === "youtube" ? "YouTube Verified" : "Source Verified";
+                  const artworkUrl = String(item.legacyArtworkUrl || item.artworkUrl || "").trim();
+                  const artist = String(item.legacyArtist || item.owner?.displayName || item.owner?.email || "").trim();
+                  const publicationHash = String(item.publicationManifestSha256 || "").trim();
+                  const sourceUrl = String(
+                    item.legacyExternalUrl ||
+                      item.legacyYoutubeUrl ||
+                      item.legacySpotifyUrl ||
+                      item.legacyAppleMusicUrl ||
+                      verifiedSource?.sourceUrl ||
+                      ""
+                  ).trim();
+
+                  return (
+                    <div
+                      key={`legacy:${item.id}`}
+                      className="rounded-xl border border-purple-700/40 bg-purple-950/10 p-3 flex flex-col gap-3"
+                    >
+                      <div className="w-full aspect-[4/3] rounded-md border border-purple-900/50 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
+                        {artworkUrl ? (
+                          <img
+                            className="w-full h-full object-cover object-center"
+                            src={artworkUrl}
+                            alt={`${item.title || "Legacy work"} artwork`}
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gradient-to-br from-purple-950 via-neutral-950 to-black flex items-end">
+                            <div className="w-full px-3 py-2 border-t border-purple-900/50 bg-black/45">
+                              <div className="text-[11px] uppercase tracking-wide text-purple-300">Legacy</div>
+                              <div className="text-sm font-medium text-neutral-200 truncate">{item.title || "Untitled"}</div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-2">
+                        <div>
+                          <div className="text-sm font-medium">{item.title || "Untitled legacy work"}</div>
+                          {artist ? <div className="mt-1 text-xs text-neutral-400">{artist}</div> : null}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex rounded-full border border-purple-600/40 bg-purple-500/10 px-2 py-0.5 text-[11px] font-medium text-purple-200">
+                            Proven Legacy Work
+                          </span>
+                          <span className="inline-flex rounded-full border border-sky-600/40 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-200">
+                            Publication Manifest
+                          </span>
+                          <span className="inline-flex rounded-full border border-emerald-600/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+                            {sourceLabel}
+                          </span>
+                        </div>
+
+                        {publicationHash ? (
+                          <div className="text-[11px] text-purple-200">
+                            Publication Hash: <span className="font-mono">{shortHash(publicationHash)}</span>
+                          </div>
+                        ) : null}
+
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {sourceUrl ? (
+                            <a
+                              className="text-xs rounded border border-purple-700/60 px-2 py-1 text-purple-100 hover:bg-purple-500/10"
+                              href={sourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open Source
+                            </a>
+                          ) : null}
+                          <details className="text-xs rounded border border-neutral-800 px-2 py-1 text-neutral-300">
+                            <summary className="cursor-pointer select-none">Details</summary>
+                            <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
+                              <div>ID: <span className="font-mono">{item.id}</span></div>
+                              {publicationHash ? <div>Publication Hash: <span className="font-mono">{publicationHash}</span></div> : null}
+                              {verifiedSource?.sourceAccount ? <div>Source: {verifiedSource.sourceAccount}</div> : null}
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
+            </div>
+          ) : null}
         </div>
       )}
 
