@@ -70,6 +70,9 @@ type LibraryItem = {
   originTrust?: "stable" | "ephemeral" | "provider" | null;
   originHealth?: "healthy" | "failed" | "cooldown" | "unknown" | null;
   manifest?: { sha256?: string | null } | null;
+  assetOrigin?: "native" | "legacy_import" | string | null;
+  proofBundleType?: "media" | "publication" | "none" | string | null;
+  publicationManifestSha256?: string | null;
   featureOnProfile?: boolean;
   _count?: { files: number };
 };
@@ -731,9 +734,19 @@ export default function LibraryPage() {
             return cached.length > 0 ? cached : normalizedRows;
           })
           .catch(() => readCachedRemoteParticipations(apiBase));
-        const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes, entitlementsRes, derivativeApprovalsRes] = await Promise.all([
+        const [
+          lib,
+          mine,
+          mineLegacy,
+          localParticipationsRes,
+          remoteParticipationsRes,
+          royaltiesRes,
+          entitlementsRes,
+          derivativeApprovalsRes
+        ] = await Promise.all([
           api<LibraryItem[]>(`/content?scope=library`, "GET").catch(() => []),
           api<LibraryItem[]>(`/content?scope=mine`, "GET").catch(() => []),
+          api<LibraryItem[]>(`/content?scope=mine&assetOrigin=legacy`, "GET").catch(() => []),
           api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
           remoteParticipationsPromise,
           api<{ upstreamIncome?: Array<{ parentContentId?: string | null; childContentId?: string | null }> }>("/my/royalties", "GET").catch(() => null),
@@ -778,7 +791,8 @@ export default function LibraryPage() {
           if (parentContentId) derivativeParentContentIds.add(parentContentId);
         }
 
-        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? lib : mine;
+        const authoredRows = [...(Array.isArray(mine) ? mine : []), ...(Array.isArray(mineLegacy) ? mineLegacy : [])];
+        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? [...lib, ...authoredRows] : authoredRows;
         const baseList = normalize(baseListRaw || []);
         const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
         const participationByContentId = new Map<string, LibraryParticipation>();
@@ -2034,6 +2048,13 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       String(preview?.manifest?.sha256 || "").trim() ||
                       String(it.updatedAt || "").trim() ||
                       String(it.createdAt || "").trim();
+                    const assetOrigin = String(it.assetOrigin || "native").trim().toLowerCase();
+                    const proofBundleType = String(it.proofBundleType || "").trim().toLowerCase();
+                    const hasMediaHash = assetOrigin !== "legacy_import" && Boolean(String(it.manifest?.sha256 || "").trim());
+                    const hasPublicationHash =
+                      assetOrigin === "legacy_import" &&
+                      proofBundleType === "publication" &&
+                      Boolean(String(it.publicationManifestSha256 || "").trim());
                     const remoteAssetOrigin =
                       (participationInfo?.kind === "remote"
                         ? participationInfo.remoteOrigin
@@ -2344,6 +2365,15 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             {hasDiscoveryBadge ? (
                               <span className="inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium border-amber-600/40 bg-amber-500/10 text-amber-200">
                                 Live on Discovery
+                              </span>
+                            ) : null}
+                            {hasPublicationHash ? (
+                              <span className="inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium border-purple-600/40 bg-purple-500/10 text-purple-200">
+                                Proven Legacy Work
+                              </span>
+                            ) : hasMediaHash ? (
+                              <span className="inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium border-emerald-600/40 bg-emerald-500/10 text-emerald-300">
+                                Certified Work
                               </span>
                             ) : null}
                             {showRightsBadge ? (
