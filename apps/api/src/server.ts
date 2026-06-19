@@ -11713,6 +11713,52 @@ function userToProfileTheme(user: any): ProfileTheme {
   };
 }
 
+function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: string; wallpaperUrl: string } {
+  const theme = userToProfileTheme(user);
+  const wallpaperUrl =
+    theme.themeWallpaperImageUrl && theme.themeWallpaperImageUrl.startsWith("/public/profile-wallpapers/")
+      ? escHtml(theme.themeWallpaperImageUrl)
+      : "";
+  const cardAlpha = theme.themeCardStrength === "light" ? 0.16 : theme.themeCardStrength === "strong" ? 0.30 : 0.22;
+  const cardStrongAlpha = theme.themeCardStrength === "light" ? 0.22 : theme.themeCardStrength === "strong" ? 0.40 : 0.28;
+  const mobileCardAlpha = theme.themeCardStrength === "light" ? 0.24 : theme.themeCardStrength === "strong" ? 0.42 : 0.32;
+  const mobileCardStrongAlpha = theme.themeCardStrength === "light" ? 0.30 : theme.themeCardStrength === "strong" ? 0.50 : 0.38;
+  const overlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.24 : theme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
+  const mobileOverlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.34 : theme.themeOverlayStrength === "darker" ? 0.56 : 0.44;
+  const buttonBackground =
+    theme.themeButtonStyle === "filled"
+      ? theme.themeResolvedAccentColor
+      : theme.themeButtonStyle === "outline"
+        ? "rgba(255,255,255,0.025)"
+        : "rgba(255,255,255,0.065)";
+  const buttonText = theme.themeButtonStyle === "filled" ? readableTextFor(theme.themeResolvedAccentColor) : theme.themeTextColor;
+  const css = [
+    `--theme-accent:${theme.themeResolvedAccentColor}`,
+    `--theme-bg:${theme.themeBackgroundColor}`,
+    `--theme-card:${theme.themeCardColor}`,
+    `--theme-border:${theme.themeBorderColor}`,
+    `--theme-button:${theme.themeButtonColor}`,
+    `--theme-button-text:${buttonText}`,
+    `--theme-text:${theme.themeTextColor}`,
+    `--theme-muted:${theme.themeMutedTextColor}`,
+    `--profile-bg-overlay:rgba(0,0,0,${overlayAlpha})`,
+    `--profile-card-bg:rgba(10,10,10,${cardAlpha})`,
+    `--profile-card-bg-strong:rgba(18,18,18,${cardStrongAlpha})`,
+    `--profile-card-bg-mobile:rgba(10,10,10,${mobileCardAlpha})`,
+    `--profile-card-bg-mobile-strong:rgba(18,18,18,${mobileCardStrongAlpha})`,
+    `--profile-bg-overlay-mobile:rgba(0,0,0,${mobileOverlayAlpha})`,
+    `--profile-card-border:color-mix(in srgb, ${theme.themeBorderColor} 78%, transparent)`,
+    `--profile-card-blur:blur(20px) saturate(125%)`,
+    `--profile-accent:${theme.themeResolvedAccentColor}`,
+    `--profile-accent-soft:color-mix(in srgb, ${theme.themeResolvedAccentColor} 18%, transparent)`,
+    `--profile-button-bg:${buttonBackground}`,
+    `--profile-button-border:color-mix(in srgb, ${theme.themeResolvedAccentColor} 70%, transparent)`,
+    `--profile-text:${theme.themeTextColor}`,
+    `--profile-muted:${theme.themeMutedTextColor}`
+  ].join(";");
+  return { theme, css, wallpaperUrl };
+}
+
 async function storeWallpaperBufferForUser(userId: string, buf: Buffer, contentType: string | null) {
   if (!buf || buf.length === 0) return null;
   const MAX = 6 * 1024 * 1024;
@@ -33145,48 +33191,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeBrandLogoSrc = resolveProfileLogoPath()
     ? escHtml("/logo.png?v=20260601c")
     : "";
-  const profileTheme = userToProfileTheme(user);
-  const safeThemeWallpaperUrl =
-    profileTheme.themeWallpaperImageUrl && profileTheme.themeWallpaperImageUrl.startsWith("/public/profile-wallpapers/")
-      ? escHtml(profileTheme.themeWallpaperImageUrl)
-      : "";
-  const profileCardAlpha = profileTheme.themeCardStrength === "light" ? 0.16 : profileTheme.themeCardStrength === "strong" ? 0.30 : 0.22;
-  const profileCardStrongAlpha = profileTheme.themeCardStrength === "light" ? 0.22 : profileTheme.themeCardStrength === "strong" ? 0.40 : 0.28;
-  const profileMobileCardAlpha = profileTheme.themeCardStrength === "light" ? 0.24 : profileTheme.themeCardStrength === "strong" ? 0.42 : 0.32;
-  const profileMobileCardStrongAlpha = profileTheme.themeCardStrength === "light" ? 0.30 : profileTheme.themeCardStrength === "strong" ? 0.50 : 0.38;
-  const profileOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.24 : profileTheme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
-  const profileMobileOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.34 : profileTheme.themeOverlayStrength === "darker" ? 0.56 : 0.44;
-  const profileButtonBackground =
-    profileTheme.themeButtonStyle === "filled"
-      ? profileTheme.themeResolvedAccentColor
-      : profileTheme.themeButtonStyle === "outline"
-        ? "rgba(255,255,255,0.025)"
-        : "rgba(255,255,255,0.065)";
-  const profileButtonText = profileTheme.themeButtonStyle === "filled" ? readableTextFor(profileTheme.themeResolvedAccentColor) : profileTheme.themeTextColor;
-  const profileThemeCss = [
-    `--theme-accent:${profileTheme.themeResolvedAccentColor}`,
-    `--theme-bg:${profileTheme.themeBackgroundColor}`,
-    `--theme-card:${profileTheme.themeCardColor}`,
-    `--theme-border:${profileTheme.themeBorderColor}`,
-    `--theme-button:${profileTheme.themeButtonColor}`,
-    `--theme-button-text:${profileButtonText}`,
-    `--theme-text:${profileTheme.themeTextColor}`,
-    `--theme-muted:${profileTheme.themeMutedTextColor}`,
-    `--profile-bg-overlay:rgba(0,0,0,${profileOverlayAlpha})`,
-    `--profile-card-bg:rgba(10,10,10,${profileCardAlpha})`,
-    `--profile-card-bg-strong:rgba(18,18,18,${profileCardStrongAlpha})`,
-    `--profile-card-bg-mobile:rgba(10,10,10,${profileMobileCardAlpha})`,
-    `--profile-card-bg-mobile-strong:rgba(18,18,18,${profileMobileCardStrongAlpha})`,
-    `--profile-bg-overlay-mobile:rgba(0,0,0,${profileMobileOverlayAlpha})`,
-    `--profile-card-border:color-mix(in srgb, ${profileTheme.themeBorderColor} 78%, transparent)`,
-    `--profile-card-blur:blur(20px) saturate(125%)`,
-    `--profile-accent:${profileTheme.themeResolvedAccentColor}`,
-    `--profile-accent-soft:color-mix(in srgb, ${profileTheme.themeResolvedAccentColor} 18%, transparent)`,
-    `--profile-button-bg:${profileButtonBackground}`,
-    `--profile-button-border:color-mix(in srgb, ${profileTheme.themeResolvedAccentColor} 70%, transparent)`,
-    `--profile-text:${profileTheme.themeTextColor}`,
-    `--profile-muted:${profileTheme.themeMutedTextColor}`
-  ].join(";");
+  const { theme: profileTheme, css: profileThemeCss, wallpaperUrl: safeThemeWallpaperUrl } = buildPublicAppearanceThemeCss(user);
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p: any) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -35425,7 +35430,31 @@ async function handleBuyPage(req: any, reply: any) {
   const productTier = resolveProductTier().productTier;
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    include: { owner: { select: { displayName: true, email: true } } }
+    include: {
+      owner: {
+        select: {
+          displayName: true,
+          email: true,
+          avatarUrl: true,
+          themeWallpaperImageUrl: true,
+          themeMode: true,
+          themeAccentColor: true,
+          themeAccentOverrideColor: true,
+          themeBackgroundColor: true,
+          themeCardColor: true,
+          themeBorderColor: true,
+          themeButtonColor: true,
+          themeButtonTextColor: true,
+          themeTextColor: true,
+          themeMutedTextColor: true,
+          themeCardStrength: true,
+          themeOverlayStrength: true,
+          themeButtonStyle: true,
+          themeGeneratedFromImage: true,
+          themeUpdatedAt: true
+        }
+      }
+    }
   });
   if (!content) return notFound(reply, "Not found");
   // Server-side audience logging so Basic posture still records views even if
@@ -35446,6 +35475,11 @@ async function handleBuyPage(req: any, reply: any) {
   } catch {
     sellerLightningAddress = null;
   }
+  const ownerAppearance = buildPublicAppearanceThemeCss(content.owner || null);
+  const sellerHandle = normalizePublicProfileHandle(content.owner?.displayName || "") || normalizedEmailLocalPart(content.owner?.email || "") || null;
+  const sellerProfileUrl = sellerHandle ? `/u/${encodeURIComponent(sellerHandle)}` : null;
+  const sellerAvatarUrl = resolveCreatorAvatarUrlForPublicPayload(content.owner?.avatarUrl || null, resolveCanonicalPublicOrigin(req));
+  const sellerBadgeLabel = ownerAppearance.theme.themeGeneratedFromImage ? "Creator theme" : "Certifyd";
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -35455,31 +35489,61 @@ async function handleBuyPage(req: any, reply: any) {
   <link rel="shortcut icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
   <title>Buy</title>
   <style>
-    :root { color-scheme: dark; }
+    :root { color-scheme: dark; ${ownerAppearance.css} }
     * { box-sizing: border-box; }
     body {
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
       margin: 0;
-      color: #f5f7fa;
+      min-height: 100vh;
+      color: var(--profile-text);
       background:
-        radial-gradient(1100px 520px at 100% -10%, rgba(30, 42, 64, 0.16), transparent 56%),
-        radial-gradient(900px 460px at -8% 20%, rgba(214, 169, 86, 0.10), transparent 50%),
-        linear-gradient(180deg, #040506 0%, #050608 44%, #030405 100%);
+        radial-gradient(1100px 520px at 100% -10%, var(--profile-accent-soft), transparent 56%),
+        radial-gradient(900px 460px at -8% 20%, rgba(255,255,255,0.04), transparent 50%),
+        ${
+          ownerAppearance.wallpaperUrl
+            ? `url("${ownerAppearance.wallpaperUrl}") center / cover fixed no-repeat,`
+            : ""
+        }
+        var(--theme-bg);
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background:
+        radial-gradient(circle at 50% 10%, rgba(0,0,0,0.04), rgba(0,0,0,0.28) 62%, rgba(0,0,0,0.56) 100%),
+        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, var(--profile-bg-overlay) 48%, rgba(0,0,0,0.58) 100%);
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: .72;
+      background: radial-gradient(760px 260px at 50% 0%, var(--profile-accent-soft), transparent 72%);
+      mix-blend-mode: screen;
     }
     .wrap {
+      position: relative;
+      z-index: 1;
       max-width: 980px;
       margin: 0 auto;
       padding: 28px 20px 36px;
     }
     .card {
       position: relative;
-      border: 1px solid rgba(95, 96, 104, 0.28);
-      background: linear-gradient(180deg, rgba(10, 12, 15, 0.92), rgba(7, 9, 12, 0.95));
-      backdrop-filter: blur(6px);
+      border: 1px solid var(--profile-card-border);
+      background: linear-gradient(180deg, var(--profile-card-bg-strong), var(--profile-card-bg));
+      backdrop-filter: var(--profile-card-blur);
       border-radius: 18px;
       padding: 22px;
       box-shadow:
-        0 34px 70px rgba(3, 5, 10, 0.6),
+        0 34px 70px rgba(3, 5, 10, 0.48),
+        0 0 48px var(--profile-accent-soft),
         inset 0 1px 0 rgba(255, 255, 255, 0.06);
       overflow: hidden;
     }
@@ -35489,18 +35553,65 @@ async function handleBuyPage(req: any, reply: any) {
       inset: 0;
       pointer-events: none;
       background:
-        radial-gradient(500px 180px at 12% 0%, rgba(196, 153, 74, 0.10), transparent 68%),
+        radial-gradient(500px 180px at 12% 0%, var(--profile-accent-soft), transparent 68%),
         radial-gradient(460px 200px at 88% 0%, rgba(37, 49, 72, 0.14), transparent 72%);
     }
     #app { position: relative; z-index: 1; }
-    .muted { color: #a6afbe; font-size: 14px; }
+    .muted { color: var(--profile-muted); font-size: 14px; }
     .row { display: flex; gap: 18px; flex-wrap: wrap; }
+    .creator-strip {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 12px;
+      border: 1px solid var(--profile-card-border);
+      border-radius: 14px;
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+    .creator-avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 999px;
+      object-fit: cover;
+      border: 1px solid var(--profile-button-border);
+      background: var(--profile-card-bg-strong);
+      flex: none;
+    }
+    .creator-avatar-fallback {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--profile-accent);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .creator-name { font-weight: 750; line-height: 1.1; color: var(--profile-text); }
+    .creator-handle { margin-top: 3px; font-size: 12px; color: var(--profile-muted); }
+    .creator-badge {
+      margin-left: auto;
+      border: 1px solid var(--profile-button-border);
+      color: var(--profile-accent);
+      background: var(--profile-button-bg);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
     .rail {
       flex: 1 1 280px;
-      border: 1px solid rgba(95, 96, 104, 0.24);
+      border: 1px solid var(--profile-card-border);
       border-radius: 14px;
       padding: 14px;
-      background: linear-gradient(180deg, rgba(12, 14, 18, 0.92), rgba(8, 10, 14, 0.92));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
     .btn {
@@ -35519,15 +35630,15 @@ async function handleBuyPage(req: any, reply: any) {
     .btn:hover { transform: translateY(-1px); }
     .btn:active { transform: translateY(0); }
     .btn.primary {
-      border: 1px solid rgba(250, 204, 21, 0.48);
-      color: #0b1220;
-      background: linear-gradient(135deg, #f6d673 0%, #fbbf24 58%, #f59e0b 100%);
-      box-shadow: 0 10px 26px rgba(245, 158, 11, 0.28);
+      border: 1px solid var(--profile-button-border);
+      color: var(--theme-button-text);
+      background: var(--profile-button-bg);
+      box-shadow: 0 10px 26px var(--profile-accent-soft);
     }
     .btn.outline {
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      color: #e9eef7;
-      background: rgba(12, 16, 24, 0.9);
+      border: 1px solid var(--profile-button-border);
+      color: var(--profile-text);
+      background: rgba(255, 255, 255, 0.045);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
     .btn.full { width: 100%; }
@@ -35542,23 +35653,24 @@ async function handleBuyPage(req: any, reply: any) {
       width: 100%;
       padding: 10px 12px;
       border-radius: 11px;
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      background: rgba(5, 7, 11, 0.88);
-      color: #f8fafc;
+      border: 1px solid var(--profile-card-border);
+      background: var(--profile-card-bg-strong);
+      color: var(--profile-text);
       outline: none;
       transition: border-color 140ms ease, box-shadow 140ms ease;
     }
     .input:focus {
-      border-color: rgba(198, 155, 74, 0.55);
-      box-shadow: 0 0 0 3px rgba(198, 155, 74, 0.16);
+      border-color: var(--profile-button-border);
+      box-shadow: 0 0 0 3px var(--profile-accent-soft);
     }
     .field { margin-top: 10px; }
     .step {
       margin-top: 14px;
       padding: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--profile-card-border);
       border-radius: 13px;
-      background: linear-gradient(180deg, rgba(14, 18, 28, 0.9), rgba(10, 13, 20, 0.9));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
     .step h3 {
@@ -35566,45 +35678,48 @@ async function handleBuyPage(req: any, reply: any) {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.12em;
-      color: #98a2b3;
+      color: var(--profile-muted);
     }
     .proof-card {
       margin-top: 12px;
       padding: 12px;
-      border: 1px solid rgba(178, 140, 74, 0.45);
+      border: 1px solid var(--profile-button-border);
       border-radius: 12px;
-      background: linear-gradient(180deg, rgba(29, 23, 14, 0.9), rgba(20, 15, 10, 0.95));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
     }
     .proof-title {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.11em;
-      color: #dec48d;
+      color: var(--profile-accent);
       font-weight: 700;
     }
-    .proof-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: #d1d9e6; }
-    .proof-label { color: #97a0af; }
+    .proof-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: var(--profile-text); }
+    .proof-label { color: var(--profile-muted); }
     .access-card {
       margin-top: 10px;
       padding: 12px;
-      border: 1px solid rgba(125, 211, 252, 0.3);
+      border: 1px solid var(--profile-button-border);
       border-radius: 12px;
-      background: linear-gradient(180deg, rgba(13, 21, 35, 0.92), rgba(10, 18, 30, 0.96));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
     }
     .access-title {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.11em;
-      color: #93c5fd;
+      color: var(--profile-accent);
       font-weight: 700;
     }
-    .access-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: #d8dee9; }
-    .access-label { color: #9ca7b6; }
+    .access-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: var(--profile-text); }
+    .access-label { color: var(--profile-muted); }
     .proof-drawer {
       margin-top: 16px;
-      border: 1px solid rgba(255, 255, 255, 0.09);
+      border: 1px solid var(--profile-card-border);
       border-radius: 12px;
-      background: linear-gradient(180deg, rgba(14, 18, 28, 0.92), rgba(11, 14, 21, 0.96));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
       overflow: hidden;
     }
     .proof-drawer > summary {
@@ -35617,36 +35732,36 @@ async function handleBuyPage(req: any, reply: any) {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.11em;
-      color: #d0d8e7;
+      color: var(--profile-text);
       font-weight: 700;
       border-bottom: 1px solid transparent;
     }
     .proof-drawer > summary::-webkit-details-marker { display: none; }
     .proof-drawer[open] > summary { border-bottom-color: rgba(255, 255, 255, 0.1); }
-    .proof-drawer-badge { font-size: 11px; color: #9ca7b6; text-transform: none; letter-spacing: 0; font-weight: 500; }
+    .proof-drawer-badge { font-size: 11px; color: var(--profile-muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
     .proof-drawer-body { padding: 2px 12px 12px; }
     .code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
       word-break: break-all;
-      color: #dbe6f5;
+      color: var(--profile-text);
     }
     .copy {
       font-size: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.17);
-      background: rgba(13, 17, 26, 0.92);
-      color: #eef4ff;
+      border: 1px solid var(--profile-card-border);
+      background: var(--profile-button-bg);
+      color: var(--profile-text);
       padding: 6px 10px;
       border-radius: 8px;
       cursor: pointer;
     }
-    .copy:hover { border-color: rgba(125, 211, 252, 0.5); }
+    .copy:hover { border-color: var(--profile-button-border); }
     .section-title {
       margin-top: 14px;
       font-size: 16px;
       font-weight: 700;
       letter-spacing: 0.01em;
-      color: #f4f7fb;
+      color: var(--profile-text);
     }
     .download-row { margin-top: 10px; }
     .preview { margin-top: 14px; }
@@ -35654,8 +35769,8 @@ async function handleBuyPage(req: any, reply: any) {
       width: 100%;
       max-width: 860px;
       border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.11);
-      background: #080b10;
+      border: 1px solid var(--profile-card-border);
+      background: var(--profile-card-bg-strong);
       box-shadow: 0 16px 34px rgba(2, 4, 8, 0.45);
     }
     .song-cover {
@@ -35663,43 +35778,44 @@ async function handleBuyPage(req: any, reply: any) {
       max-width: 420px;
       aspect-ratio: 1 / 1;
       border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.11);
+      border: 1px solid var(--profile-card-border);
       overflow: hidden;
-      background: #0f1219;
+      background: var(--profile-card-bg-strong);
       box-shadow: 0 16px 34px rgba(2, 4, 8, 0.45);
     }
     .song-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .song-cover.placeholder { display: flex; align-items: center; justify-content: center; color: #798293; font-size: 12px; }
-    a { color: #d4b26a; }
+    .song-cover.placeholder { display: flex; align-items: center; justify-content: center; color: var(--profile-muted); font-size: 12px; }
+    a { color: var(--profile-accent); }
     .footer {
       margin-top: 22px;
       font-size: 12px;
-      color: #9da8b8;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--profile-muted);
+      border-top: 1px solid var(--profile-card-border);
       padding-top: 10px;
     }
     .cb-heart { margin-left: 4px; font-weight: 700; }
     .cb-heart--grey { color: #b6bdc8; }
-    .cb-heart--gold { color: #d4b26a; }
+    .cb-heart--gold { color: var(--profile-accent); }
     .purchase-card {
       margin-top: 14px;
       padding: 14px;
-      border: 1px solid rgba(102, 116, 138, 0.34);
+      border: 1px solid var(--profile-card-border);
       border-radius: 14px;
-      background: linear-gradient(180deg, rgba(17, 20, 27, 0.96), rgba(10, 12, 18, 0.98));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
       box-shadow:
         0 20px 36px rgba(1, 3, 8, 0.5),
         inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
     .purchase-card--unlocked {
-      border-color: rgba(196, 153, 74, 0.45);
-      background: linear-gradient(180deg, rgba(37, 29, 16, 0.92), rgba(23, 18, 10, 0.96));
+      border-color: var(--profile-button-border);
+      background: var(--profile-card-bg-strong);
     }
     .purchase-kicker {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.11em;
-      color: #8f99a9;
+      color: var(--profile-muted);
     }
     .purchase-price {
       margin-top: 6px;
@@ -35707,10 +35823,10 @@ async function handleBuyPage(req: any, reply: any) {
       font-weight: 800;
       letter-spacing: -0.02em;
       line-height: 1.08;
-      color: #f9fafb;
+      color: var(--profile-text);
       text-wrap: balance;
     }
-    .purchase-sub { margin-top: 4px; color: #a9b3c2; font-size: 13px; }
+    .purchase-sub { margin-top: 4px; color: var(--profile-muted); font-size: 13px; }
     .rails-wrap { margin-top: 12px; }
     .receipt-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.11); }
     .library-return-wrap { margin-top: 10px; text-align: left; }
@@ -35722,11 +35838,11 @@ async function handleBuyPage(req: any, reply: any) {
       line-height: 1.1;
       text-wrap: balance;
       margin: 0 0 8px;
-      color: #f2f2ef;
+      color: var(--profile-text);
     }
     .hero-sub {
       margin: 0;
-      color: #a89e89;
+      color: var(--profile-muted);
       font-size: 15px;
       line-height: 1.55;
       text-wrap: pretty;
@@ -35744,17 +35860,17 @@ async function handleBuyPage(req: any, reply: any) {
       font-weight: 700;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      color: #d5cec0;
-      border: 1px solid rgba(89, 100, 118, 0.38);
-      background: rgba(13, 18, 26, 0.9);
+      color: var(--profile-text);
+      border: 1px solid var(--profile-card-border);
+      background: var(--profile-button-bg);
       border-radius: 999px;
       padding: 6px 10px;
       white-space: nowrap;
     }
     .trust-chip--gold {
-      border-color: rgba(196, 153, 74, 0.55);
-      color: #e5c98f;
-      background: rgba(68, 47, 20, 0.34);
+      border-color: var(--profile-button-border);
+      color: var(--profile-accent);
+      background: var(--profile-button-bg);
     }
     .trust-chip--teal {
       border-color: rgba(96, 113, 139, 0.44);
@@ -35787,12 +35903,32 @@ async function handleBuyPage(req: any, reply: any) {
       .row { gap: 12px; }
       .rail { padding: 10px; border-radius: 12px; }
       .preview img, .preview video, .preview audio { border-radius: 12px; }
+      body { background-attachment: scroll; }
+      :root {
+        --profile-bg-overlay: var(--profile-bg-overlay-mobile);
+        --profile-card-bg: var(--profile-card-bg-mobile);
+        --profile-card-bg-strong: var(--profile-card-bg-mobile-strong);
+      }
+      .creator-strip { align-items: flex-start; }
+      .creator-badge { display: none; }
     }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
+      <div class="creator-strip">
+        ${
+          sellerAvatarUrl
+            ? `<img class="creator-avatar" src="${escHtml(sellerAvatarUrl)}" alt="" />`
+            : `<div class="creator-avatar creator-avatar-fallback">${escHtml((sellerDisplayName || "C").slice(0, 1).toUpperCase())}</div>`
+        }
+        <div>
+          <div class="creator-name">${sellerProfileUrl ? `<a href="${escHtml(sellerProfileUrl)}">${escHtml(sellerDisplayName || "Creator")}</a>` : escHtml(sellerDisplayName || "Creator")}</div>
+          <div class="creator-handle">${sellerHandle ? `@${escHtml(sellerHandle)}` : "Creator profile"}</div>
+        </div>
+        <div class="creator-badge">${escHtml(sellerBadgeLabel)}</div>
+      </div>
       <div id="app">Loading...</div>
       <div class="footer">
         <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
