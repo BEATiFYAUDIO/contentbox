@@ -26845,10 +26845,11 @@ function publicationManifestSummary(content: any) {
 async function ensurePublicationManifestForContent(content: any) {
   if (!isPublicationManifestEligible(content)) {
     if (asString(content?.proofBundleType || "").trim() !== "media" && asString(content?.proofBundleType || "").trim() !== "none") {
-      return prisma.contentItem.update({
+      const updated = await prisma.contentItem.update({
         where: { id: content.id },
         data: { proofBundleType: "none" }
       });
+      return { ...content, ...updated };
     }
     return content;
   }
@@ -26867,7 +26868,7 @@ async function ensurePublicationManifestForContent(content: any) {
   ) {
     return content;
   }
-  return prisma.contentItem.update({
+  const updated = await prisma.contentItem.update({
     where: { id: content.id },
     data: {
       publicationManifestJson: manifest as any,
@@ -26876,6 +26877,7 @@ async function ensurePublicationManifestForContent(content: any) {
       proofBundleType: "publication"
     }
   });
+  return { ...content, ...updated };
 }
 
 app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async (req: any, reply) => {
