@@ -1676,6 +1676,28 @@ export default function LibraryPage() {
     }
   }
 
+  async function setLegacyFeatureOnProfile(item: LibraryItem, next: boolean) {
+    const contentId = item.id;
+    setFeatureBusyById((m) => ({ ...m, [contentId]: true }));
+    setFeatureMsgById((m) => ({ ...m, [contentId]: "" }));
+    try {
+      const res = await api<{ featureOnProfile: boolean }>(
+        `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
+        "PATCH",
+        { featureOnProfile: next }
+      );
+      setLegacyWorks((prev) =>
+        prev.map((row) =>
+          row.id === contentId ? { ...row, featureOnProfile: Boolean(res?.featureOnProfile) } : row
+        )
+      );
+    } catch (e: any) {
+      setFeatureMsgById((m) => ({ ...m, [contentId]: e?.message || "Failed to update profile feature status." }));
+    } finally {
+      setFeatureBusyById((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
 function previewFileFor(previewUrl: string | null | undefined, files: any[] | null | undefined) {
     if (!previewUrl || !Array.isArray(files) || files.length === 0) return null;
     try {
@@ -2737,6 +2759,13 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                   const artworkUrl = String(item.legacyArtworkUrl || item.artworkUrl || "").trim();
                   const artist = String(item.legacyArtist || item.owner?.displayName || item.owner?.email || "").trim();
                   const publicationHash = String(item.publicationManifestSha256 || "").trim();
+                  const canFeatureLegacyWork =
+                    String(item.assetOrigin || "").trim().toLowerCase() === "legacy_import" &&
+                    String(item.status || "").trim().toLowerCase() === "published" &&
+                    !item.deletedAt &&
+                    String(item.proofBundleType || "").trim().toLowerCase() === "publication" &&
+                    Boolean(publicationHash);
+                  const currentlyFeatured = Boolean(item.featureOnProfile);
                   const sourceUrl = String(
                     item.legacyExternalUrl ||
                       item.legacyYoutubeUrl ||
@@ -2795,6 +2824,20 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                         ) : null}
 
                         <div className="flex flex-wrap gap-2 pt-1">
+                          {canFeatureLegacyWork ? (
+                            <button
+                              type="button"
+                              disabled={featureBusyById[item.id]}
+                              className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                              onClick={() => setLegacyFeatureOnProfile(item, !currentlyFeatured)}
+                            >
+                              {featureBusyById[item.id]
+                                ? "Updating…"
+                                : currentlyFeatured
+                                  ? "Remove from profile"
+                                  : "Feature on profile"}
+                            </button>
+                          ) : null}
                           {sourceUrl ? (
                             <a
                               className="text-xs rounded border border-purple-700/60 px-2 py-1 text-purple-100 hover:bg-purple-500/10"
@@ -2814,6 +2857,9 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             </div>
                           </details>
                         </div>
+                        {featureMsgById[item.id] ? (
+                          <div className="text-xs text-amber-300">{featureMsgById[item.id]}</div>
+                        ) : null}
                       </div>
                     </div>
                   );

@@ -33314,11 +33314,32 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             id: true,
             title: true,
             type: true,
+            status: true,
             priceSats: true,
             deliveryMode: true,
             deletedAt: true,
             deletedReason: true,
             description: true,
+            assetOrigin: true,
+            legacyArtist: true,
+            legacyProvider: true,
+            legacyArtworkUrl: true,
+            legacyExternalUrl: true,
+            legacySpotifyUrl: true,
+            legacyAppleMusicUrl: true,
+            legacyYoutubeUrl: true,
+            publicationManifestSha256: true,
+            publicationManifestGeneratedAt: true,
+            proofBundleType: true,
+            sourceReferences: {
+              select: {
+                platform: true,
+                sourceUrl: true,
+                sourceAccount: true,
+                sourceVerified: true
+              },
+              orderBy: [{ updatedAt: "desc" }]
+            },
             manifest: { select: { json: true } }
           }
         }),
@@ -33393,6 +33414,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   id: true,
                   title: true,
                   type: true,
+                  status: true,
                   assetOrigin: true,
                   priceSats: true,
                   deliveryMode: true,
@@ -33409,6 +33431,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   publicationManifestSha256: true,
                   publicationManifestGeneratedAt: true,
                   proofBundleType: true,
+                  sourceReferences: {
+                    select: {
+                      platform: true,
+                      sourceUrl: true,
+                      sourceAccount: true,
+                      sourceVerified: true
+                    },
+                    orderBy: [{ updatedAt: "desc" }]
+                  },
                   manifest: { select: { json: true } }
                 }
               }),
@@ -33449,6 +33480,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const filteredFeaturedContent = (
     await Promise.all(
       (Array.isArray(featuredContent) ? featuredContent : []).map(async (item: any) => {
+        const isLegacyPublication = asString(item?.assetOrigin || "").trim().toLowerCase() === "legacy_import";
+        if (isLegacyPublication) {
+          const sourceVerified = Array.isArray(item?.sourceReferences)
+            ? item.sourceReferences.some((source: any) => Boolean(source?.sourceVerified))
+            : false;
+          if (
+            asString(item?.status || "").trim().toLowerCase() !== "published" ||
+            asString(item?.proofBundleType || "").trim().toLowerCase() !== "publication" ||
+            !asString(item?.publicationManifestSha256 || "").trim() ||
+            !sourceVerified ||
+            item?.deletedAt
+          ) {
+            return null;
+          }
+          return { ...item, _profileSection: "works" };
+        }
         if (!item?.deletedAt) return { ...item, _profileSection: "works" };
         const check = await isCurrentApprovedFeatureableDerivativeShadow({
           contentId: asString(item.id || "").trim(),
@@ -33820,6 +33867,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               const artworkUrl = publicSafeUrl((item as any).legacyArtworkUrl) || "";
               const provider = asString((item as any).legacyProvider || "").trim();
               const legacyArtist = asString((item as any).legacyArtist || "").trim();
+              const verifiedSource =
+                Array.isArray((item as any).sourceReferences)
+                  ? (item as any).sourceReferences.find((source: any) => Boolean(source?.sourceVerified))
+                  : null;
+              const verifiedSourcePlatform = asString(verifiedSource?.platform || "").trim().toLowerCase();
+              const sourceVerifiedLabel = verifiedSourcePlatform === "youtube" ? "YouTube Verified" : "Source Verified";
               const publicationBadge = publicationHash ? "Publication Hash" : "Legacy";
               const legacySupport = [
                 legacyArtist ? escHtml(legacyArtist) : `${safeHandle} • Legacy work`,
@@ -33835,6 +33888,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   <div class="featured-topline">
                     <span class="featured-type-badge">Proven Legacy Work</span>
                     <span class="featured-verified">${escHtml(publicationBadge)}</span>
+                    ${verifiedSource ? `<span class="featured-verified">${escHtml(sourceVerifiedLabel)}</span>` : ""}
                     ${provider ? `<span class="featured-type-badge">${escHtml(provider)}</span>` : ""}
                   </div>
                   <div class="featured-title">${safeTitle}</div>
@@ -41895,17 +41949,34 @@ app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async 
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
     select: {
-      ownerUserId: true,
-      status: true,
-      deletedAt: true,
+	      ownerUserId: true,
+	      status: true,
+	      deletedAt: true,
       deletedReason: true,
       description: true,
       storefrontStatus: true,
-      featureOnProfile: true
+      featureOnProfile: true,
+      assetOrigin: true,
+      proofBundleType: true,
+      publicationManifestSha256: true
     }
   });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  if (next && asString(content.assetOrigin || "").trim().toLowerCase() === "legacy_import") {
+    if (asString(content.status || "").trim().toLowerCase() !== "published") {
+      return reply.code(409).send({ error: "Legacy works must be published before they can be featured." });
+    }
+    if (content.deletedAt || asString(content.deletedReason || "").trim().toLowerCase() === "hard") {
+      return reply.code(409).send({ error: "Deleted Legacy works cannot be featured." });
+    }
+    if (asString(content.proofBundleType || "").trim().toLowerCase() !== "publication") {
+      return reply.code(409).send({ error: "A Publication Manifest is required before featuring this Legacy work." });
+    }
+    if (!asString(content.publicationManifestSha256 || "").trim()) {
+      return reply.code(409).send({ error: "A Publication Hash is required before featuring this Legacy work." });
+    }
+  }
   if (content.featureOnProfile === next) {
     const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
     app.log.info(
