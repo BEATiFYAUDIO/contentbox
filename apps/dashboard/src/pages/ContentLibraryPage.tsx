@@ -81,6 +81,17 @@ type ContentItem = {
   legacyYoutubeUrl?: string | null;
   legacyMusicBrainzUrl?: string | null;
   legacyDiscogsUrl?: string | null;
+  proofBundleType?: "media" | "publication" | "none" | string | null;
+  publicationManifestSha256?: string | null;
+  publicationManifestGeneratedAt?: string | null;
+  publicationManifestSummary?: {
+    proofBundleType?: string | null;
+    publicationManifestSha256?: string | null;
+    manifestVersion?: string | null;
+    generatedAt?: string | null;
+    sourceProofStatus?: string | null;
+    externalIdentifiers?: Array<{ type?: string | null; value?: string | null }>;
+  } | null;
   sourceReferences?: Array<{
     id?: string;
     platform?: string | null;
@@ -3136,6 +3147,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const legacyProvider = String(it.legacyProvider || "").trim() || null;
               const legacyArtworkUrl = String(it.legacyArtworkUrl || "").trim() || null;
               const legacyExternalUrl = String(it.legacyExternalUrl || "").trim() || null;
+              const proofBundleType = String(it.proofBundleType || "").trim().toLowerCase();
+              const publicationManifestSha256 = String(it.publicationManifestSha256 || "").trim() || null;
+              const publicationHashShort = publicationManifestSha256 ? shortSha(publicationManifestSha256, 16) : null;
               const legacySourceReference = Array.isArray(it.sourceReferences) ? it.sourceReferences[0] || null : null;
               const legacySourceVerified = Boolean(legacySourceReference?.sourceVerified);
               const legacySourceLabel = legacySourceReference?.sourceAccount
@@ -3277,8 +3291,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       {isLegacyAsset ? (
                         <div className="mt-1 flex flex-wrap gap-1">
                           <span className="inline-flex rounded-full border border-amber-800 bg-amber-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
-                            Legacy
+                            {proofBundleType === "publication" ? "Proven Legacy Work" : "Legacy"}
                           </span>
+                          {publicationManifestSha256 ? (
+                            <span className="inline-flex rounded-full border border-purple-800 bg-purple-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-purple-200">
+                              Publication Manifest
+                            </span>
+                          ) : null}
                           <span className={[
                             "inline-flex rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
                             legacySourceVerified
@@ -3295,6 +3314,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </div>
                       ) : null}
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
+                      {isLegacyAsset && publicationHashShort ? (
+                        <div className="mt-1 text-[11px] text-purple-200">
+                          Publication Hash: <span className="font-mono text-purple-100">{publicationHashShort}</span>
+                        </div>
+                      ) : null}
                       {it.previousVersionContentId ? (
                         <div className="text-[11px] text-sky-300/90 mt-1">
                           Version draft from:{" "}
@@ -3585,10 +3609,20 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             <div>
                               <div className="font-medium text-neutral-200">{it.title}</div>
                               <div className="mt-1 text-xs text-neutral-400">
-                                Connected legacy asset. This is private catalog metadata; the Certifyd Asset ID remains the canonical record.
+                                {publicationManifestSha256
+                                  ? "Proven Legacy Work with a Publication Manifest. The Publication Hash is evidence metadata, not a media hash."
+                                  : "Connected legacy asset. This is private catalog metadata; the Certifyd Asset ID remains the canonical record."}
                               </div>
                             </div>
                             <div className="grid gap-2 text-xs text-neutral-300 md:grid-cols-2">
+                              <div>
+                                <span className="text-neutral-500">Proof bundle</span>
+                                <div>{proofBundleType === "publication" ? "Publication Manifest" : "None"}</div>
+                              </div>
+                              <div>
+                                <span className="text-neutral-500">Publication Hash</span>
+                                <div className="break-all font-mono text-purple-200">{publicationManifestSha256 || "Not generated"}</div>
+                              </div>
                               <div>
                                 <span className="text-neutral-500">Artist</span>
                                 <div>{legacyArtist || "Not provided"}</div>
@@ -3891,7 +3925,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                         {f.manifestSha256 ? (
                                           <>
                                             {" "}
-                                            • manifest: <span className="text-neutral-400">{shortSha(f.manifestSha256, 16)}</span>
+                                            • Media Hash: <span className="text-neutral-400">{shortSha(f.manifestSha256, 16)}</span>
                                           </>
                                         ) : null}
                                       </div>
@@ -5472,7 +5506,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               </div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <span>
-                                  Manifest hash:{" "}
+                                  Media Hash:{" "}
                                   <span className="text-neutral-200 break-all">
                                     {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
                                   </span>

@@ -23376,7 +23376,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           }
         : { deletedAt: null as any };
 
-  const selectBase = {
+  const selectBase = Prisma.validator<Prisma.ContentItemSelect>()({
     id: true,
     title: true,
     description: true,
@@ -23393,6 +23393,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     legacyYoutubeUrl: true,
     legacyMusicBrainzUrl: true,
     legacyDiscogsUrl: true,
+    publicationManifestJson: true,
+    publicationManifestSha256: true,
+    publicationManifestGeneratedAt: true,
+    proofBundleType: true,
     status: true,
     previousVersionContentId: true,
     previousVersion: { select: { id: true, title: true, status: true } },
@@ -23407,6 +23411,15 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     ownerUserId: true,
     owner: { select: { displayName: true, email: true } },
     manifest: { select: { sha256: true } },
+    externalIdentifiers: {
+      select: {
+        type: true,
+        value: true,
+        displayValue: true,
+        normalizedValue: true
+      },
+      orderBy: [{ type: "asc" }, { createdAt: "asc" }]
+    },
     sourceReferences: {
       select: {
         id: true,
@@ -23420,10 +23433,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         resolver: true,
         resolvedAt: true
       },
-      orderBy: { updatedAt: "desc" as const }
+      orderBy: { updatedAt: "desc" }
     },
     _count: { select: { files: true, entitlements: true } }
-  } as const;
+  });
 
   const items: any[] = [];
   const matchesRequestedType = (contentType: unknown): boolean => {
@@ -24347,6 +24360,15 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const nodeModeForDiscovery = getNodeModeStatus().nodeMode;
 
   return await Promise.all(unique.map(async (i: any) => {
+    if (asString(i?.assetOrigin || "").trim().toLowerCase() === "legacy_import") {
+      i = await ensurePublicationManifestForContent(i);
+    } else if (asString(i?.proofBundleType || "").trim() !== "media" && i?.manifest?.sha256) {
+      i = await prisma.contentItem.update({
+        where: { id: i.id },
+        data: { proofBundleType: "media" },
+        select: selectBase
+      });
+    }
     const description = asString(i?.description || "").trim() || null;
     const explicitRemoteOrigin = pickShareableOrigin(
       asString(i?.remoteOrigin || "").trim() || null,
@@ -24542,6 +24564,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       buyUrl: canonicalPublicOrigin ? `${canonicalPublicOrigin}/buy/${encodeURIComponent(contentId)}` : null,
       remoteOrigin: explicitRemoteOrigin,
       featureOnProfile: Boolean(i.featureOnProfile),
+      proofBundleType: asString(i.proofBundleType || "").trim() || (i.manifest?.sha256 ? "media" : "none"),
+      publicationManifestSha256: asString(i.publicationManifestSha256 || "").trim() || null,
+      publicationManifestGeneratedAt: i.publicationManifestGeneratedAt?.toISOString?.() || null,
+      publicationManifestSummary: publicationManifestSummary(i),
       tombstoned: isArchivedPublished(i),
       isShadow: lifecycleMeta.lifecycle === "shadow",
       lifecycle: lifecycleMeta.lifecycle,
@@ -24577,6 +24603,7 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
         assetOrigin: true,
         featureOnProfile: true,
         storefrontStatus: true,
+        proofBundleType: true,
         createdAt: true,
         updatedAt: true,
         manifest: { select: { sha256: true } }
@@ -24601,6 +24628,10 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
         legacyYoutubeUrl: true,
         legacyMusicBrainzUrl: true,
         legacyDiscogsUrl: true,
+        publicationManifestJson: true,
+        publicationManifestSha256: true,
+        publicationManifestGeneratedAt: true,
+        proofBundleType: true,
         createdAt: true,
         updatedAt: true,
         sourceReferences: {
@@ -24640,11 +24671,12 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
       assetOrigin: row.assetOrigin || "native",
       featureOnProfile: Boolean(row.featureOnProfile),
       storefrontStatus: row.storefrontStatus || "DISABLED",
+      proofBundleType: row.proofBundleType || (row.manifest?.sha256 ? "media" : "none"),
       manifestSha256: row.manifest?.sha256 || null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt
     })),
-    legacyWorks: legacyRows.map((row) => ({
+    legacyWorks: (await Promise.all(legacyRows.map((row) => ensurePublicationManifestForContent(row)))).map((row) => ({
       id: row.id,
       title: row.title,
       assetOrigin: row.assetOrigin || "legacy_import",
@@ -24656,7 +24688,10 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
       provider: row.legacyProvider || null,
       externalUrl: row.legacyExternalUrl || null,
       sourceReference: row.sourceReferences?.[0] || null,
-      sourceVerified: Boolean(row.sourceReferences?.some((source) => source.sourceVerified)),
+      sourceVerified: Boolean(row.sourceReferences?.some((source: { sourceVerified?: boolean | null }) => source.sourceVerified)),
+      proofBundleType: row.proofBundleType || "none",
+      publicationManifestSha256: row.publicationManifestSha256 || null,
+      publicationManifestSummary: publicationManifestSummary(row),
       platformUrls: {
         spotify: row.legacySpotifyUrl || null,
         appleMusic: row.legacyAppleMusicUrl || null,
@@ -24664,7 +24699,7 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
         musicBrainz: row.legacyMusicBrainzUrl || null,
         discogs: row.legacyDiscogsUrl || null
       },
-      identifiers: row.externalIdentifiers.map((identifier) => ({
+      identifiers: row.externalIdentifiers.map((identifier: { type: string; displayValue?: string | null; normalizedValue?: string | null }) => ({
         type: identifier.type,
         displayValue: identifier.displayValue,
         normalizedValue: identifier.normalizedValue
@@ -25065,7 +25100,7 @@ app.post("/api/content/:contentId/manifest", { preHandler: requireAuth }, async 
     create: { contentId, json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation }
   });
 
-  await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifest.id } });
+  await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifest.id, proofBundleType: "media" } });
 
   return reply.send({ ok: true, manifestSha256 });
 });
@@ -26244,6 +26279,21 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
       });
       identifierRows.push(identifierRow);
     }
+    const publicationManifest = buildPublicationManifest({
+      content,
+      identifiers: identifierRows,
+      sourceReferences: [sourceReference],
+      generatedAt: new Date()
+    });
+    await tx.contentItem.update({
+      where: { id: content.id },
+      data: {
+        publicationManifestJson: publicationManifest as any,
+        publicationManifestSha256: publicationManifestHash(publicationManifest),
+        publicationManifestGeneratedAt: new Date(asString((publicationManifest as any).generatedAt)),
+        proofBundleType: "publication"
+      }
+    });
     await tx.splitVersion.create({
       data: { contentId: content.id, versionNumber: 1, createdByUserId: userId, status: "draft" as any }
     });
@@ -26359,6 +26409,16 @@ app.post("/api/content/:contentId/source-references/resolve", { preHandler: requ
   const sourceReference = existing
     ? await prisma.contentSourceReference.update({ where: { id: existing.id }, data })
     : await prisma.contentSourceReference.create({ data: { ...data, contentId: content.id } });
+  const manifestCandidate = await prisma.contentItem.findUnique({
+    where: { id: content.id },
+    include: {
+      owner: { select: { id: true, displayName: true, email: true } },
+      externalIdentifiers: true,
+      sourceReferences: true,
+      _count: { select: { files: true } }
+    }
+  });
+  if (manifestCandidate) await ensurePublicationManifestForContent(manifestCandidate).catch(() => null);
   return reply.send({
     ok: true,
     sourceReference,
@@ -26547,8 +26607,191 @@ async function ensureManifestForContent(content: any) {
     create: { contentId: content.id, json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation }
   });
 
-  await prisma.contentItem.update({ where: { id: content.id }, data: { manifestId: manifest.id } });
+  await prisma.contentItem.update({ where: { id: content.id }, data: { manifestId: manifest.id, proofBundleType: "media" } });
   return manifest;
+}
+
+const PUBLICATION_MANIFEST_VERSION = "publication-manifest-v1";
+const PUBLICATION_IDENTIFIER_TYPES = new Set(["ISRC", "UPC", "ISWC", "EIDR", "ISBN", "DOI"]);
+
+function publicationManifestHash(manifest: unknown): string {
+  return crypto.createHash("sha256").update(stableStringify(manifest)).digest("hex");
+}
+
+function shortPublicationHash(value: unknown, length = 16): string | null {
+  const raw = asString(value || "").trim();
+  if (!raw) return null;
+  return raw.length <= length ? raw : `${raw.slice(0, length)}…`;
+}
+
+function publicSafeUrl(value: unknown): string | null {
+  const raw = asString(value || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function buildPublicationManifest(input: {
+  content: any;
+  owner?: any | null;
+  identifiers?: any[];
+  sourceReferences?: any[];
+  generatedAt?: Date;
+}) {
+  const content = input.content || {};
+  const owner = input.owner || content.owner || null;
+  const generatedAt = input.generatedAt || new Date();
+  const identifiers = (input.identifiers || content.externalIdentifiers || [])
+    .map((identifier: any) => {
+      const type = asString(identifier?.type || "").trim().toUpperCase();
+      if (!PUBLICATION_IDENTIFIER_TYPES.has(type)) return null;
+      const value = asString(identifier?.displayValue || identifier?.value || identifier?.normalizedValue || "").trim();
+      if (!value) return null;
+      return {
+        type,
+        value
+      };
+    })
+    .filter(Boolean);
+  const sourceReferences = (input.sourceReferences || content.sourceReferences || [])
+    .map((source: any) => {
+      const platform = asString(source?.platform || "").trim().toLowerCase();
+      const sourceUrl = publicSafeUrl(source?.sourceUrl);
+      const sourceAccountUrl = publicSafeUrl(source?.sourceAccountUrl);
+      if (!platform && !sourceUrl && !sourceAccountUrl) return null;
+      return {
+        platform: platform || null,
+        sourceUrl,
+        sourceAccount: asString(source?.sourceAccount || "").trim() || null,
+        sourceAccountUrl,
+        sourceProofSubject: asString(source?.sourceProofSubject || "").trim() || null,
+        sourceVerified: Boolean(source?.sourceVerified),
+        resolvedAt: source?.resolvedAt?.toISOString?.() || (source?.resolvedAt ? String(source.resolvedAt) : null)
+      };
+    })
+    .filter(Boolean);
+  const publicationLinks = {
+    spotify: publicSafeUrl(content.legacySpotifyUrl),
+    appleMusic: publicSafeUrl(content.legacyAppleMusicUrl),
+    youtube: publicSafeUrl(content.legacyYoutubeUrl),
+    musicBrainz: publicSafeUrl(content.legacyMusicBrainzUrl),
+    discogs: publicSafeUrl(content.legacyDiscogsUrl),
+    external: publicSafeUrl(content.legacyExternalUrl)
+  };
+  const hasSourceProof = sourceReferences.some((source: any) => Boolean(source?.sourceVerified || source?.sourceProofSubject || source?.sourceUrl));
+  const sourceProofStatus = sourceReferences.some((source: any) => Boolean(source?.sourceVerified))
+    ? "source_verified"
+    : hasSourceProof
+      ? "source_reference"
+      : "none";
+  const handle =
+    normalizePublicProfileHandle(owner?.displayName || "") ||
+    normalizedEmailLocalPart(owner?.email || "") ||
+    null;
+  return {
+    manifestVersion: PUBLICATION_MANIFEST_VERSION,
+    proofBundleType: "publication",
+    contentId: asString(content.id || "").trim(),
+    creatorId: asString(content.ownerUserId || owner?.id || "").trim() || null,
+    creatorHandle: handle,
+    title: asString(content.title || "").trim() || null,
+    artist: asString(content.legacyArtist || owner?.displayName || "").trim() || null,
+    creatorName: asString(owner?.displayName || content.legacyArtist || "").trim() || null,
+    type: asString(content.type || "").trim() || null,
+    kind: asString(content.assetOrigin || "").trim() || "legacy_import",
+    artworkUrl: publicSafeUrl(content.legacyArtworkUrl),
+    externalIdentifiers: identifiers,
+    externalPublicationLinks: publicationLinks,
+    sourceProofStatus,
+    sourceProofReferences: sourceReferences,
+    claimedAt: content.createdAt?.toISOString?.() || null,
+    connectedAt: content.createdAt?.toISOString?.() || null,
+    capturedAt: content.updatedAt?.toISOString?.() || content.createdAt?.toISOString?.() || null,
+    generatedAt: generatedAt.toISOString()
+  };
+}
+
+function isPublicationManifestEligible(content: any): boolean {
+  const assetOrigin = asString(content?.assetOrigin || "").trim().toLowerCase();
+  if (assetOrigin !== "legacy_import") return false;
+  const fileCount = Number(content?._count?.files || content?.files?.length || 0);
+  if (fileCount > 0) return false;
+  const hasIdentifiers = Array.isArray(content?.externalIdentifiers) && content.externalIdentifiers.length > 0;
+  const hasPublicationLinks = [
+    content?.legacySpotifyUrl,
+    content?.legacyAppleMusicUrl,
+    content?.legacyYoutubeUrl,
+    content?.legacyExternalUrl,
+    content?.legacyMusicBrainzUrl,
+    content?.legacyDiscogsUrl
+  ].some((value) => Boolean(publicSafeUrl(value)));
+  const hasSourceProof = Array.isArray(content?.sourceReferences) && content.sourceReferences.some((source: any) =>
+    Boolean(source?.sourceVerified || source?.sourceProofSubject || source?.sourceUrl)
+  );
+  return (hasIdentifiers || hasPublicationLinks) && hasSourceProof;
+}
+
+function publicationManifestSummary(content: any) {
+  const proofBundleType = asString(content?.proofBundleType || "").trim() || "none";
+  const manifestJson = content?.publicationManifestJson || null;
+  const identifiers = Array.isArray((manifestJson as any)?.externalIdentifiers)
+    ? (manifestJson as any).externalIdentifiers.map((identifier: any) => ({
+        type: asString(identifier?.type || "").trim(),
+        value: asString(identifier?.value || "").trim()
+      })).filter((identifier: any) => identifier.type && identifier.value)
+    : [];
+  return {
+    proofBundleType,
+    publicationManifestSha256: asString(content?.publicationManifestSha256 || "").trim() || null,
+    manifestVersion: asString((manifestJson as any)?.manifestVersion || "").trim() || null,
+    generatedAt: content?.publicationManifestGeneratedAt?.toISOString?.() || null,
+    externalIdentifiers: identifiers,
+    sourceProofStatus: asString((manifestJson as any)?.sourceProofStatus || "").trim() || null
+  };
+}
+
+async function ensurePublicationManifestForContent(content: any) {
+  if (!isPublicationManifestEligible(content)) {
+    if (asString(content?.proofBundleType || "").trim() !== "media" && asString(content?.proofBundleType || "").trim() !== "none") {
+      return prisma.contentItem.update({
+        where: { id: content.id },
+        data: { proofBundleType: "none" }
+      });
+    }
+    return content;
+  }
+  const generatedAt = new Date();
+  const manifest = buildPublicationManifest({
+    content,
+    owner: content.owner || null,
+    identifiers: content.externalIdentifiers || [],
+    sourceReferences: content.sourceReferences || [],
+    generatedAt
+  });
+  const sha256 = publicationManifestHash(manifest);
+  if (
+    content.publicationManifestSha256 === sha256 &&
+    asString(content.proofBundleType || "") === "publication"
+  ) {
+    return content;
+  }
+  return prisma.contentItem.update({
+    where: { id: content.id },
+    data: {
+      publicationManifestJson: manifest as any,
+      publicationManifestSha256: sha256,
+      publicationManifestGeneratedAt: generatedAt,
+      proofBundleType: "publication"
+    }
+  });
 }
 
 app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -33064,11 +33307,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   id: true,
                   title: true,
                   type: true,
+                  assetOrigin: true,
                   priceSats: true,
                   deliveryMode: true,
                   deletedAt: true,
                   deletedReason: true,
                   description: true,
+                  legacyArtist: true,
+                  legacyProvider: true,
+                  legacyArtworkUrl: true,
+                  legacyExternalUrl: true,
+                  legacySpotifyUrl: true,
+                  legacyAppleMusicUrl: true,
+                  legacyYoutubeUrl: true,
+                  publicationManifestSha256: true,
+                  publicationManifestGeneratedAt: true,
+                  proofBundleType: true,
                   manifest: { select: { json: true } }
                 }
               }),
@@ -33456,6 +33710,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const renderFeaturedContentCard = (item: any, supportText?: string): string => {
             const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
             const type = asString(item.type || "").trim().toLowerCase();
+            const isLegacyPublication = asString((item as any).assetOrigin || "").trim().toLowerCase() === "legacy_import";
+            const publicationHash = asString((item as any).publicationManifestSha256 || "").trim();
+            const legacyExternalUrl =
+              publicSafeUrl((item as any).legacyYoutubeUrl) ||
+              publicSafeUrl((item as any).legacySpotifyUrl) ||
+              publicSafeUrl((item as any).legacyAppleMusicUrl) ||
+              publicSafeUrl((item as any).legacyExternalUrl) ||
+              "";
             const typeLabel =
               type === "video" ? "Video" :
               type === "song" ? "Song" :
@@ -33468,6 +33730,37 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               typeLabel === "Song" || typeLabel === "Audio" ? "Listen" :
               typeLabel === "Article" ? "Read" :
               "View";
+            if (isLegacyPublication) {
+              const artworkUrl = publicSafeUrl((item as any).legacyArtworkUrl) || "";
+              const provider = asString((item as any).legacyProvider || "").trim();
+              const legacyArtist = asString((item as any).legacyArtist || "").trim();
+              const publicationBadge = publicationHash ? "Publication Hash" : "Legacy";
+              const legacySupport = [
+                legacyArtist ? escHtml(legacyArtist) : `${safeHandle} • Legacy work`,
+                publicationHash ? `Publication Hash ${escHtml(shortPublicationHash(publicationHash) || "")}` : null
+              ].filter(Boolean).join(" • ");
+              const mediaHtml = artworkUrl
+                ? `<img src="${escHtml(artworkUrl)}" alt="${safeTitle} artwork" class="featured-image" referrerpolicy="no-referrer" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                   <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">Legacy</span></div>`
+                : `<div class="featured-image-fallback"><span class="featured-fallback">Legacy</span></div>`;
+              return `<article class="featured-item">
+                <div class="featured-media">${mediaHtml}</div>
+                <div class="featured-meta">
+                  <div class="featured-topline">
+                    <span class="featured-type-badge">Proven Legacy Work</span>
+                    <span class="featured-verified">${escHtml(publicationBadge)}</span>
+                    ${provider ? `<span class="featured-type-badge">${escHtml(provider)}</span>` : ""}
+                  </div>
+                  <div class="featured-title">${safeTitle}</div>
+                  <div class="featured-support">${legacySupport}</div>
+                  ${
+                    legacyExternalUrl
+                      ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(legacyExternalUrl)}" target="_blank" rel="noreferrer">View external &#8599;</a></div>`
+                      : ""
+                  }
+                </div>
+              </article>`;
+            }
             const manifestJson = ((item as any).manifest?.json || {}) as any;
             const previewObjectKey = asString(manifestJson?.preview || "").trim();
             const primaryObjectKey =
