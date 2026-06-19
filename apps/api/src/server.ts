@@ -34018,10 +34018,25 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     return out;
   };
 
+  const isFeaturedLegacyPublication = (item: any): boolean =>
+    asString((item as any)?.assetOrigin || "").trim().toLowerCase() === "legacy_import" &&
+    asString((item as any)?.status || "").trim().toLowerCase() === "published" &&
+    asString((item as any)?.proofBundleType || "").trim().toLowerCase() === "publication" &&
+    Boolean(asString((item as any)?.publicationManifestSha256 || "").trim());
   const featuredAuthoredForRender = dedupeProfileEntries(featuredContentForRender.filter(
-    (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
+    (item: any) =>
+      asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations" &&
+      !isFeaturedLegacyPublication(item)
   ));
-  const authoredKeys = new Set(featuredAuthoredForRender.map((item: any) => profileCanonicalContentKey(item)));
+  const featuredLegacyForRender = dedupeProfileEntries(featuredContentForRender.filter(
+    (item: any) =>
+      asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations" &&
+      isFeaturedLegacyPublication(item)
+  ));
+  const authoredKeys = new Set([
+    ...featuredAuthoredForRender.map((item: any) => profileCanonicalContentKey(item)),
+    ...featuredLegacyForRender.map((item: any) => profileCanonicalContentKey(item))
+  ]);
 
   const featuredDerivativeForRender = dedupeProfileEntries(featuredContentForRender.filter(
     (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() === "collaborations"
@@ -34029,6 +34044,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const featuredContentHtml =
     featuredAuthoredForRender.length > 0
       ? featuredAuthoredForRender.map((item) => renderFeaturedContentCard(item)).join("")
+      : "";
+  const featuredLegacyContentHtml =
+    featuredLegacyForRender.length > 0
+      ? featuredLegacyForRender.map((item) => renderFeaturedContentCard(item)).join("")
       : "";
   const featuredDerivativeCollaborationHtml =
     featuredDerivativeForRender.length > 0
@@ -35039,11 +35058,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   </section>`
         : `<section class="section">
     <h3>Certifyd Works</h3>
-    <div class="empty-state">No published works are featured yet. New releases will appear here when the creator features content.</div>
-  </section>`
-    }
-    ${
-      highlightedParticipationsHtml
+	    <div class="empty-state">No published works are featured yet. New releases will appear here when the creator features content.</div>
+	  </section>`
+	    }
+	    ${
+	      featuredLegacyContentHtml
+	        ? `<section class="section">
+	    <h3>Proven Legacy Works</h3>
+	    <div class="section-sub">Externally published works proven with source evidence and a Publication Hash.</div>
+	    <div class="line featured-grid">${featuredLegacyContentHtml}</div>
+	  </section>`
+	        : ""
+	    }
+	    ${
+	      highlightedParticipationsHtml
         ? `<section class="section">
     <h3>Collaborations</h3>
     <div class="section-sub">Split participation credits and approved derivative collaborations.</div>
