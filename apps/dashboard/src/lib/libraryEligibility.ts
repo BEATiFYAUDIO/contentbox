@@ -107,7 +107,7 @@ export function getContentExclusionReason(content: ContentLike | null | undefine
   if (hasValue(content.archivedAt)) return "archived";
   if (hasValue(content.trashedAt)) return "trashed";
   if (hasValue(content.deletedAt) || hasValue(content.tombstonedAt)) return "deleted";
-  if (!isPublished(content.status) && !hasMediaProofBundle(content) && !hasPublicationProofBundle(content)) return "inactive";
+  if (!isPublished(content.status)) return "inactive";
   return null;
 }
 
@@ -120,7 +120,7 @@ export function getAvailabilityState(content: ContentLike | null | undefined): A
   if (hasValue(content.archivedAt)) return "archived";
   if (hasValue(content.trashedAt)) return "trashed";
   if (hasValue(content.deletedAt) || hasValue(content.tombstonedAt)) return "deleted";
-  if (!isPublished(content.status) && !hasMediaProofBundle(content) && !hasPublicationProofBundle(content)) return "inactive";
+  if (!isPublished(content.status)) return "inactive";
   return "active";
 }
 

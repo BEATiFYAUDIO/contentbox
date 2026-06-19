@@ -1525,6 +1525,32 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
+  async function publishLegacyWork(contentId: string) {
+    if (publishBusy[contentId]) return;
+    setPublishBusy((m) => ({ ...m, [contentId]: true }));
+    setPublishMsg((m) => ({ ...m, [contentId]: "" }));
+    try {
+      const res = await api<any>(`/api/content/${contentId}/publish-legacy`, "POST", {});
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === contentId
+            ? {
+                ...it,
+                status: "published",
+                publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString()
+              }
+            : it
+        )
+      );
+      await load(false);
+      setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
+    } catch (e: any) {
+      setPublishMsg((m) => ({ ...m, [contentId]: e?.message || "Publish failed." }));
+    } finally {
+      setPublishBusy((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
   async function loadParentLink(contentId: string) {
     try {
       const data = await api<ParentLinkInfo | { parentLink: null }>(`/content/${contentId}/parent-link`, "GET");
@@ -3182,6 +3208,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const allowRestore = canRestore(uiState);
               const allowUpload = canUpload(uiState);
               const allowCoverUpload = uiState === "draft" || uiState === "published";
+              const canPublishLegacyWork =
+                isOwner &&
+                isLegacyAsset &&
+                allowPublish &&
+                proofBundleType === "publication" &&
+                Boolean(publicationManifestSha256) &&
+                legacySourceVerified;
               const storefrontStatus = (it.storefrontStatus || "DISABLED") as "DISABLED" | "UNLISTED" | "LISTED";
               const manifestSha256 = it.manifest?.sha256 || "";
               const publicMetaUrl = `${apiBase}/public/content/${it.id}`;
@@ -3440,6 +3473,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 >
                                   Open Source
                                 </a>
+                              ) : null}
+                              {canPublishLegacyWork ? (
+                                <button
+                                  type="button"
+                                  className="text-sm rounded-lg border border-purple-800 bg-purple-950/30 px-3 py-1 text-purple-100 hover:bg-purple-900/40 disabled:opacity-60 whitespace-nowrap"
+                                  onClick={() => publishLegacyWork(it.id)}
+                                  disabled={Boolean(publishBusy[it.id])}
+                                  title="Publish this Proven Legacy Work to Library"
+                                >
+                                  {publishBusy[it.id] ? "Publishing…" : "Publish"}
+                                </button>
                               ) : null}
 
                               {!isLegacyAsset && isOwner && allowUpload ? (

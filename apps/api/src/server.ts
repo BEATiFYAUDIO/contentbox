@@ -26429,6 +26429,90 @@ app.post("/api/content/:contentId/source-references/resolve", { preHandler: requ
   });
 });
 
+app.post("/api/content/:contentId/publish-legacy", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).contentId);
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    include: { sourceReferences: true }
+  });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+  if (content.deletedAt || asString(content.deletedReason || "").trim().toLowerCase() === "hard") {
+    return reply.code(409).send({
+      code: "legacy_content_deleted",
+      message: "Deleted Legacy works cannot be published."
+    });
+  }
+  if (asString(content.assetOrigin || "").trim().toLowerCase() !== "legacy_import") {
+    return badRequest(reply, "Only Legacy assets can use this publish action.");
+  }
+  if (asString(content.proofBundleType || "").trim().toLowerCase() !== "publication") {
+    return reply.code(409).send({
+      code: "publication_manifest_required",
+      message: "A Publication Manifest is required before publishing this Legacy work."
+    });
+  }
+  const publicationHash = asString(content.publicationManifestSha256 || "").trim();
+  if (!publicationHash) {
+    return reply.code(409).send({
+      code: "publication_hash_required",
+      message: "A Publication Hash is required before publishing this Legacy work."
+    });
+  }
+  const sourceVerified = content.sourceReferences.some((source: any) => Boolean(source?.sourceVerified));
+  if (!sourceVerified) {
+    return reply.code(409).send({
+      code: "source_proof_required",
+      message: "A verified source reference is required before publishing this Legacy work."
+    });
+  }
+  const publishGuard = assertLifecycleCanPublish(content);
+  if (!publishGuard.ok) {
+    return reply.code(409).send({ code: publishGuard.code, message: publishGuard.message });
+  }
+
+  const now = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.contentItem.update({
+      where: { id: contentId },
+      data: { status: "published" }
+    });
+    await tx.auditEvent.create({
+      data: {
+        userId,
+        action: "content.publish_legacy",
+        entityType: "ContentItem",
+        entityId: contentId,
+        payloadJson: {
+          assetOrigin: "legacy_import",
+          proofBundleType: "publication",
+          publicationManifestSha256: publicationHash,
+          publishedAt: now.toISOString()
+        } as any
+      }
+    }).catch(() => null);
+  });
+  const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  app.log.info(
+    {
+      contentId,
+      userId,
+      creatorId: content.ownerUserId,
+      proofBundleType: "publication",
+      publicationManifestSha256: publicationHash,
+      cacheInvalidation
+    },
+    "legacy.publish_projection_cache_invalidated"
+  );
+  return reply.send({
+    ok: true,
+    publishedAt: now.toISOString(),
+    proofBundleType: "publication",
+    publicationManifestSha256: publicationHash
+  });
+});
+
 app.get("/api/content/:contentId/external-identifiers", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const content = await requireOwnedContentForExternalIdentifiers(req, reply);
   if (!content) return;
