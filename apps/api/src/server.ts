@@ -25382,6 +25382,23 @@ function normalizeRedditSourceUrl(value: unknown): { account: string; accountUrl
   return { account, accountUrl: `https://www.reddit.com/user/${account}` };
 }
 
+function normalizeHyperfollowSourceUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase();
+  if (host !== "distrokid.com" && host !== "www.distrokid.com" && host !== "hyperfollow.com" && host !== "www.hyperfollow.com") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  let account = "";
+  if ((host === "distrokid.com" || host === "www.distrokid.com") && parts[0]?.toLowerCase() === "hyperfollow" && parts[1]) {
+    account = parts[1].trim().toLowerCase();
+  } else if ((host === "hyperfollow.com" || host === "www.hyperfollow.com") && parts[0]) {
+    account = parts[0].trim().toLowerCase();
+  }
+  account = normalizeSourceAccount(account) || "";
+  if (!account || !/^[a-z0-9][a-z0-9._-]{1,80}$/i.test(account)) return null;
+  return { account, accountUrl: `https://distrokid.com/hyperfollow/${account}` };
+}
+
 function domainSourceFromUrl(value: unknown): { account: string; accountUrl: string } | null {
   const url = parseConnectWorkUrl(value);
   if (!url) return null;
@@ -25401,6 +25418,8 @@ function sourceFromUrl(value: unknown): { platform: string; account: string; acc
   if (rumble) return { platform: "rumble", account: rumble.account, accountUrl: rumble.accountUrl, resolver: "rumble_url" };
   const reddit = normalizeRedditSourceUrl(value);
   if (reddit) return { platform: "reddit", account: reddit.account, accountUrl: reddit.accountUrl, resolver: "reddit_url" };
+  const hyperfollow = normalizeHyperfollowSourceUrl(value);
+  if (hyperfollow) return { platform: "hyperfollow", account: hyperfollow.account, accountUrl: hyperfollow.accountUrl, resolver: "hyperfollow_url" };
   const domain = domainSourceFromUrl(value);
   if (domain) return { platform: "domain", account: domain.account, accountUrl: domain.accountUrl, resolver: "domain_url" };
   return null;
@@ -25489,6 +25508,33 @@ function youtubeVideoIdFromUrl(url: URL): string | null {
   return asString(url.searchParams.get("v") || "").trim() || null;
 }
 
+function decodeHtmlMetadata(value: unknown): string {
+  return asString(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractHtmlMetaContent(html: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`<meta[^>]+property=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${escaped}["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+name=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${escaped}["'][^>]*>`, "i")
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    const content = decodeHtmlMetadata(match?.[1] || "");
+    if (content) return content;
+  }
+  return null;
+}
+
 function appleMusicIdFromUrl(url: URL): { id: string; kind: "track" | "album" } | null {
   const host = url.hostname.toLowerCase();
   if (!host.includes("music.apple.com") && !host.includes("itunes.apple.com")) return null;
@@ -25498,6 +25544,23 @@ function appleMusicIdFromUrl(url: URL): { id: string; kind: "track" | "album" } 
   const id = [...parts].reverse().find((part) => /^\d+$/.test(part));
   if (!id) return null;
   return { id, kind: "album" };
+}
+
+function hyperfollowUrlParts(url: URL): { account: string; releaseSlug: string | null } | null {
+  const host = url.hostname.toLowerCase();
+  if (host !== "distrokid.com" && host !== "www.distrokid.com" && host !== "hyperfollow.com" && host !== "www.hyperfollow.com") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  let account = "";
+  let releaseSlug: string | null = null;
+  if ((host === "distrokid.com" || host === "www.distrokid.com") && parts[0]?.toLowerCase() === "hyperfollow" && parts[1]) {
+    account = parts[1].trim().toLowerCase();
+    releaseSlug = parts[2] ? parts[2].trim().toLowerCase() : null;
+  } else if ((host === "hyperfollow.com" || host === "www.hyperfollow.com") && parts[0]) {
+    account = parts[0].trim().toLowerCase();
+    releaseSlug = parts[1] ? parts[1].trim().toLowerCase() : null;
+  }
+  if (!/^[a-z0-9][a-z0-9._-]{1,80}$/i.test(account)) return null;
+  return { account, releaseSlug };
 }
 
 async function fetchResolverJsonWithTimeout(url: string, headers?: Record<string, string>, timeoutMs = 6000): Promise<any | null> {
@@ -25739,10 +25802,81 @@ async function resolveYoutubeUrl(url: URL, userId: string): Promise<ConnectWorkD
   });
 }
 
+async function resolveHyperfollowUrl(url: URL, userId: string): Promise<ConnectWorkDiscovery | null> {
+  const parts = hyperfollowUrlParts(url);
+  if (!parts) return null;
+  const source = await matchSourceProofForUser(userId, sourceFromUrl(url.toString()));
+  const canonicalUrl = sanitizeExternalMetadataUrl(url.toString());
+  let html = "";
+  try {
+    const res = await fetchWithTimeout(url.toString(), {
+      method: "GET",
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "User-Agent": "ContentBox-Certifyd/0.1 (https://certifyd.me)"
+      } as any
+    } as any, 7000);
+    if (res.ok) html = await res.text().catch(() => "");
+  } catch {
+    html = "";
+  }
+  const rawTitle =
+    extractHtmlMetaContent(html, "og:title") ||
+    extractHtmlMetaContent(html, "twitter:title") ||
+    decodeHtmlMetadata(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "");
+  const description =
+    extractHtmlMetaContent(html, "og:description") ||
+    extractHtmlMetaContent(html, "twitter:description") ||
+    null;
+  const artworkUrl =
+    sanitizeExternalMetadataUrl(extractHtmlMetaContent(html, "og:image")) ||
+    sanitizeExternalMetadataUrl(extractHtmlMetaContent(html, "twitter:image"));
+  const foundUrls = Array.from(html.matchAll(/https?:\/\/[^"'\\\s<>]+/gi))
+    .map((match) => sanitizeExternalMetadataUrl(match[0]))
+    .filter(Boolean) as string[];
+  const firstUrlForHost = (hosts: string[]) =>
+    foundUrls.find((candidate) => {
+      try {
+        const host = new URL(candidate).hostname.toLowerCase();
+        return hosts.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+      } catch {
+        return false;
+      }
+    }) || null;
+  const spotifyUrl = firstUrlForHost(["spotify.com"]);
+  const appleMusicUrl = firstUrlForHost(["music.apple.com", "itunes.apple.com"]);
+  const youtubeUrl = firstUrlForHost(["youtube.com", "youtu.be", "music.youtube.com"]);
+  const titleParts = rawTitle
+    .split(/\s+(?:by|from)\s+/i)
+    .map((part) => sanitizeLegacyMetadataText(part, 280))
+    .filter(Boolean);
+  const title = titleParts[0] || sanitizeLegacyMetadataText(parts.releaseSlug?.replace(/[-_]+/g, " "), 280);
+  const artist = titleParts.length > 1 ? titleParts.slice(1).join(" by ") : sanitizeLegacyMetadataText(parts.account, 180);
+
+  return discoveryWithPrimaryUrl({
+    title,
+    artist,
+    artworkUrl,
+    releaseTitle: title,
+    releaseDate: null,
+    description: description || "Hyperfollow release metadata resolved from public page metadata.",
+    identifiers: [],
+    spotifyUrl,
+    appleMusicUrl,
+    youtubeUrl,
+    musicBrainzUrl: null,
+    discogsUrl: null,
+    externalUrl: canonicalUrl,
+    provider: "Hyperfollow",
+    ...source
+  });
+}
+
 async function resolveConnectWorkUrl(rawUrl: unknown, userId: string): Promise<ConnectWorkDiscovery | null> {
   const url = parseConnectWorkUrl(rawUrl);
   if (!url) return null;
   return (
+    await resolveHyperfollowUrl(url, userId) ||
     await resolveSpotifyUrl(url) ||
     await resolveAppleMusicUrl(url) ||
     await resolveYoutubeUrl(url, userId)
@@ -26107,7 +26241,7 @@ app.post("/api/connect-work/resolve-url", { preHandler: requireAuth }, async (re
   const userId = (req.user as JwtUser).sub;
   const body = (req.body || {}) as { url?: unknown };
   const url = parseConnectWorkUrl(body.url);
-  if (!url) return badRequest(reply, "Supported Spotify, Apple Music, or YouTube URL required.");
+  if (!url) return badRequest(reply, "Supported Spotify, Apple Music, YouTube, or Hyperfollow URL required.");
   const discovery = await resolveConnectWorkUrl(url.toString(), userId);
   if (!discovery) {
     const source = await matchSourceProofForUser(userId, sourceFromUrl(url.toString()));

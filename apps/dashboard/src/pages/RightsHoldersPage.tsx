@@ -156,7 +156,7 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-sm font-semibold uppercase tracking-wide text-neutral-400">Connect Work</div>
         <div className="mt-1 text-sm text-neutral-400">
-          Paste a Spotify, Apple Music, or YouTube URL, or enter an industry identifier. Review discovered metadata, then create a private Legacy asset in your catalog.
+          Paste a Spotify, Apple Music, YouTube, or Hyperfollow URL, or enter an industry identifier. Review discovered metadata, then create a private Legacy asset in your catalog.
         </div>
         <div className="mt-3 inline-flex rounded-full border border-neutral-800 bg-neutral-950/50 px-3 py-1 text-xs text-neutral-400">
           Spotify rich metadata:{" "}
@@ -210,7 +210,7 @@ export default function RightsHoldersPage({ onOpenLegacyCatalog }: { onOpenLegac
           ) : null}
           <div>
             <label className="mb-1 block text-xs text-neutral-400" htmlFor="connect-work-value">
-              {mode === "url" ? "Spotify, Apple Music, or YouTube URL" : "Identifier value"}
+              {mode === "url" ? "Spotify, Apple Music, YouTube, or Hyperfollow URL" : "Identifier value"}
             </label>
             <input
               id="connect-work-value"

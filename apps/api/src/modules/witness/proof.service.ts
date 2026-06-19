@@ -16,7 +16,7 @@ import {
   type ProofRecordDto
 } from "./proof.types.js";
 
-type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok" | "rumble" | "reddit" | "substack";
+type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok" | "rumble" | "reddit" | "substack" | "hyperfollow";
 
 function proofModel(prisma: PrismaClient): any {
   const model = (prisma as any).proofRecord;
@@ -51,6 +51,7 @@ function normalizeSocialProvider(input: string): SocialProvider | "" {
   if (src === "rumble") return "rumble";
   if (src === "reddit") return "reddit";
   if (src === "substack") return "substack";
+  if (src === "hyperfollow") return "hyperfollow";
   return "";
 }
 
@@ -103,6 +104,12 @@ function normalizeSocialAccount(provider: SocialProvider, input: string): string
 
   if (provider === "substack") {
     const normalized = normalizeSubstackProfileUrl(src);
+    if (normalized) return normalized.account;
+    return normalizeSocialUsername(src);
+  }
+
+  if (provider === "hyperfollow") {
+    const normalized = normalizeHyperfollowUrl(src);
     if (normalized) return normalized.account;
     return normalizeSocialUsername(src);
   }
@@ -382,6 +389,22 @@ function normalizeSubstackProfileUrl(input: string): { canonicalUrl: string; acc
   return null;
 }
 
+function normalizeHyperfollowUrl(input: string): { canonicalUrl: string; account: string } | null {
+  const url = normalizeHttpsUrl(input);
+  if (!url) return null;
+  const host = String(url.hostname || "").toLowerCase();
+  if (host !== "distrokid.com" && host !== "www.distrokid.com" && host !== "hyperfollow.com" && host !== "www.hyperfollow.com") return null;
+  const parts = String(url.pathname || "").split("/").filter(Boolean);
+  let account = "";
+  if ((host === "distrokid.com" || host === "www.distrokid.com") && parts[0]?.toLowerCase() === "hyperfollow" && parts[1]) {
+    account = String(parts[1] || "").trim().toLowerCase();
+  } else if ((host === "hyperfollow.com" || host === "www.hyperfollow.com") && parts[0]) {
+    account = String(parts[0] || "").trim().toLowerCase();
+  }
+  if (!/^[a-z0-9][a-z0-9._-]{1,80}$/i.test(account)) return null;
+  return { canonicalUrl: `https://distrokid.com/hyperfollow/${account}`, account };
+}
+
 function parseNostrClaim(claim: unknown): { pubkey: string; challenge: string; challengeText: string } | null {
   if (!claim || typeof claim !== "object") return null;
   const c = claim as Record<string, unknown>;
@@ -646,7 +669,8 @@ function classifySocialFetchIssue(provider: SocialProvider, fetched: FetchUrlRes
       provider === "x" ||
       provider === "rumble" ||
       provider === "reddit" ||
-      provider === "substack") &&
+      provider === "substack" ||
+      provider === "hyperfollow") &&
     looksHtml &&
     hasLoginWallMarker
   ) {
@@ -674,6 +698,7 @@ function socialChallengeMissReason(provider: SocialProvider): string {
   if (provider === "rumble") return "rumble-public-page-fetched-but-challenge-missing";
   if (provider === "reddit") return "reddit-public-html-missing-challenge";
   if (provider === "substack") return "substack-public-html-missing-challenge";
+  if (provider === "hyperfollow") return "hyperfollow-public-html-missing-challenge";
   return "x-public-page-fetched-but-challenge-missing";
 }
 
@@ -684,6 +709,7 @@ function canonicalProfileUrlForProvider(provider: SocialProvider, account: strin
   if (provider === "rumble") return `https://rumble.com/c/${account}`;
   if (provider === "reddit") return `https://www.reddit.com/user/${account}`;
   if (provider === "substack") return `https://${account}.substack.com`;
+  if (provider === "hyperfollow") return `https://distrokid.com/hyperfollow/${account}`;
   if (provider === "x") return `https://x.com/${account}`;
   if (/^UC[a-zA-Z0-9_-]{10,}$/.test(account)) return `https://www.youtube.com/channel/${account}`;
   return `https://www.youtube.com/@${account}`;
@@ -729,6 +755,10 @@ function providerProfileUrlCandidates(
     push(`https://${account}.substack.com/about`);
     push(`https://${account}.substack.com`);
     push(`https://substack.com/@${account}`);
+  } else if (provider === "hyperfollow") {
+    push(`https://distrokid.com/hyperfollow/${account}`);
+    push(`https://www.distrokid.com/hyperfollow/${account}`);
+    push(`https://hyperfollow.com/${account}`);
   } else if (provider === "youtube") {
     if (/^UC[a-zA-Z0-9_-]{10,}$/.test(account)) {
       push(`https://www.youtube.com/channel/${account}`);
@@ -769,6 +799,10 @@ function accountFromProviderUrl(provider: SocialProvider, input: string): string
   }
   if (provider === "substack") {
     const parsed = normalizeSubstackProfileUrl(input);
+    return parsed ? parsed.account : null;
+  }
+  if (provider === "hyperfollow") {
+    const parsed = normalizeHyperfollowUrl(input);
     return parsed ? parsed.account : null;
   }
   return normalizeXAccountFromUrl(input);
@@ -1006,7 +1040,8 @@ export async function createSocialChallenge(
     provider !== "x" &&
     provider !== "rumble" &&
     provider !== "reddit" &&
-    provider !== "substack"
+    provider !== "substack" &&
+    provider !== "hyperfollow"
   ) {
     throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
   }
@@ -1068,6 +1103,12 @@ export async function createSocialChallenge(
     if (!/^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/i.test(account)) throw new Error("INVALID_SOCIAL_USERNAME");
     profileUrl = canonicalProfileUrlForProvider(provider, account);
     postingHint = "Add this exact text to your public Substack About bio, then verify using your publication URL.";
+  } else if (provider === "hyperfollow") {
+    const normalizedFromUrl = normalizeHyperfollowUrl(inputUsername);
+    if (normalizedFromUrl) account = normalizedFromUrl.account;
+    if (!/^[a-z0-9][a-z0-9._-]{1,80}$/i.test(account)) throw new Error("INVALID_SOCIAL_USERNAME");
+    profileUrl = canonicalProfileUrlForProvider(provider, account);
+    postingHint = "Add this exact text to your public Hyperfollow page, then verify using your Hyperfollow release or artist URL.";
   } else if (provider === "x") {
     if (!isValidXUsername(account)) throw new Error("INVALID_SOCIAL_USERNAME");
     profileUrl = canonicalProfileUrlForProvider(provider, account);
@@ -1175,7 +1216,8 @@ export async function verifySocialProof(
     provider !== "x" &&
     provider !== "rumble" &&
     provider !== "reddit" &&
-    provider !== "substack"
+    provider !== "substack" &&
+    provider !== "hyperfollow"
   ) {
     throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
   }

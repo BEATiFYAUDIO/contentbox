@@ -191,7 +191,7 @@ export function registerWitnessProofRoutes(app: any, deps: {
     } catch (e: any) {
       const message = String(e?.message || "");
       if (message === "INVALID_SOCIAL_PROVIDER") {
-        return reply.code(400).send({ error: "INVALID_SOCIAL_PROVIDER", message: "Provider must be github, youtube, tiktok, rumble, or x." });
+        return reply.code(400).send({ error: "INVALID_SOCIAL_PROVIDER", message: "Provider must be github, youtube, tiktok, rumble, hyperfollow, or x." });
       }
       if (message === "SOCIAL_PROVIDER_NOT_SUPPORTED") {
         return reply.code(400).send({ error: "SOCIAL_PROVIDER_NOT_SUPPORTED", message: "This provider is not enabled yet in this build." });
@@ -242,7 +242,7 @@ export function registerWitnessProofRoutes(app: any, deps: {
     } catch (e: any) {
       const message = String(e?.message || "");
       if (message === "INVALID_SOCIAL_PROVIDER") {
-        return reply.code(400).send({ error: "INVALID_SOCIAL_PROVIDER", message: "Provider must be github, youtube, tiktok, rumble, or x." });
+        return reply.code(400).send({ error: "INVALID_SOCIAL_PROVIDER", message: "Provider must be github, youtube, tiktok, rumble, hyperfollow, or x." });
       }
       if (message === "SOCIAL_PROVIDER_NOT_SUPPORTED") {
         return reply.code(400).send({ error: "SOCIAL_PROVIDER_NOT_SUPPORTED", message: "This provider is not enabled yet in this build." });

@@ -25,7 +25,7 @@ export type ProofRecord = {
   failureReason: string | null;
 };
 
-export type SocialProvider = "github" | "x" | "youtube" | "tiktok" | "rumble" | "reddit" | "substack";
+export type SocialProvider = "github" | "x" | "youtube" | "tiktok" | "rumble" | "reddit" | "substack" | "hyperfollow";
 
 function witnessDebug(event: string, payload?: Record<string, unknown>): void {
   try {
