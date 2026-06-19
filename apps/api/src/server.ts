@@ -9,6 +9,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { argon2id } from "@noble/hashes/argon2";
@@ -11222,11 +11223,16 @@ async function storeAvatarBufferForUser(userId: string, buf: Buffer, contentType
 }
 
 type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
+type ProfileCardStrength = "light" | "medium" | "strong";
+type ProfileOverlayStrength = "lighter" | "balanced" | "darker";
+type ProfileButtonStyle = "glass" | "filled" | "outline";
 
 type ProfileTheme = {
   themeWallpaperImageUrl: string | null;
   themeMode: ProfileThemeMode;
   themeAccentColor: string;
+  themeAccentOverrideColor: string | null;
+  themeResolvedAccentColor: string;
   themeBackgroundColor: string;
   themeCardColor: string;
   themeBorderColor: string;
@@ -11234,11 +11240,15 @@ type ProfileTheme = {
   themeButtonTextColor: string;
   themeTextColor: string;
   themeMutedTextColor: string;
+  themeCardStrength: ProfileCardStrength;
+  themeOverlayStrength: ProfileOverlayStrength;
+  themeButtonStyle: ProfileButtonStyle;
+  themeSuggestedAccentColors: string[];
   themeGeneratedFromImage: boolean;
   themeUpdatedAt: string | null;
 };
 
-const PROFILE_THEME_DEFAULTS: Omit<ProfileTheme, "themeWallpaperImageUrl" | "themeMode" | "themeGeneratedFromImage" | "themeUpdatedAt"> = {
+const PROFILE_THEME_DEFAULTS = {
   themeAccentColor: "#d4b26a",
   themeBackgroundColor: "#040506",
   themeCardColor: "#0a0b0d",
@@ -11253,6 +11263,24 @@ function normalizeProfileThemeMode(value: unknown): ProfileThemeMode {
   const mode = asString(value || "").trim().toLowerCase().replace(/-/g, "_");
   if (mode === "vibrant" || mode === "dark" || mode === "minimal" || mode === "high_contrast") return mode;
   return "auto";
+}
+
+function normalizeProfileCardStrength(value: unknown): ProfileCardStrength {
+  const raw = asString(value || "").trim().toLowerCase();
+  if (raw === "light" || raw === "strong") return raw;
+  return "medium";
+}
+
+function normalizeProfileOverlayStrength(value: unknown): ProfileOverlayStrength {
+  const raw = asString(value || "").trim().toLowerCase();
+  if (raw === "lighter" || raw === "darker") return raw;
+  return "balanced";
+}
+
+function normalizeProfileButtonStyle(value: unknown): ProfileButtonStyle {
+  const raw = asString(value || "").trim().toLowerCase();
+  if (raw === "filled" || raw === "outline") return raw;
+  return "glass";
 }
 
 function normalizeHexColor(value: unknown): string | null {
@@ -11306,63 +11334,309 @@ function readableTextFor(background: string): string {
   return contrastRatio(background, "#f8fafc") >= contrastRatio(background, "#08090b") ? "#f8fafc" : "#08090b";
 }
 
-function extractAccentFromImageBytes(buf: Buffer): string {
-  if (!buf?.length) return PROFILE_THEME_DEFAULTS.themeAccentColor;
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let count = 0;
+function uniqueProfileAccentSuggestions(colors: Array<string | null | undefined>): string[] {
+  const out: string[] = [];
+  for (const color of colors) {
+    const hex = normalizeHexColor(color);
+    if (!hex) continue;
+    if (out.some((existing) => colorDistance(existing, hex) < 24)) continue;
+    out.push(hex);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+type ExtractedProfilePalette = {
+  dark: string;
+  accent: string;
+  secondary: string;
+  ok: boolean;
+};
+
+function colorDistance(a: string, b: string): number {
+  const ca = hexToRgb(a);
+  const cb = hexToRgb(b);
+  return Math.sqrt(Math.pow(ca.r - cb.r, 2) + Math.pow(ca.g - cb.g, 2) + Math.pow(ca.b - cb.b, 2));
+}
+
+function boostColorForAccent(hex: string): string {
+  const { r, g, b } = hexToRgb(hex);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max - min < 22) return mixHex(hex, PROFILE_THEME_DEFAULTS.themeAccentColor, 0.15);
+  const lift = max < 130 ? 36 : max < 180 ? 18 : 0;
+  return rgbToHex(
+    r === max ? Math.min(255, r + lift) : r + 10,
+    g === max ? Math.min(255, g + lift) : g + 10,
+    b === max ? Math.min(255, b + lift) : b + 10
+  );
+}
+
+type ProfileColorCluster = {
+  key: string;
+  count: number;
+  r: number;
+  g: number;
+  b: number;
+  saturationSum: number;
+  brightnessSum: number;
+  luminanceSum: number;
+};
+
+function profileClusterHex(cluster: ProfileColorCluster): string {
+  return rgbToHex(cluster.r / cluster.count, cluster.g / cluster.count, cluster.b / cluster.count);
+}
+
+function profileClusterSaturation(cluster: ProfileColorCluster): number {
+  return cluster.saturationSum / Math.max(1, cluster.count);
+}
+
+function profileClusterBrightness(cluster: ProfileColorCluster): number {
+  return cluster.brightnessSum / Math.max(1, cluster.count);
+}
+
+function profileClusterLuminance(cluster: ProfileColorCluster): number {
+  return cluster.luminanceSum / Math.max(1, cluster.count);
+}
+
+function pngPaethPredictor(left: number, above: number, upperLeft: number): number {
+  const p = left + above - upperLeft;
+  const pa = Math.abs(p - left);
+  const pb = Math.abs(p - above);
+  const pc = Math.abs(p - upperLeft);
+  if (pa <= pb && pa <= pc) return left;
+  if (pb <= pc) return above;
+  return upperLeft;
+}
+
+function extractRgbSamplesFromPngBuffer(buf: Buffer): Array<{ r: number; g: number; b: number }> {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (!buf.subarray(0, 8).equals(signature)) return [];
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idatChunks: Buffer[] = [];
+  while (offset + 12 <= buf.length) {
+    const length = buf.readUInt32BE(offset);
+    const type = buf.subarray(offset + 4, offset + 8).toString("ascii");
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    if (dataEnd + 4 > buf.length) break;
+    const data = buf.subarray(dataStart, dataEnd);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      idatChunks.push(Buffer.from(data));
+    } else if (type === "IEND") {
+      break;
+    }
+    offset = dataEnd + 4;
+  }
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : 0;
+  if (!width || !height || bitDepth !== 8 || !channels || idatChunks.length === 0) return [];
+  let inflated: Buffer;
+  try {
+    inflated = zlib.inflateSync(Buffer.concat(idatChunks));
+  } catch {
+    return [];
+  }
+  const bytesPerPixel = channels;
+  const rowBytes = width * channels;
+  const expectedMin = (rowBytes + 1) * height;
+  if (inflated.length < expectedMin) return [];
+  const previous = Buffer.alloc(rowBytes);
+  const current = Buffer.alloc(rowBytes);
+  const samples: Array<{ r: number; g: number; b: number }> = [];
+  const pixelStride = Math.max(1, Math.floor(Math.sqrt((width * height) / 5000)));
+  let inputOffset = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[inputOffset++];
+    for (let x = 0; x < rowBytes; x += 1) {
+      const raw = inflated[inputOffset++];
+      const left = x >= bytesPerPixel ? current[x - bytesPerPixel] : 0;
+      const above = previous[x] || 0;
+      const upperLeft = x >= bytesPerPixel ? previous[x - bytesPerPixel] || 0 : 0;
+      let value = raw;
+      if (filter === 1) value = raw + left;
+      else if (filter === 2) value = raw + above;
+      else if (filter === 3) value = raw + Math.floor((left + above) / 2);
+      else if (filter === 4) value = raw + pngPaethPredictor(left, above, upperLeft);
+      current[x] = value & 0xff;
+    }
+    if (y % pixelStride === 0) {
+      for (let px = 0; px < width; px += pixelStride) {
+        const idx = px * channels;
+        if (colorType === 0) {
+          const v = current[idx];
+          samples.push({ r: v, g: v, b: v });
+        } else {
+          samples.push({ r: current[idx], g: current[idx + 1], b: current[idx + 2] });
+        }
+      }
+    }
+    previous.set(current);
+  }
+  return samples;
+}
+
+function extractFallbackRgbSamplesFromBytes(buf: Buffer): Array<{ r: number; g: number; b: number }> {
+  const samples: Array<{ r: number; g: number; b: number }> = [];
   const start = Math.min(128, Math.floor(buf.length / 10));
-  const step = Math.max(17, Math.floor(buf.length / 6000));
+  const step = Math.max(31, Math.floor(buf.length / 2500));
   for (let i = start; i + 2 < buf.length; i += step) {
-    const rr = buf[i];
-    const gg = buf[i + 1];
-    const bb = buf[i + 2];
+    samples.push({ r: buf[i], g: buf[i + 1], b: buf[i + 2] });
+    if (samples.length >= 2500) break;
+  }
+  return samples;
+}
+
+function extractProfilePaletteFromImageBytes(buf: Buffer): ExtractedProfilePalette {
+  if (!buf?.length) {
+    return {
+      dark: PROFILE_THEME_DEFAULTS.themeBackgroundColor,
+      accent: PROFILE_THEME_DEFAULTS.themeAccentColor,
+      secondary: PROFILE_THEME_DEFAULTS.themeBorderColor,
+      ok: false
+    };
+  }
+  const clusters = new Map<string, ProfileColorCluster>();
+  const rgbSamples = extractRgbSamplesFromPngBuffer(buf);
+  const samples = rgbSamples.length ? rgbSamples : extractFallbackRgbSamplesFromBytes(buf);
+  let sampleCount = 0;
+  for (const sample of samples) {
+    const rr = sample.r;
+    const gg = sample.g;
+    const bb = sample.b;
     const max = Math.max(rr, gg, bb);
     const min = Math.min(rr, gg, bb);
-    if (max < 38 || max - min < 18) continue;
-    r += rr;
-    g += gg;
-    b += bb;
-    count += 1;
-    if (count >= 1600) break;
+    const hex = rgbToHex(rr, gg, bb);
+    const lum = relativeLuminance(hex);
+    const saturation = max === 0 ? 0 : (max - min) / max;
+    const brightness = max / 255;
+    if (brightness < 0.04 || brightness > 0.98) continue;
+    const bucket = 32;
+    const qr = Math.round(rr / bucket) * bucket;
+    const qg = Math.round(gg / bucket) * bucket;
+    const qb = Math.round(bb / bucket) * bucket;
+    const key = `${qr}:${qg}:${qb}`;
+    const current = clusters.get(key) || {
+      key,
+      count: 0,
+      r: 0,
+      g: 0,
+      b: 0,
+      saturationSum: 0,
+      brightnessSum: 0,
+      luminanceSum: 0
+    };
+    current.count += 1;
+    current.r += rr;
+    current.g += gg;
+    current.b += bb;
+    current.saturationSum += saturation;
+    current.brightnessSum += brightness;
+    current.luminanceSum += lum;
+    clusters.set(key, current);
+    sampleCount += 1;
+    if (sampleCount >= 5000) break;
   }
-  if (!count) {
+  const allClusters = Array.from(clusters.values()).sort((a, b) => b.count - a.count);
+  if (!allClusters.length) {
     const hash = crypto.createHash("sha256").update(buf).digest();
-    return rgbToHex(150 + (hash[0] % 90), 110 + (hash[1] % 80), 40 + (hash[2] % 90));
+    const accent = rgbToHex(80 + (hash[0] % 140), 80 + (hash[1] % 140), 80 + (hash[2] % 140));
+    return {
+      dark: mixHex("#050607", accent, 0.18),
+      accent: boostColorForAccent(accent),
+      secondary: mixHex(accent, "#ffffff", 0.22),
+      ok: true
+    };
   }
-  return rgbToHex(r / count, g / count, b / count);
+  const minClusterCount = Math.max(4, Math.ceil(sampleCount * 0.05));
+  const meaningfulClusters = allClusters.filter((cluster) => cluster.count >= minClusterCount);
+  const candidateClusters = meaningfulClusters.length ? meaningfulClusters : allClusters.slice(0, 4);
+  const nonNeutralClusters = candidateClusters
+    .filter((cluster) => {
+      const saturation = profileClusterSaturation(cluster);
+      const brightness = profileClusterBrightness(cluster);
+      return saturation >= 0.16 && brightness >= 0.12 && brightness <= 0.92;
+    })
+    .sort((a, b) => {
+      const countDelta = b.count - a.count;
+      if (countDelta !== 0) return countDelta;
+      return profileClusterSaturation(b) - profileClusterSaturation(a);
+    });
+  const dominantCluster = candidateClusters[0];
+  const accentCluster = nonNeutralClusters[0] || dominantCluster;
+  const accentBase = profileClusterHex(accentCluster);
+  const accent = boostColorForAccent(accentBase);
+  const secondaryCluster =
+    nonNeutralClusters.find((cluster) => cluster.key !== accentCluster.key && colorDistance(profileClusterHex(cluster), accentBase) > 36) ||
+    candidateClusters.find((cluster) => cluster.key !== accentCluster.key && colorDistance(profileClusterHex(cluster), accentBase) > 28) ||
+    null;
+  const darkCluster =
+    candidateClusters
+      .filter((cluster) => profileClusterLuminance(cluster) < 0.3)
+      .sort((a, b) => {
+        const countDelta = b.count - a.count;
+        if (countDelta !== 0) return countDelta;
+        return profileClusterLuminance(a) - profileClusterLuminance(b);
+      })[0] ||
+    allClusters
+      .filter((cluster) => profileClusterLuminance(cluster) < 0.35)
+      .sort((a, b) => b.count - a.count)[0] ||
+    dominantCluster;
+  const secondaryPicked = secondaryCluster ? profileClusterHex(secondaryCluster) : mixHex(accent, profileClusterHex(dominantCluster), 0.34);
+  const neonTamedAccent =
+    profileClusterSaturation(accentCluster) > 0.82 && accentCluster.count < sampleCount * 0.18
+      ? mixHex(accent, profileClusterHex(dominantCluster), 0.35)
+      : accent;
+  return {
+    dark: mixHex("#030405", profileClusterHex(darkCluster), 0.62),
+    accent: neonTamedAccent,
+    secondary: boostColorForAccent(secondaryPicked),
+    ok: Boolean(nonNeutralClusters.length || candidateClusters.length)
+  };
 }
 
 function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): ProfileTheme {
   const mode = normalizeProfileThemeMode(modeRaw);
-  const rawAccent = buf ? extractAccentFromImageBytes(buf) : PROFILE_THEME_DEFAULTS.themeAccentColor;
+  const palette = buf ? extractProfilePaletteFromImageBytes(buf) : extractProfilePaletteFromImageBytes(Buffer.alloc(0));
+  const rawAccent = palette.ok ? palette.accent : PROFILE_THEME_DEFAULTS.themeAccentColor;
+  const secondary = palette.ok ? palette.secondary : PROFILE_THEME_DEFAULTS.themeBorderColor;
+  const darkBase = palette.ok ? palette.dark : PROFILE_THEME_DEFAULTS.themeBackgroundColor;
   const accent =
     mode === "high_contrast" ? "#f6c453" :
-    mode === "minimal" ? mixHex(rawAccent, "#d4b26a", 0.65) :
-    mode === "dark" ? mixHex(rawAccent, "#d4b26a", 0.35) :
+    mode === "minimal" ? mixHex(rawAccent, "#e5e7eb", 0.45) :
+    mode === "dark" ? mixHex(rawAccent, "#f8fafc", 0.12) :
     mode === "vibrant" ? mixHex(rawAccent, "#ffffff", 0.08) :
-    mixHex(rawAccent, "#d4b26a", 0.25);
+    rawAccent;
   const background =
     mode === "high_contrast" ? "#000000" :
-    mode === "minimal" ? "#08090b" :
-    mode === "dark" ? mixHex("#050607", accent, 0.08) :
-    mixHex("#040506", accent, mode === "vibrant" ? 0.14 : 0.1);
+    mode === "minimal" ? mixHex("#07080a", darkBase, 0.25) :
+    mode === "dark" ? mixHex("#020304", darkBase, 0.58) :
+    mixHex(darkBase, accent, mode === "vibrant" ? 0.12 : 0.08);
   const card =
     mode === "high_contrast" ? "#080808" :
-    mode === "minimal" ? "#101113" :
-    mixHex("#0a0b0d", accent, mode === "vibrant" ? 0.16 : 0.1);
+    mode === "minimal" ? mixHex("#111318", darkBase, 0.22) :
+    mixHex(background, accent, mode === "vibrant" ? 0.2 : 0.13);
   const border =
     mode === "high_contrast" ? "#f6c453" :
-    mode === "minimal" ? "#2d3138" :
-    mixHex("#2f2b27", accent, 0.32);
-  const button = mode === "high_contrast" ? "#f6c453" : mixHex(accent, "#f6c453", 0.28);
+    mode === "minimal" ? mixHex("#2d3138", secondary, 0.28) :
+    mixHex(secondary, accent, 0.38);
+  const button = mode === "high_contrast" ? "#f6c453" : mixHex(accent, "#ffffff", mode === "vibrant" ? 0.1 : 0.04);
   let buttonText = readableTextFor(button);
   if (contrastRatio(button, buttonText) < 4.5) buttonText = "#08090b";
   const theme = {
     themeWallpaperImageUrl: null,
     themeMode: mode,
     themeAccentColor: normalizeHexColor(accent) || PROFILE_THEME_DEFAULTS.themeAccentColor,
+    themeAccentOverrideColor: null,
+    themeResolvedAccentColor: normalizeHexColor(accent) || PROFILE_THEME_DEFAULTS.themeAccentColor,
     themeBackgroundColor: normalizeHexColor(background) || PROFILE_THEME_DEFAULTS.themeBackgroundColor,
     themeCardColor: normalizeHexColor(card) || PROFILE_THEME_DEFAULTS.themeCardColor,
     themeBorderColor: normalizeHexColor(border) || PROFILE_THEME_DEFAULTS.themeBorderColor,
@@ -11370,6 +11644,10 @@ function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): Pr
     themeButtonTextColor: normalizeHexColor(buttonText) || PROFILE_THEME_DEFAULTS.themeButtonTextColor,
     themeTextColor: "#f8fafc",
     themeMutedTextColor: mode === "high_contrast" ? "#e5e7eb" : "#b8c0cc",
+    themeCardStrength: "medium" as ProfileCardStrength,
+    themeOverlayStrength: "balanced" as ProfileOverlayStrength,
+    themeButtonStyle: "glass" as ProfileButtonStyle,
+    themeSuggestedAccentColors: [] as string[],
     themeGeneratedFromImage: Boolean(buf),
     themeUpdatedAt: new Date().toISOString()
   };
@@ -11379,24 +11657,106 @@ function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): Pr
     theme.themeButtonColor = PROFILE_THEME_DEFAULTS.themeButtonColor;
     theme.themeButtonTextColor = PROFILE_THEME_DEFAULTS.themeButtonTextColor;
   }
+  theme.themeResolvedAccentColor = theme.themeAccentColor;
+  theme.themeSuggestedAccentColors = uniqueProfileAccentSuggestions([
+    theme.themeAccentColor,
+    theme.themeBorderColor,
+    theme.themeButtonColor,
+    palette.secondary,
+    "#d4b26a",
+    "#38bdf8",
+    "#a78bfa",
+    "#ef4444",
+    "#22c55e",
+    "#f8fafc"
+  ]);
   return theme;
 }
 
 function userToProfileTheme(user: any): ProfileTheme {
+  const generatedAccent = normalizeHexColor(user?.themeAccentColor) || PROFILE_THEME_DEFAULTS.themeAccentColor;
+  const accentOverride = normalizeHexColor(user?.themeAccentOverrideColor);
+  const resolvedAccent = accentOverride || generatedAccent;
+  const generatedButton = normalizeHexColor(user?.themeButtonColor) || PROFILE_THEME_DEFAULTS.themeButtonColor;
+  const effectiveButtonColor = normalizeProfileButtonStyle(user?.themeButtonStyle) === "filled" ? resolvedAccent : generatedButton;
+  const buttonText = readableTextFor(effectiveButtonColor);
   return {
     themeWallpaperImageUrl: asString(user?.themeWallpaperImageUrl || "").trim() || null,
     themeMode: normalizeProfileThemeMode(user?.themeMode),
-    themeAccentColor: normalizeHexColor(user?.themeAccentColor) || PROFILE_THEME_DEFAULTS.themeAccentColor,
+    themeAccentColor: generatedAccent,
+    themeAccentOverrideColor: accentOverride,
+    themeResolvedAccentColor: resolvedAccent,
     themeBackgroundColor: normalizeHexColor(user?.themeBackgroundColor) || PROFILE_THEME_DEFAULTS.themeBackgroundColor,
     themeCardColor: normalizeHexColor(user?.themeCardColor) || PROFILE_THEME_DEFAULTS.themeCardColor,
-    themeBorderColor: normalizeHexColor(user?.themeBorderColor) || PROFILE_THEME_DEFAULTS.themeBorderColor,
-    themeButtonColor: normalizeHexColor(user?.themeButtonColor) || PROFILE_THEME_DEFAULTS.themeButtonColor,
-    themeButtonTextColor: normalizeHexColor(user?.themeButtonTextColor) || PROFILE_THEME_DEFAULTS.themeButtonTextColor,
+    themeBorderColor: mixHex(normalizeHexColor(user?.themeBorderColor) || PROFILE_THEME_DEFAULTS.themeBorderColor, resolvedAccent, 0.36),
+    themeButtonColor: effectiveButtonColor,
+    themeButtonTextColor: normalizeProfileButtonStyle(user?.themeButtonStyle) === "filled" ? buttonText : (normalizeHexColor(user?.themeButtonTextColor) || PROFILE_THEME_DEFAULTS.themeButtonTextColor),
     themeTextColor: normalizeHexColor(user?.themeTextColor) || PROFILE_THEME_DEFAULTS.themeTextColor,
     themeMutedTextColor: normalizeHexColor(user?.themeMutedTextColor) || PROFILE_THEME_DEFAULTS.themeMutedTextColor,
+    themeCardStrength: normalizeProfileCardStrength(user?.themeCardStrength),
+    themeOverlayStrength: normalizeProfileOverlayStrength(user?.themeOverlayStrength),
+    themeButtonStyle: normalizeProfileButtonStyle(user?.themeButtonStyle),
+    themeSuggestedAccentColors: uniqueProfileAccentSuggestions([
+      generatedAccent,
+      normalizeHexColor(user?.themeBorderColor),
+      normalizeHexColor(user?.themeButtonColor),
+      resolvedAccent,
+      "#d4b26a",
+      "#38bdf8",
+      "#a78bfa",
+      "#ef4444",
+      "#22c55e",
+      "#f8fafc"
+    ]),
     themeGeneratedFromImage: Boolean(user?.themeGeneratedFromImage),
     themeUpdatedAt: user?.themeUpdatedAt?.toISOString?.() || null
   };
+}
+
+function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: string; wallpaperUrl: string } {
+  const theme = userToProfileTheme(user);
+  const wallpaperUrl =
+    theme.themeWallpaperImageUrl && theme.themeWallpaperImageUrl.startsWith("/public/profile-wallpapers/")
+      ? escHtml(theme.themeWallpaperImageUrl)
+      : "";
+  const cardAlpha = theme.themeCardStrength === "light" ? 0.16 : theme.themeCardStrength === "strong" ? 0.30 : 0.22;
+  const cardStrongAlpha = theme.themeCardStrength === "light" ? 0.22 : theme.themeCardStrength === "strong" ? 0.40 : 0.28;
+  const mobileCardAlpha = theme.themeCardStrength === "light" ? 0.24 : theme.themeCardStrength === "strong" ? 0.42 : 0.32;
+  const mobileCardStrongAlpha = theme.themeCardStrength === "light" ? 0.30 : theme.themeCardStrength === "strong" ? 0.50 : 0.38;
+  const overlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.24 : theme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
+  const mobileOverlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.34 : theme.themeOverlayStrength === "darker" ? 0.56 : 0.44;
+  const buttonBackground =
+    theme.themeButtonStyle === "filled"
+      ? theme.themeResolvedAccentColor
+      : theme.themeButtonStyle === "outline"
+        ? "rgba(255,255,255,0.025)"
+        : "rgba(255,255,255,0.065)";
+  const buttonText = theme.themeButtonStyle === "filled" ? readableTextFor(theme.themeResolvedAccentColor) : theme.themeTextColor;
+  const css = [
+    `--theme-accent:${theme.themeResolvedAccentColor}`,
+    `--theme-bg:${theme.themeBackgroundColor}`,
+    `--theme-card:${theme.themeCardColor}`,
+    `--theme-border:${theme.themeBorderColor}`,
+    `--theme-button:${theme.themeButtonColor}`,
+    `--theme-button-text:${buttonText}`,
+    `--theme-text:${theme.themeTextColor}`,
+    `--theme-muted:${theme.themeMutedTextColor}`,
+    `--profile-bg-overlay:rgba(0,0,0,${overlayAlpha})`,
+    `--profile-card-bg:rgba(10,10,10,${cardAlpha})`,
+    `--profile-card-bg-strong:rgba(18,18,18,${cardStrongAlpha})`,
+    `--profile-card-bg-mobile:rgba(10,10,10,${mobileCardAlpha})`,
+    `--profile-card-bg-mobile-strong:rgba(18,18,18,${mobileCardStrongAlpha})`,
+    `--profile-bg-overlay-mobile:rgba(0,0,0,${mobileOverlayAlpha})`,
+    `--profile-card-border:color-mix(in srgb, ${theme.themeBorderColor} 78%, transparent)`,
+    `--profile-card-blur:blur(20px) saturate(125%)`,
+    `--profile-accent:${theme.themeResolvedAccentColor}`,
+    `--profile-accent-soft:color-mix(in srgb, ${theme.themeResolvedAccentColor} 18%, transparent)`,
+    `--profile-button-bg:${buttonBackground}`,
+    `--profile-button-border:color-mix(in srgb, ${theme.themeResolvedAccentColor} 70%, transparent)`,
+    `--profile-text:${theme.themeTextColor}`,
+    `--profile-muted:${theme.themeMutedTextColor}`
+  ].join(";");
+  return { theme, css, wallpaperUrl };
 }
 
 async function storeWallpaperBufferForUser(userId: string, buf: Buffer, contentType: string | null) {
@@ -17488,6 +17848,7 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
       themeWallpaperImageUrl: true,
       themeMode: true,
       themeAccentColor: true,
+      themeAccentOverrideColor: true,
       themeBackgroundColor: true,
       themeCardColor: true,
       themeBorderColor: true,
@@ -17495,6 +17856,9 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
       themeButtonTextColor: true,
       themeTextColor: true,
       themeMutedTextColor: true,
+      themeCardStrength: true,
+      themeOverlayStrength: true,
+      themeButtonStyle: true,
       themeGeneratedFromImage: true,
       themeUpdatedAt: true
     }
@@ -22051,6 +22415,7 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
       themeWallpaperImageUrl: true,
       themeMode: true,
       themeAccentColor: true,
+      themeAccentOverrideColor: true,
       themeBackgroundColor: true,
       themeCardColor: true,
       themeBorderColor: true,
@@ -22058,6 +22423,9 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
       themeButtonTextColor: true,
       themeTextColor: true,
       themeMutedTextColor: true,
+      themeCardStrength: true,
+      themeOverlayStrength: true,
+      themeButtonStyle: true,
       themeGeneratedFromImage: true,
       themeUpdatedAt: true
     }
@@ -22069,7 +22437,16 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
 app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const body = (req.body || {}) as { mode?: unknown };
   const userId = (req.user as JwtUser).sub;
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { themeWallpaperImageUrl: true } });
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      themeWallpaperImageUrl: true,
+      themeAccentOverrideColor: true,
+      themeCardStrength: true,
+      themeOverlayStrength: true,
+      themeButtonStyle: true
+    }
+  });
   if (!user) return reply.code(404).send({ error: "User not found" });
   let sourceBuffer: Buffer | null = null;
   const wallpaperPath = asString(user.themeWallpaperImageUrl || "").trim();
@@ -22089,6 +22466,11 @@ app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (r
   }
   const theme = generateProfileThemeFromImage(sourceBuffer, body.mode);
   theme.themeWallpaperImageUrl = wallpaperPath || null;
+  theme.themeAccentOverrideColor = normalizeHexColor(user.themeAccentOverrideColor);
+  theme.themeCardStrength = normalizeProfileCardStrength(user.themeCardStrength);
+  theme.themeOverlayStrength = normalizeProfileOverlayStrength(user.themeOverlayStrength);
+  theme.themeButtonStyle = normalizeProfileButtonStyle(user.themeButtonStyle);
+  theme.themeResolvedAccentColor = theme.themeAccentOverrideColor || theme.themeAccentColor;
   return reply.send({ theme });
 });
 
@@ -22115,6 +22497,12 @@ app.patch("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any,
     if (!color) return badRequest(reply, `${field} must be a valid hex color.`);
     data[field] = color;
   }
+  const accentOverrideRaw = asString(themeInput.themeAccentOverrideColor || "").trim();
+  data.themeAccentOverrideColor = accentOverrideRaw ? normalizeHexColor(accentOverrideRaw) : null;
+  if (accentOverrideRaw && !data.themeAccentOverrideColor) return badRequest(reply, "themeAccentOverrideColor must be a valid hex color.");
+  data.themeCardStrength = normalizeProfileCardStrength(themeInput.themeCardStrength);
+  data.themeOverlayStrength = normalizeProfileOverlayStrength(themeInput.themeOverlayStrength);
+  data.themeButtonStyle = normalizeProfileButtonStyle(themeInput.themeButtonStyle);
   const checkedTheme = userToProfileTheme({ ...data, themeWallpaperImageUrl: themeInput.themeWallpaperImageUrl || null, themeGeneratedFromImage: themeInput.themeGeneratedFromImage });
   if (contrastRatio(checkedTheme.themeCardColor, checkedTheme.themeTextColor) < 4.5) return badRequest(reply, "Theme text color does not have enough contrast.");
   if (contrastRatio(checkedTheme.themeButtonColor, checkedTheme.themeButtonTextColor) < 4.5) return badRequest(reply, "Theme button text color does not have enough contrast.");
@@ -22136,6 +22524,10 @@ app.post("/api/me/profile-theme/reset", { preHandler: requireAuth }, async (req:
     data: {
       themeWallpaperImageUrl: null,
       themeMode: "auto",
+      themeAccentOverrideColor: null,
+      themeCardStrength: "medium",
+      themeOverlayStrength: "balanced",
+      themeButtonStyle: "glass",
       ...PROFILE_THEME_DEFAULTS,
       themeGeneratedFromImage: false,
       themeUpdatedAt: new Date()
@@ -22163,6 +22555,7 @@ app.post("/api/me/profile-theme/wallpaper/upload", { preHandler: requireAuth }, 
         themeWallpaperImageUrl: wallpaperUrl,
         themeMode: generated.themeMode,
         themeAccentColor: generated.themeAccentColor,
+        themeAccentOverrideColor: null,
         themeBackgroundColor: generated.themeBackgroundColor,
         themeCardColor: generated.themeCardColor,
         themeBorderColor: generated.themeBorderColor,
@@ -22170,6 +22563,9 @@ app.post("/api/me/profile-theme/wallpaper/upload", { preHandler: requireAuth }, 
         themeButtonTextColor: generated.themeButtonTextColor,
         themeTextColor: generated.themeTextColor,
         themeMutedTextColor: generated.themeMutedTextColor,
+        themeCardStrength: "medium",
+        themeOverlayStrength: "balanced",
+        themeButtonStyle: "glass",
         themeGeneratedFromImage: true,
         themeUpdatedAt: new Date()
       }
@@ -32481,6 +32877,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     themeWallpaperImageUrl: true,
     themeMode: true,
     themeAccentColor: true,
+    themeAccentOverrideColor: true,
     themeBackgroundColor: true,
     themeCardColor: true,
     themeBorderColor: true,
@@ -32488,6 +32885,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     themeButtonTextColor: true,
     themeTextColor: true,
     themeMutedTextColor: true,
+    themeCardStrength: true,
+    themeOverlayStrength: true,
+    themeButtonStyle: true,
     themeGeneratedFromImage: true,
     themeUpdatedAt: true,
     witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
@@ -32791,21 +33191,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeBrandLogoSrc = resolveProfileLogoPath()
     ? escHtml("/logo.png?v=20260601c")
     : "";
-  const profileTheme = userToProfileTheme(user);
-  const safeThemeWallpaperUrl =
-    profileTheme.themeWallpaperImageUrl && profileTheme.themeWallpaperImageUrl.startsWith("/public/profile-wallpapers/")
-      ? escHtml(profileTheme.themeWallpaperImageUrl)
-      : "";
-  const profileThemeCss = [
-    `--theme-accent:${profileTheme.themeAccentColor}`,
-    `--theme-bg:${profileTheme.themeBackgroundColor}`,
-    `--theme-card:${profileTheme.themeCardColor}`,
-    `--theme-border:${profileTheme.themeBorderColor}`,
-    `--theme-button:${profileTheme.themeButtonColor}`,
-    `--theme-button-text:${profileTheme.themeButtonTextColor}`,
-    `--theme-text:${profileTheme.themeTextColor}`,
-    `--theme-muted:${profileTheme.themeMutedTextColor}`
-  ].join(";");
+  const { theme: profileTheme, css: profileThemeCss, wallpaperUrl: safeThemeWallpaperUrl } = buildPublicAppearanceThemeCss(user);
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p: any) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -33683,21 +34069,68 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       ${profileThemeCss};
     }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:
-      radial-gradient(1100px 540px at 14% -8%, color-mix(in srgb, var(--theme-accent) 16%, transparent), transparent 62%),
-      radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.14), transparent 64%),
-      var(--theme-bg);
-      color:var(--theme-text); padding:24px; }
-    .card { width:min(940px, 100%); margin:0 auto; background:linear-gradient(180deg, color-mix(in srgb, var(--theme-card) 96%, transparent) 0%, color-mix(in srgb, var(--theme-bg) 94%, #000) 100%); border:1px solid var(--theme-border); border-radius:18px; padding:24px; overflow:hidden; box-shadow:0 30px 90px rgba(0,0,0,0.46); }
+    html { min-height:100%; background:var(--theme-bg); }
+    body {
+      min-height:100vh;
+      margin:0;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      color:var(--theme-text);
+      padding:24px;
+      background:
+        radial-gradient(1100px 540px at 14% -8%, color-mix(in srgb, var(--theme-accent) 20%, transparent), transparent 62%),
+        radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.22), transparent 64%),
+        ${
+          safeThemeWallpaperUrl
+            ? `url("${safeThemeWallpaperUrl}") center / cover fixed no-repeat,`
+            : ""
+        }
+        var(--theme-bg);
+      position:relative;
+    }
+    body::before {
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      background:
+        radial-gradient(circle at 50% 12%, rgba(0,0,0,0.04), rgba(0,0,0,0.28) 62%, rgba(0,0,0,0.55) 100%),
+        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, var(--profile-bg-overlay) 48%, rgba(0,0,0,0.56) 100%);
+    }
+    body::after {
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      background:
+        radial-gradient(800px 300px at 50% 0%, var(--profile-accent-soft), transparent 70%),
+        radial-gradient(700px 400px at 12% 24%, rgba(255,255,255,0.04), transparent 72%);
+      mix-blend-mode:screen;
+      opacity:.75;
+    }
+    .card {
+      position:relative;
+      z-index:1;
+      width:min(940px, 100%);
+      margin:0 auto;
+      background:linear-gradient(180deg, var(--profile-card-bg-strong) 0%, var(--profile-card-bg) 100%);
+      border:1px solid var(--profile-card-border);
+      border-radius:18px;
+      padding:24px;
+      overflow:hidden;
+      box-shadow:0 30px 90px rgba(0,0,0,0.36), 0 0 54px var(--profile-accent-soft);
+      backdrop-filter: blur(20px) saturate(125%);
+    }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     .brand-logo-image { display:block; width:var(--profile-logo-size); max-width:100%; height:auto; object-fit:contain; }
     .brand-mark {
       width:22px;
       height:22px;
       border-radius:999px;
-      border:1px solid #4b3a22;
-      background:linear-gradient(180deg, #2b2215 0%, #16120b 100%);
-      color:#d8be84;
+      border:1px solid var(--profile-button-border);
+      background:var(--profile-button-bg);
+      color:var(--profile-accent);
       display:inline-flex;
       align-items:center;
       justify-content:center;
@@ -33706,17 +34139,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       line-height:1;
       text-transform:lowercase;
     }
-    .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#b6ae9e; }
+    .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:var(--profile-muted); }
     .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; display:none; }
-    .muted { color:var(--theme-muted); font-size:13px; }
+    .muted { color:var(--profile-muted); font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
-    a { color:var(--theme-accent); text-decoration:none; }
-    a:hover { text-decoration:underline; }
-    .section { margin-top:20px; border:1px solid var(--theme-border); border-radius:14px; background:color-mix(in srgb, var(--theme-card) 90%, #000); padding:16px; }
+    a { color:var(--profile-accent); text-decoration:none; }
+    a:hover { text-decoration:underline; text-shadow:0 0 18px var(--profile-accent-soft); }
+    a:focus-visible, button:focus-visible, summary:focus-visible { outline:2px solid var(--profile-accent); outline-offset:3px; }
+    .section { margin-top:20px; border:1px solid var(--profile-card-border); border-radius:14px; background:var(--profile-card-bg); padding:16px; box-shadow:0 16px 38px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.06); backdrop-filter: var(--profile-card-blur); }
     .section h3 { margin:0; font-size:18px; letter-spacing:-0.01em; }
-    .section-sub { margin-top:6px; color:#a7a094; font-size:13px; }
+    .section-sub { margin-top:6px; color:var(--profile-muted); font-size:13px; }
     .profile-header-grid {
       position:relative;
       display:grid;
@@ -33726,28 +34160,23 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       justify-content:stretch;
       margin-top:14px;
       padding:18px;
-      border:1px solid color-mix(in srgb, var(--theme-border) 86%, transparent);
+      border:1px solid var(--profile-card-border);
       border-radius:16px;
       overflow:hidden;
-      background:
-        linear-gradient(135deg, color-mix(in srgb, var(--theme-accent) 12%, transparent), transparent 52%),
-        color-mix(in srgb, var(--theme-card) 92%, #000);
-      ${
-        safeThemeWallpaperUrl
-          ? `background-image: linear-gradient(90deg, rgba(0,0,0,0.78), rgba(0,0,0,0.48)), linear-gradient(180deg, rgba(0,0,0,0.22), rgba(0,0,0,0.78)), url("${safeThemeWallpaperUrl}"); background-size:cover; background-position:center;`
-          : ""
-      }
+      background:var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 18px 46px rgba(0,0,0,0.20), 0 0 42px var(--profile-accent-soft);
     }
     .profile-header-grid > * { position:relative; z-index:1; }
     .brand-rail { display:flex; align-items:center; justify-content:center; justify-self:center; padding:0; min-width:0; }
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; justify-content:center; min-width:0; width:100%; justify-self:center; margin-left:0; }
-    .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid var(--theme-border); background:var(--theme-card); display:flex; align-items:center; justify-content:center; color:var(--theme-muted); font-size:12px; flex:none; box-shadow:0 12px 36px rgba(0,0,0,0.42); }
+    .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid var(--profile-card-border); background:var(--profile-card-bg-strong); display:flex; align-items:center; justify-content:center; color:var(--profile-muted); font-size:12px; flex:none; box-shadow:0 12px 36px rgba(0,0,0,0.42), 0 0 0 3px var(--profile-accent-soft); }
     .hero-meta { min-width:0; flex:0 0 auto; display:block; }
     .hero-primary { min-width:0; }
     .hero-name { font-weight:650; font-size:27px; line-height:1.08; letter-spacing:-0.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .hero-handle { margin-top:5px; font-size:14px; color:var(--theme-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .hero-handle { margin-top:5px; font-size:14px; color:var(--profile-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .hero-handle .mono { word-break:normal; overflow-wrap:normal; }
-    .signal-rail { border:1px solid var(--theme-border); border-radius:12px; background:color-mix(in srgb, var(--theme-card) 82%, transparent); padding:12px; justify-self:end; width:min(100%, var(--profile-signal-col)); backdrop-filter: blur(6px); }
+    .signal-rail { border:1px solid var(--profile-card-border); border-radius:12px; background:var(--profile-card-bg-strong); padding:12px; justify-self:end; width:min(100%, var(--profile-signal-col)); backdrop-filter: var(--profile-card-blur); box-shadow:0 10px 28px rgba(0,0,0,0.22); }
     .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
     .signal-compact-score { margin-top:6px; font-size:16px; }
     .signal-compact-meter { margin-top:6px; height:6px; }
@@ -33756,17 +34185,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-chip {
       display:inline-flex;
       align-items:center;
-      border:1px solid #4a4032;
+      border:1px solid var(--profile-card-border);
       border-radius:999px;
       padding:2px 8px;
       font-size:11px;
-      color:#d0c5b2;
-      background:#1a1610;
+      color:var(--profile-text);
+      background:var(--profile-button-bg);
       line-height:1.25;
     }
     .meta-grid { display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px; }
-    .meta-item { border:1px solid #1f1f1f; border-radius:10px; background:#101113; padding:10px; }
-    .meta-label { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
+    .meta-item { border:1px solid var(--profile-card-border); border-radius:10px; background:var(--profile-card-bg-strong); padding:10px; backdrop-filter:var(--profile-card-blur); }
+    .meta-label { color:var(--profile-muted); font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
     .details-toggle { margin-top:0; }
     .details-toggle > summary {
       list-style:none;
@@ -33784,15 +34213,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       content:"Show";
       font-size:12px;
       font-weight:500;
-      color:#9aa0a6;
-      border:1px solid #2a2a2a;
+      color:var(--profile-muted);
+      border:1px solid var(--profile-card-border);
+      background:var(--profile-button-bg);
       border-radius:999px;
       padding:2px 10px;
     }
     .details-toggle[open] > summary::after { content:"Hide"; }
     .stack-tight { margin-top:10px; }
     .proof-group { margin-top:12px; }
-    .proof-group-title { color:#cfbf9d; font-size:13px; font-weight:600; letter-spacing:0.01em; margin-bottom:6px; }
+    .proof-group-title { color:var(--profile-accent); font-size:13px; font-weight:600; letter-spacing:0.01em; margin-bottom:6px; }
     .proof-group .line { margin-top:6px; line-height:1.35; }
     .proof-badge {
       display:inline-flex;
@@ -33802,9 +34232,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       justify-content:center;
       border-radius:999px;
       margin-right:6px;
-      border:1px solid #3f3a2e;
-      background:#171411;
-      color:#ddd5c7;
+      border:1px solid var(--profile-button-border);
+      background:var(--profile-button-bg);
+      color:var(--profile-accent);
       vertical-align:middle;
       overflow:hidden;
       flex:none;
@@ -33823,21 +34253,35 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .proof-badge--substack { background:#1d1712; border-color:#614430; color:#e0c4a6; }
     .proof-badge--x { background:#121110; border-color:#3f3d3a; color:#ddd8cf; }
     .proof-badge--instagram { background:#191315; border-color:#52403f; color:#ddc8c9; }
+    .proof-badge--github,
+    .proof-badge--youtube,
+    .proof-badge--tiktok,
+    .proof-badge--reddit,
+    .proof-badge--rumble,
+    .proof-badge--substack,
+    .proof-badge--x,
+    .proof-badge--instagram {
+      background:var(--profile-button-bg);
+      border-color:var(--profile-button-border);
+      color:var(--profile-accent);
+    }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:12px; }
     .featured-item {
-      border:1px solid var(--theme-border);
+      border:1px solid var(--profile-card-border);
       border-radius:12px;
-      background:color-mix(in srgb, var(--theme-card) 94%, #000);
+      background:var(--profile-card-bg);
       overflow:hidden;
       display:flex;
       flex-direction:column;
       min-width:0;
+      backdrop-filter:var(--profile-card-blur);
+      box-shadow:0 10px 30px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.05);
       transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease;
     }
-    .featured-item:hover { transform:translateY(-2px); border-color:var(--theme-accent); box-shadow:0 12px 24px rgba(0,0,0,0.26); }
+    .featured-item:hover { transform:translateY(-2px); border-color:var(--profile-accent); box-shadow:0 12px 24px rgba(0,0,0,0.20), 0 0 28px var(--profile-accent-soft); }
     .featured-media {
-      border-bottom:1px solid var(--theme-border);
-      background:color-mix(in srgb, var(--theme-card) 82%, #000);
+      border-bottom:1px solid var(--profile-card-border);
+      background:rgba(255,255,255,0.045);
       overflow:hidden;
       aspect-ratio:16 / 9;
       width:100%;
@@ -33848,26 +34292,26 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     .featured-meta { padding:10px 12px 12px; min-width:0; display:flex; flex-direction:column; }
     .featured-image { width:100%; height:100%; object-fit:cover; display:block; }
-    .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, #121419 0%, #0f1013 100%); }
-    .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:#0d0f13; display:flex; align-items:center; justify-content:center; }
+    .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.045); }
+    .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:rgba(255,255,255,0.045); display:flex; align-items:center; justify-content:center; }
     .featured-video-thumb { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-video-preview { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
     .featured-video-fallback { position:absolute; inset:0; min-height:0; z-index:2; }
-    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:rgba(16,13,9,0.78); border:1px solid rgba(198,155,74,0.45); color:#dfc78e; font-size:12px; line-height:1; z-index:3; }
+    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:var(--profile-button-bg); border:1px solid var(--profile-button-border); color:var(--profile-accent); font-size:12px; line-height:1; z-index:3; box-shadow:0 0 18px var(--profile-accent-soft); backdrop-filter:blur(8px); }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
-    .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid #252525; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid var(--profile-card-border); background:rgba(255,255,255,0.045); display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
     .featured-song-cover-wrap .featured-fallback { display:none; }
     .featured-song-cover-missing .featured-fallback { display:block; }
     .featured-audio { width:100%; }
     .featured-fallback { font-size:10px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
     .featured-topline { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
-    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:#c9bda9; background:#1b1813; border:1px solid #423a2e; border-radius:999px; padding:2px 7px; }
-    .featured-verified { font-size:10px; color:#d4c093; background:#1f1810; border:1px solid #4c3d28; border-radius:999px; padding:2px 7px; }
+    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:var(--profile-muted); background:var(--profile-button-bg); border:1px solid var(--profile-card-border); border-radius:999px; padding:2px 7px; }
+    .featured-verified { font-size:10px; color:var(--profile-accent); background:var(--profile-button-bg); border:1px solid var(--profile-button-border); border-radius:999px; padding:2px 7px; }
     .posture-pill { font-size:10px; border-radius:999px; padding:2px 9px; border:1px solid transparent; letter-spacing:0.01em; white-space:nowrap; }
-    .posture-pill--basic { color:#fcd7b5; background:#2a1a0f; border-color:#6f4a2a; }
-    .posture-pill--creator { color:#e5e7eb; background:#2a2f39; border-color:#7a818f; }
-    .posture-pill--node { color:#fef3c7; background:#2c230d; border-color:#b18a2e; }
+    .posture-pill--basic,
+    .posture-pill--creator,
+    .posture-pill--node { color:var(--profile-text); background:var(--profile-button-bg); border-color:var(--profile-button-border); box-shadow:0 0 18px var(--profile-accent-soft); }
     .featured-title {
       font-weight:650;
       font-size:15px;
@@ -33881,7 +34325,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-support {
       margin-top:4px;
       font-size:12px;
-      color:#a5b0c0;
+      color:var(--profile-muted);
       line-height:1.3;
       display:-webkit-box;
       -webkit-line-clamp:2;
@@ -33895,20 +34339,25 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       align-items:center;
       font-weight:600;
       font-size:12px;
-      color:var(--theme-accent);
+      color:var(--profile-accent);
     }
     .empty-state {
       margin-top:12px;
-      border:1px dashed var(--theme-border);
+      border:1px dashed var(--profile-card-border);
       border-radius:12px;
       padding:14px;
-      color:var(--theme-muted);
-      background:color-mix(in srgb, var(--theme-card) 86%, #000);
+      color:var(--profile-muted);
+      background:var(--profile-card-bg);
       font-size:13px;
       line-height:1.45;
     }
-    .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:color-mix(in srgb, var(--theme-card) 70%, #000); border:1px solid var(--theme-border); overflow:hidden; }
-    .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, var(--theme-accent) 0%, var(--theme-button) 62%, color-mix(in srgb, var(--theme-accent) 64%, #fff) 100%); transition:width .2s ease; }
+    .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:var(--profile-card-bg-strong); border:1px solid var(--profile-card-border); overflow:hidden; }
+    .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, var(--profile-accent) 0%, var(--theme-button) 62%, color-mix(in srgb, var(--profile-accent) 64%, #fff) 100%); transition:width .2s ease; box-shadow:0 0 18px var(--profile-accent-soft); }
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .card, .section, .profile-header-grid, .signal-rail, .featured-item, .meta-item {
+        background:rgba(12,12,12,0.52);
+      }
+    }
     body.iframe-embedded { padding:10px; }
     body.iframe-embedded .card {
       width:100%;
@@ -33997,6 +34446,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       }
     }
     @media (max-width: 640px) {
+      body { background-attachment:scroll; }
+      :root {
+        --profile-bg-overlay:var(--profile-bg-overlay-mobile);
+        --profile-card-bg:var(--profile-card-bg-mobile);
+        --profile-card-bg-strong:var(--profile-card-bg-mobile-strong);
+      }
       .profile-header-grid {
         --profile-brand-col: 44px;
         --profile-gap-x: 11px;
@@ -34975,7 +35430,31 @@ async function handleBuyPage(req: any, reply: any) {
   const productTier = resolveProductTier().productTier;
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    include: { owner: { select: { displayName: true, email: true } } }
+    include: {
+      owner: {
+        select: {
+          displayName: true,
+          email: true,
+          avatarUrl: true,
+          themeWallpaperImageUrl: true,
+          themeMode: true,
+          themeAccentColor: true,
+          themeAccentOverrideColor: true,
+          themeBackgroundColor: true,
+          themeCardColor: true,
+          themeBorderColor: true,
+          themeButtonColor: true,
+          themeButtonTextColor: true,
+          themeTextColor: true,
+          themeMutedTextColor: true,
+          themeCardStrength: true,
+          themeOverlayStrength: true,
+          themeButtonStyle: true,
+          themeGeneratedFromImage: true,
+          themeUpdatedAt: true
+        }
+      }
+    }
   });
   if (!content) return notFound(reply, "Not found");
   // Server-side audience logging so Basic posture still records views even if
@@ -34996,6 +35475,11 @@ async function handleBuyPage(req: any, reply: any) {
   } catch {
     sellerLightningAddress = null;
   }
+  const ownerAppearance = buildPublicAppearanceThemeCss(content.owner || null);
+  const sellerHandle = normalizePublicProfileHandle(content.owner?.displayName || "") || normalizedEmailLocalPart(content.owner?.email || "") || null;
+  const sellerProfileUrl = sellerHandle ? `/u/${encodeURIComponent(sellerHandle)}` : null;
+  const sellerAvatarUrl = resolveCreatorAvatarUrlForPublicPayload(content.owner?.avatarUrl || null, resolveCanonicalPublicOrigin(req));
+  const sellerBadgeLabel = ownerAppearance.theme.themeGeneratedFromImage ? "Creator theme" : "Certifyd";
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -35005,31 +35489,61 @@ async function handleBuyPage(req: any, reply: any) {
   <link rel="shortcut icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
   <title>Buy</title>
   <style>
-    :root { color-scheme: dark; }
+    :root { color-scheme: dark; ${ownerAppearance.css} }
     * { box-sizing: border-box; }
     body {
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
       margin: 0;
-      color: #f5f7fa;
+      min-height: 100vh;
+      color: var(--profile-text);
       background:
-        radial-gradient(1100px 520px at 100% -10%, rgba(30, 42, 64, 0.16), transparent 56%),
-        radial-gradient(900px 460px at -8% 20%, rgba(214, 169, 86, 0.10), transparent 50%),
-        linear-gradient(180deg, #040506 0%, #050608 44%, #030405 100%);
+        radial-gradient(1100px 520px at 100% -10%, var(--profile-accent-soft), transparent 56%),
+        radial-gradient(900px 460px at -8% 20%, rgba(255,255,255,0.04), transparent 50%),
+        ${
+          ownerAppearance.wallpaperUrl
+            ? `url("${ownerAppearance.wallpaperUrl}") center / cover fixed no-repeat,`
+            : ""
+        }
+        var(--theme-bg);
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background:
+        radial-gradient(circle at 50% 10%, rgba(0,0,0,0.04), rgba(0,0,0,0.28) 62%, rgba(0,0,0,0.56) 100%),
+        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, var(--profile-bg-overlay) 48%, rgba(0,0,0,0.58) 100%);
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      opacity: .72;
+      background: radial-gradient(760px 260px at 50% 0%, var(--profile-accent-soft), transparent 72%);
+      mix-blend-mode: screen;
     }
     .wrap {
+      position: relative;
+      z-index: 1;
       max-width: 980px;
       margin: 0 auto;
       padding: 28px 20px 36px;
     }
     .card {
       position: relative;
-      border: 1px solid rgba(95, 96, 104, 0.28);
-      background: linear-gradient(180deg, rgba(10, 12, 15, 0.92), rgba(7, 9, 12, 0.95));
-      backdrop-filter: blur(6px);
+      border: 1px solid var(--profile-card-border);
+      background: linear-gradient(180deg, var(--profile-card-bg-strong), var(--profile-card-bg));
+      backdrop-filter: var(--profile-card-blur);
       border-radius: 18px;
       padding: 22px;
       box-shadow:
-        0 34px 70px rgba(3, 5, 10, 0.6),
+        0 34px 70px rgba(3, 5, 10, 0.48),
+        0 0 48px var(--profile-accent-soft),
         inset 0 1px 0 rgba(255, 255, 255, 0.06);
       overflow: hidden;
     }
@@ -35039,18 +35553,65 @@ async function handleBuyPage(req: any, reply: any) {
       inset: 0;
       pointer-events: none;
       background:
-        radial-gradient(500px 180px at 12% 0%, rgba(196, 153, 74, 0.10), transparent 68%),
+        radial-gradient(500px 180px at 12% 0%, var(--profile-accent-soft), transparent 68%),
         radial-gradient(460px 200px at 88% 0%, rgba(37, 49, 72, 0.14), transparent 72%);
     }
     #app { position: relative; z-index: 1; }
-    .muted { color: #a6afbe; font-size: 14px; }
+    .muted { color: var(--profile-muted); font-size: 14px; }
     .row { display: flex; gap: 18px; flex-wrap: wrap; }
+    .creator-strip {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 12px;
+      border: 1px solid var(--profile-card-border);
+      border-radius: 14px;
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+    .creator-avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 999px;
+      object-fit: cover;
+      border: 1px solid var(--profile-button-border);
+      background: var(--profile-card-bg-strong);
+      flex: none;
+    }
+    .creator-avatar-fallback {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--profile-accent);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .creator-name { font-weight: 750; line-height: 1.1; color: var(--profile-text); }
+    .creator-handle { margin-top: 3px; font-size: 12px; color: var(--profile-muted); }
+    .creator-badge {
+      margin-left: auto;
+      border: 1px solid var(--profile-button-border);
+      color: var(--profile-accent);
+      background: var(--profile-button-bg);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
     .rail {
       flex: 1 1 280px;
-      border: 1px solid rgba(95, 96, 104, 0.24);
+      border: 1px solid var(--profile-card-border);
       border-radius: 14px;
       padding: 14px;
-      background: linear-gradient(180deg, rgba(12, 14, 18, 0.92), rgba(8, 10, 14, 0.92));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
     .btn {
@@ -35069,15 +35630,15 @@ async function handleBuyPage(req: any, reply: any) {
     .btn:hover { transform: translateY(-1px); }
     .btn:active { transform: translateY(0); }
     .btn.primary {
-      border: 1px solid rgba(250, 204, 21, 0.48);
-      color: #0b1220;
-      background: linear-gradient(135deg, #f6d673 0%, #fbbf24 58%, #f59e0b 100%);
-      box-shadow: 0 10px 26px rgba(245, 158, 11, 0.28);
+      border: 1px solid var(--profile-button-border);
+      color: var(--theme-button-text);
+      background: var(--profile-button-bg);
+      box-shadow: 0 10px 26px var(--profile-accent-soft);
     }
     .btn.outline {
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      color: #e9eef7;
-      background: rgba(12, 16, 24, 0.9);
+      border: 1px solid var(--profile-button-border);
+      color: var(--profile-text);
+      background: rgba(255, 255, 255, 0.045);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
     .btn.full { width: 100%; }
@@ -35092,23 +35653,24 @@ async function handleBuyPage(req: any, reply: any) {
       width: 100%;
       padding: 10px 12px;
       border-radius: 11px;
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      background: rgba(5, 7, 11, 0.88);
-      color: #f8fafc;
+      border: 1px solid var(--profile-card-border);
+      background: var(--profile-card-bg-strong);
+      color: var(--profile-text);
       outline: none;
       transition: border-color 140ms ease, box-shadow 140ms ease;
     }
     .input:focus {
-      border-color: rgba(198, 155, 74, 0.55);
-      box-shadow: 0 0 0 3px rgba(198, 155, 74, 0.16);
+      border-color: var(--profile-button-border);
+      box-shadow: 0 0 0 3px var(--profile-accent-soft);
     }
     .field { margin-top: 10px; }
     .step {
       margin-top: 14px;
       padding: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--profile-card-border);
       border-radius: 13px;
-      background: linear-gradient(180deg, rgba(14, 18, 28, 0.9), rgba(10, 13, 20, 0.9));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
     }
     .step h3 {
@@ -35116,45 +35678,48 @@ async function handleBuyPage(req: any, reply: any) {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.12em;
-      color: #98a2b3;
+      color: var(--profile-muted);
     }
     .proof-card {
       margin-top: 12px;
       padding: 12px;
-      border: 1px solid rgba(178, 140, 74, 0.45);
+      border: 1px solid var(--profile-button-border);
       border-radius: 12px;
-      background: linear-gradient(180deg, rgba(29, 23, 14, 0.9), rgba(20, 15, 10, 0.95));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
     }
     .proof-title {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.11em;
-      color: #dec48d;
+      color: var(--profile-accent);
       font-weight: 700;
     }
-    .proof-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: #d1d9e6; }
-    .proof-label { color: #97a0af; }
+    .proof-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: var(--profile-text); }
+    .proof-label { color: var(--profile-muted); }
     .access-card {
       margin-top: 10px;
       padding: 12px;
-      border: 1px solid rgba(125, 211, 252, 0.3);
+      border: 1px solid var(--profile-button-border);
       border-radius: 12px;
-      background: linear-gradient(180deg, rgba(13, 21, 35, 0.92), rgba(10, 18, 30, 0.96));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
     }
     .access-title {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.11em;
-      color: #93c5fd;
+      color: var(--profile-accent);
       font-weight: 700;
     }
-    .access-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: #d8dee9; }
-    .access-label { color: #9ca7b6; }
+    .access-grid { margin-top: 8px; display: grid; gap: 6px; font-size: 12px; color: var(--profile-text); }
+    .access-label { color: var(--profile-muted); }
     .proof-drawer {
       margin-top: 16px;
-      border: 1px solid rgba(255, 255, 255, 0.09);
+      border: 1px solid var(--profile-card-border);
       border-radius: 12px;
-      background: linear-gradient(180deg, rgba(14, 18, 28, 0.92), rgba(11, 14, 21, 0.96));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
       overflow: hidden;
     }
     .proof-drawer > summary {
@@ -35167,36 +35732,36 @@ async function handleBuyPage(req: any, reply: any) {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.11em;
-      color: #d0d8e7;
+      color: var(--profile-text);
       font-weight: 700;
       border-bottom: 1px solid transparent;
     }
     .proof-drawer > summary::-webkit-details-marker { display: none; }
     .proof-drawer[open] > summary { border-bottom-color: rgba(255, 255, 255, 0.1); }
-    .proof-drawer-badge { font-size: 11px; color: #9ca7b6; text-transform: none; letter-spacing: 0; font-weight: 500; }
+    .proof-drawer-badge { font-size: 11px; color: var(--profile-muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
     .proof-drawer-body { padding: 2px 12px 12px; }
     .code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
       word-break: break-all;
-      color: #dbe6f5;
+      color: var(--profile-text);
     }
     .copy {
       font-size: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.17);
-      background: rgba(13, 17, 26, 0.92);
-      color: #eef4ff;
+      border: 1px solid var(--profile-card-border);
+      background: var(--profile-button-bg);
+      color: var(--profile-text);
       padding: 6px 10px;
       border-radius: 8px;
       cursor: pointer;
     }
-    .copy:hover { border-color: rgba(125, 211, 252, 0.5); }
+    .copy:hover { border-color: var(--profile-button-border); }
     .section-title {
       margin-top: 14px;
       font-size: 16px;
       font-weight: 700;
       letter-spacing: 0.01em;
-      color: #f4f7fb;
+      color: var(--profile-text);
     }
     .download-row { margin-top: 10px; }
     .preview { margin-top: 14px; }
@@ -35204,8 +35769,8 @@ async function handleBuyPage(req: any, reply: any) {
       width: 100%;
       max-width: 860px;
       border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.11);
-      background: #080b10;
+      border: 1px solid var(--profile-card-border);
+      background: var(--profile-card-bg-strong);
       box-shadow: 0 16px 34px rgba(2, 4, 8, 0.45);
     }
     .song-cover {
@@ -35213,43 +35778,44 @@ async function handleBuyPage(req: any, reply: any) {
       max-width: 420px;
       aspect-ratio: 1 / 1;
       border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.11);
+      border: 1px solid var(--profile-card-border);
       overflow: hidden;
-      background: #0f1219;
+      background: var(--profile-card-bg-strong);
       box-shadow: 0 16px 34px rgba(2, 4, 8, 0.45);
     }
     .song-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .song-cover.placeholder { display: flex; align-items: center; justify-content: center; color: #798293; font-size: 12px; }
-    a { color: #d4b26a; }
+    .song-cover.placeholder { display: flex; align-items: center; justify-content: center; color: var(--profile-muted); font-size: 12px; }
+    a { color: var(--profile-accent); }
     .footer {
       margin-top: 22px;
       font-size: 12px;
-      color: #9da8b8;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--profile-muted);
+      border-top: 1px solid var(--profile-card-border);
       padding-top: 10px;
     }
     .cb-heart { margin-left: 4px; font-weight: 700; }
     .cb-heart--grey { color: #b6bdc8; }
-    .cb-heart--gold { color: #d4b26a; }
+    .cb-heart--gold { color: var(--profile-accent); }
     .purchase-card {
       margin-top: 14px;
       padding: 14px;
-      border: 1px solid rgba(102, 116, 138, 0.34);
+      border: 1px solid var(--profile-card-border);
       border-radius: 14px;
-      background: linear-gradient(180deg, rgba(17, 20, 27, 0.96), rgba(10, 12, 18, 0.98));
+      background: var(--profile-card-bg);
+      backdrop-filter: var(--profile-card-blur);
       box-shadow:
         0 20px 36px rgba(1, 3, 8, 0.5),
         inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
     .purchase-card--unlocked {
-      border-color: rgba(196, 153, 74, 0.45);
-      background: linear-gradient(180deg, rgba(37, 29, 16, 0.92), rgba(23, 18, 10, 0.96));
+      border-color: var(--profile-button-border);
+      background: var(--profile-card-bg-strong);
     }
     .purchase-kicker {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.11em;
-      color: #8f99a9;
+      color: var(--profile-muted);
     }
     .purchase-price {
       margin-top: 6px;
@@ -35257,10 +35823,10 @@ async function handleBuyPage(req: any, reply: any) {
       font-weight: 800;
       letter-spacing: -0.02em;
       line-height: 1.08;
-      color: #f9fafb;
+      color: var(--profile-text);
       text-wrap: balance;
     }
-    .purchase-sub { margin-top: 4px; color: #a9b3c2; font-size: 13px; }
+    .purchase-sub { margin-top: 4px; color: var(--profile-muted); font-size: 13px; }
     .rails-wrap { margin-top: 12px; }
     .receipt-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.11); }
     .library-return-wrap { margin-top: 10px; text-align: left; }
@@ -35272,11 +35838,11 @@ async function handleBuyPage(req: any, reply: any) {
       line-height: 1.1;
       text-wrap: balance;
       margin: 0 0 8px;
-      color: #f2f2ef;
+      color: var(--profile-text);
     }
     .hero-sub {
       margin: 0;
-      color: #a89e89;
+      color: var(--profile-muted);
       font-size: 15px;
       line-height: 1.55;
       text-wrap: pretty;
@@ -35294,17 +35860,17 @@ async function handleBuyPage(req: any, reply: any) {
       font-weight: 700;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      color: #d5cec0;
-      border: 1px solid rgba(89, 100, 118, 0.38);
-      background: rgba(13, 18, 26, 0.9);
+      color: var(--profile-text);
+      border: 1px solid var(--profile-card-border);
+      background: var(--profile-button-bg);
       border-radius: 999px;
       padding: 6px 10px;
       white-space: nowrap;
     }
     .trust-chip--gold {
-      border-color: rgba(196, 153, 74, 0.55);
-      color: #e5c98f;
-      background: rgba(68, 47, 20, 0.34);
+      border-color: var(--profile-button-border);
+      color: var(--profile-accent);
+      background: var(--profile-button-bg);
     }
     .trust-chip--teal {
       border-color: rgba(96, 113, 139, 0.44);
@@ -35337,12 +35903,32 @@ async function handleBuyPage(req: any, reply: any) {
       .row { gap: 12px; }
       .rail { padding: 10px; border-radius: 12px; }
       .preview img, .preview video, .preview audio { border-radius: 12px; }
+      body { background-attachment: scroll; }
+      :root {
+        --profile-bg-overlay: var(--profile-bg-overlay-mobile);
+        --profile-card-bg: var(--profile-card-bg-mobile);
+        --profile-card-bg-strong: var(--profile-card-bg-mobile-strong);
+      }
+      .creator-strip { align-items: flex-start; }
+      .creator-badge { display: none; }
     }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
+      <div class="creator-strip">
+        ${
+          sellerAvatarUrl
+            ? `<img class="creator-avatar" src="${escHtml(sellerAvatarUrl)}" alt="" />`
+            : `<div class="creator-avatar creator-avatar-fallback">${escHtml((sellerDisplayName || "C").slice(0, 1).toUpperCase())}</div>`
+        }
+        <div>
+          <div class="creator-name">${sellerProfileUrl ? `<a href="${escHtml(sellerProfileUrl)}">${escHtml(sellerDisplayName || "Creator")}</a>` : escHtml(sellerDisplayName || "Creator")}</div>
+          <div class="creator-handle">${sellerHandle ? `@${escHtml(sellerHandle)}` : "Creator profile"}</div>
+        </div>
+        <div class="creator-badge">${escHtml(sellerBadgeLabel)}</div>
+      </div>
       <div id="app">Loading...</div>
       <div class="footer">
         <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
@@ -36925,7 +37511,48 @@ app.get("/apple-touch-icon.png", handleTabIcon);
 app.get("/buy/:contentId", handleBuyPage);
 app.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
 
-async function handleBuyerLibraryPage(_req: any, reply: any) {
+async function handleBuyerLibraryPage(req: any, reply: any) {
+  let libraryThemeOwner: any = null;
+  try {
+    const session = await resolveBuyerSession(req, reply);
+    const buyerId = asString(session?.buyer?.id || "").trim();
+    if (buyerId) {
+      const themedEntitlement = await prisma.entitlement.findFirst({
+        where: { buyerId },
+        orderBy: { grantedAt: "desc" },
+        select: {
+          content: {
+            select: {
+              owner: {
+                select: {
+                  themeWallpaperImageUrl: true,
+                  themeMode: true,
+                  themeAccentColor: true,
+                  themeAccentOverrideColor: true,
+                  themeBackgroundColor: true,
+                  themeCardColor: true,
+                  themeBorderColor: true,
+                  themeButtonColor: true,
+                  themeButtonTextColor: true,
+                  themeTextColor: true,
+                  themeMutedTextColor: true,
+                  themeCardStrength: true,
+                  themeOverlayStrength: true,
+                  themeButtonStyle: true,
+                  themeGeneratedFromImage: true,
+                  themeUpdatedAt: true
+                }
+              }
+            }
+          }
+        }
+      });
+      libraryThemeOwner = themedEntitlement?.content?.owner || null;
+    }
+  } catch {
+    libraryThemeOwner = null;
+  }
+  const libraryAppearance = buildPublicAppearanceThemeCss(libraryThemeOwner);
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -36933,41 +37560,72 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Library</title>
   <style>
-    :root { color-scheme: light dark; }
+    :root { color-scheme: dark; ${libraryAppearance.css} }
+    * { box-sizing: border-box; }
     body {
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
       margin:0;
+      min-height:100vh;
       background:
-        radial-gradient(900px 500px at 12% -10%, rgba(78, 58, 25, 0.18), transparent 60%),
-        radial-gradient(900px 500px at 90% -12%, rgba(25, 35, 58, 0.18), transparent 62%),
-        #050608;
-      color:#eceff5;
+        radial-gradient(900px 500px at 12% -10%, var(--profile-accent-soft), transparent 60%),
+        radial-gradient(900px 500px at 90% -12%, rgba(255,255,255,0.04), transparent 62%),
+        ${
+          libraryAppearance.wallpaperUrl
+            ? `url("${libraryAppearance.wallpaperUrl}") center / cover fixed no-repeat,`
+            : ""
+        }
+        var(--theme-bg);
+      color:var(--profile-text);
+      position:relative;
     }
-    .wrap { max-width: 1120px; margin: 0 auto; padding: 26px; }
+    body::before {
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      background:
+        radial-gradient(circle at 50% 10%, rgba(0,0,0,0.04), rgba(0,0,0,0.28) 62%, rgba(0,0,0,0.56) 100%),
+        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, var(--profile-bg-overlay) 48%, rgba(0,0,0,0.58) 100%);
+    }
+    body::after {
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      opacity:.72;
+      background:radial-gradient(760px 260px at 50% 0%, var(--profile-accent-soft), transparent 72%);
+      mix-blend-mode:screen;
+    }
+    .wrap { position:relative; z-index:1; max-width: 1120px; margin: 0 auto; padding: 26px; }
     .card {
-      background:linear-gradient(180deg, rgba(11, 13, 18, 0.96), rgba(7, 9, 12, 0.98));
-      border:1px solid #222836;
+      background:linear-gradient(180deg, var(--profile-card-bg-strong), var(--profile-card-bg));
+      border:1px solid var(--profile-card-border);
       border-radius:18px;
       padding:22px;
-      box-shadow:0 24px 70px rgba(0,0,0,0.45);
+      box-shadow:0 24px 70px rgba(0,0,0,0.45), 0 0 48px var(--profile-accent-soft);
+      backdrop-filter:var(--profile-card-blur);
     }
-    .muted { color:#aeb6c4; font-size:14px; }
-    .btn { background:#d4b26a; color:#0b0b0b; border:none; border-radius:10px; padding:10px 14px; font-weight:650; cursor:pointer; }
-    .btn.secondary { background:#151922; color:#e3e8ef; border:1px solid #2a3140; }
+    .muted { color:var(--profile-muted); font-size:14px; }
+    .btn { background:var(--profile-button-bg); color:var(--theme-button-text); border:1px solid var(--profile-button-border); border-radius:10px; padding:10px 14px; font-weight:650; cursor:pointer; box-shadow:0 10px 26px var(--profile-accent-soft); }
+    .btn.secondary { background:rgba(255,255,255,0.045); color:var(--profile-text); border:1px solid var(--profile-card-border); }
     .step {
       margin-top:16px;
       padding:14px;
-      border:1px solid #232a38;
+      border:1px solid var(--profile-card-border);
       border-radius:14px;
-      background:linear-gradient(180deg, rgba(11, 14, 19, 0.95), rgba(9, 11, 16, 0.95));
+      background:var(--profile-card-bg);
+      backdrop-filter:var(--profile-card-blur);
     }
-    .step h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:0.12em; color:#c2a56f; }
+    .step h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:0.12em; color:var(--profile-accent); }
     .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(240px, 1fr)); gap:14px; }
     .item {
-      border:1px solid #232a38;
+      border:1px solid var(--profile-card-border);
       border-radius:14px;
       overflow:hidden;
-      background:linear-gradient(180deg, rgba(12, 16, 23, 0.95), rgba(9, 12, 18, 0.98));
+      background:var(--profile-card-bg);
+      backdrop-filter:var(--profile-card-blur);
       display:flex;
       flex-direction:column;
       min-height:100%;
@@ -36975,45 +37633,51 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     .media {
       position:relative;
       aspect-ratio:16 / 10;
-      background:#0b0f15;
-      border-bottom:1px solid #212838;
+      background:var(--profile-card-bg-strong);
+      border-bottom:1px solid var(--profile-card-border);
       overflow:hidden;
     }
     .media img { width:100%; height:100%; object-fit:cover; display:block; }
     .media-fallback {
       display:flex; align-items:center; justify-content:center;
       width:100%; height:100%;
-      font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:#9aa4b6;
+      font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:var(--profile-muted);
       background:
-        radial-gradient(120% 100% at 70% 0%, rgba(68, 89, 129, 0.22), transparent 70%),
-        radial-gradient(80% 100% at 20% 100%, rgba(106, 79, 34, 0.18), transparent 75%),
-        #0f131b;
+        radial-gradient(120% 100% at 70% 0%, var(--profile-accent-soft), transparent 70%),
+        radial-gradient(80% 100% at 20% 100%, rgba(255,255,255,0.05), transparent 75%),
+        var(--profile-card-bg-strong);
     }
     .item-meta { padding:12px; display:flex; flex-direction:column; gap:8px; flex:1; }
     .item-title {
       font-size:20px; line-height:1.15; font-weight:680; letter-spacing:-0.01em; margin:0;
       display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
     }
-    .creator { color:#c9d1de; font-size:13px; }
-    .meta-line { color:#8f9db2; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
+    .creator { color:var(--profile-text); font-size:13px; }
+    .meta-line { color:var(--profile-muted); font-size:12px; text-transform:uppercase; letter-spacing:0.08em; }
     .status-pill {
       display:inline-flex; align-items:center; align-self:flex-start;
-      border:1px solid #4b3e28; background:#1a1510; color:#e2c786;
+      border:1px solid var(--profile-button-border); background:var(--profile-button-bg); color:var(--profile-accent);
       border-radius:999px; padding:3px 9px; font-size:11px; font-weight:640;
       letter-spacing:0.06em; text-transform:uppercase;
     }
     .actions { margin-top:auto; display:flex; gap:8px; }
     .action-primary {
       border-radius:9px; padding:8px 11px; font-size:12px; font-weight:620; text-decoration:none;
-      background:#d4b26a; color:#0c0c0c;
+      background:var(--profile-button-bg); color:var(--theme-button-text); border:1px solid var(--profile-button-border);
     }
-    .ownership-copy { margin-top:8px; font-size:13px; color:#9eacbf; line-height:1.4; }
-    a { color:#d4b26a; }
-    .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
+    .ownership-copy { margin-top:8px; font-size:13px; color:var(--profile-muted); line-height:1.4; }
+    a { color:var(--profile-accent); }
+    .footer { margin-top:20px; font-size:12px; color:var(--profile-muted); }
     @media (max-width: 640px) {
       .wrap { padding: 16px; }
       .card { padding: 16px; }
       .item-title { font-size:18px; }
+      body { background-attachment:scroll; }
+      :root {
+        --profile-bg-overlay:var(--profile-bg-overlay-mobile);
+        --profile-card-bg:var(--profile-card-bg-mobile);
+        --profile-card-bg-strong:var(--profile-card-bg-mobile-strong);
+      }
     }
   </style>
 </head>
