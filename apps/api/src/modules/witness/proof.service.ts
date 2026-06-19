@@ -447,7 +447,28 @@ type SocialEvidence = {
 const SOCIAL_VERIFY_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
 
-async function fetchUrlText(url: string): Promise<FetchUrlResult> {
+function socialFetchHeaders(provider?: SocialProvider): Record<string, string> {
+  const baseHeaders: Record<string, string> = {
+    "user-agent": SOCIAL_VERIFY_UA,
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+    "cache-control": "no-cache",
+    pragma: "no-cache"
+  };
+  if (provider !== "hyperfollow") return baseHeaders;
+  return {
+    ...baseHeaders,
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    referer: "https://distrokid.com/",
+    "upgrade-insecure-requests": "1",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "sec-fetch-user": "?1"
+  };
+}
+
+async function fetchUrlText(url: string, provider?: SocialProvider): Promise<FetchUrlResult> {
   const timeoutMs = 5000;
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
@@ -456,13 +477,7 @@ async function fetchUrlText(url: string): Promise<FetchUrlResult> {
       method: "GET",
       redirect: "follow",
       signal: ctl.signal,
-      headers: {
-        "user-agent": SOCIAL_VERIFY_UA,
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.9",
-        "cache-control": "no-cache",
-        pragma: "no-cache"
-      }
+      headers: socialFetchHeaders(provider)
     });
     const text = await res.text();
     return {
@@ -1287,7 +1302,7 @@ export async function verifySocialProof(
   for (const candidateUrl of candidateUrls) {
     attemptedUrls.push(candidateUrl);
     try {
-      const fetched = await fetchUrlText(candidateUrl);
+      const fetched = await fetchUrlText(candidateUrl, provider);
       const evidence = buildSocialEvidence(provider, fetched.text);
       const candidateMatched = acceptedChallenges.find((c) => {
         if (evidence.searchableText.includes(c)) return true;
@@ -1306,7 +1321,10 @@ export async function verifySocialProof(
       }
 
       if (!fetched.ok) {
-        failureReason = `url-fetch-http-${fetched.status}`;
+        failureReason =
+          provider === "hyperfollow" && fetched.status === 403
+            ? "Hyperfollow blocks automated fetch. Use another proof source or manual screenshot review."
+            : `url-fetch-http-${fetched.status}`;
       } else {
         const issue = classifySocialFetchIssue(provider, fetched);
         if (provider === "instagram" && (evidence.metaDescription || evidence.title)) {
