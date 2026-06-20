@@ -16,7 +16,7 @@ import {
   type ProofRecordDto
 } from "./proof.types.js";
 
-type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok" | "rumble" | "reddit" | "substack";
+type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok" | "rumble" | "reddit" | "substack" | "spotify";
 
 function proofModel(prisma: PrismaClient): any {
   const model = (prisma as any).proofRecord;
@@ -51,6 +51,7 @@ function normalizeSocialProvider(input: string): SocialProvider | "" {
   if (src === "rumble") return "rumble";
   if (src === "reddit") return "reddit";
   if (src === "substack") return "substack";
+  if (src === "spotify" || src === "spotify_artist") return "spotify";
   return "";
 }
 
@@ -107,6 +108,14 @@ function normalizeSocialAccount(provider: SocialProvider, input: string): string
     return normalizeSocialUsername(src);
   }
 
+  if (provider === "spotify") {
+    const normalized = normalizeSpotifyArtistUrl(src);
+    if (normalized) return normalized.artistId;
+    const uri = src.match(/^spotify:artist:([A-Za-z0-9]{10,64})$/i);
+    if (uri?.[1]) return uri[1];
+    return src.replace(/^spotify:/i, "").trim();
+  }
+
   const normalized = normalizeTiktokProfileUrl(src);
   if (normalized) return normalized.account;
   return normalizeSocialUsername(src);
@@ -114,6 +123,7 @@ function normalizeSocialAccount(provider: SocialProvider, input: string): string
 
 function normalizeStoredSocialAccount(provider: SocialProvider, account: string): string {
   if (provider === "youtube" && /^UC[a-zA-Z0-9_-]{10,}$/.test(account)) return account;
+  if (provider === "spotify") return String(account || "").trim();
   return normalizeSocialUsername(account);
 }
 
@@ -194,6 +204,7 @@ const SOCIAL_PROOF_PREFIX_LEGACY = "contentbox-social-verify";
 const SOCIAL_PROOF_PATTERN = /^(certifyd-proof|contentbox-social-verify)\s+provider=([^\s]+)\s+account=([^\s]+)\s+nonce=([^\s]+)$/i;
 
 function buildSocialChallengeMessage(provider: SocialProvider, account: string, nonce: string): string {
+  if (provider === "spotify") return `Certifyd proof: ${nonce}`;
   return `${SOCIAL_PROOF_PREFIX_CERTIFYD} provider=${provider} account=${account} nonce=${nonce}`;
 }
 
@@ -382,6 +393,25 @@ function normalizeSubstackProfileUrl(input: string): { canonicalUrl: string; acc
   return null;
 }
 
+function normalizeSpotifyArtistUrl(input: string): { canonicalUrl: string; artistId: string } | null {
+  const raw = String(input || "").trim();
+  const uri = raw.match(/^spotify:artist:([A-Za-z0-9]{10,64})$/i);
+  if (uri?.[1]) {
+    const artistId = uri[1];
+    return { canonicalUrl: `https://open.spotify.com/artist/${artistId}`, artistId };
+  }
+
+  const url = normalizeHttpsUrl(raw);
+  if (!url) return null;
+  const host = String(url.hostname || "").toLowerCase();
+  if (host !== "open.spotify.com" && host !== "spotify.com" && host !== "www.spotify.com") return null;
+  const parts = String(url.pathname || "").split("/").filter(Boolean);
+  const artistIndex = parts.findIndex((part) => part.toLowerCase() === "artist");
+  const artistId = artistIndex >= 0 ? String(parts[artistIndex + 1] || "").trim() : "";
+  if (!/^[A-Za-z0-9]{10,64}$/.test(artistId)) return null;
+  return { canonicalUrl: `https://open.spotify.com/artist/${artistId}`, artistId };
+}
+
 function parseNostrClaim(claim: unknown): { pubkey: string; challenge: string; challengeText: string } | null {
   if (!claim || typeof claim !== "object") return null;
   const c = claim as Record<string, unknown>;
@@ -423,23 +453,35 @@ type SocialEvidence = {
 
 const SOCIAL_VERIFY_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
+const SPOTIFY_VERIFY_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
-async function fetchUrlText(url: string): Promise<FetchUrlResult> {
+async function fetchUrlText(url: string, provider?: SocialProvider): Promise<FetchUrlResult> {
   const timeoutMs = 5000;
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
+  const headers =
+    provider === "spotify"
+      ? {
+          "user-agent": SPOTIFY_VERIFY_UA,
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "accept-language": "en-US,en;q=0.9",
+          "cache-control": "no-cache",
+          pragma: "no-cache"
+        }
+      : {
+          "user-agent": SOCIAL_VERIFY_UA,
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "accept-language": "en-US,en;q=0.9",
+          "cache-control": "no-cache",
+          pragma: "no-cache"
+        };
   try {
     const res = await fetch(url, {
       method: "GET",
       redirect: "follow",
       signal: ctl.signal,
-      headers: {
-        "user-agent": SOCIAL_VERIFY_UA,
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.9",
-        "cache-control": "no-cache",
-        pragma: "no-cache"
-      }
+      headers
     });
     const text = await res.text();
     return {
@@ -524,6 +566,55 @@ function collectBiographyStrings(value: unknown, out: Set<string>, depth = 0) {
   }
 }
 
+function collectSpotifyBiographyStrings(value: unknown, out: Set<string>, depth = 0) {
+  if (depth > 18 || out.size > 16) return;
+  if (!value || typeof value !== "object") return;
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectSpotifyBiographyStrings(item, out, depth + 1);
+    return;
+  }
+
+  const obj = value as Record<string, unknown>;
+  const biography = obj.biography;
+  if (biography && typeof biography === "object") {
+    const text = (biography as Record<string, unknown>).text;
+    if (typeof text === "string") {
+      const normalized = decodeMinimalHtmlEntities(text).replace(/\s+/g, " ").trim();
+      if (normalized) out.add(normalized);
+    }
+  }
+
+  for (const child of Object.values(obj)) {
+    if (child && typeof child === "object") collectSpotifyBiographyStrings(child, out, depth + 1);
+  }
+}
+
+function extractSpotifyBioText(html: string): string {
+  const src = String(html || "");
+  const bios = new Set<string>();
+
+  const initialStateMatch = src.match(/<script[^>]*\bid=["']initialState["'][^>]*>([\s\S]*?)<\/script>/i);
+  const encodedInitialState = String(initialStateMatch?.[1] || "").trim();
+  if (encodedInitialState) {
+    try {
+      const decoded = Buffer.from(decodeMinimalHtmlEntities(encodedInitialState), "base64").toString("utf8");
+      const parsed = parseJsonSafe(decoded);
+      if (parsed) collectSpotifyBiographyStrings(parsed, bios);
+    } catch {
+      // Spotify may change the hydration format. Keep verification best-effort.
+    }
+  }
+
+  const biographyTextRegex = /"biography"\s*:\s*\{[\s\S]*?"text"\s*:\s*"((?:\\.|[^"\\])*)"/gi;
+  for (const m of src.matchAll(biographyTextRegex)) {
+    const decoded = decodeMinimalHtmlEntities(decodeJsonStringLiteral(String(m[1] || "")).trim());
+    if (decoded) bios.add(decoded.replace(/\s+/g, " ").trim());
+  }
+
+  return Array.from(bios).filter(Boolean).join("\n");
+}
+
 function extractInstagramBioText(html: string): string {
   const src = String(html || "");
   const bios = new Set<string>();
@@ -568,6 +659,19 @@ function extractInstagramBioText(html: string): string {
 
 function buildSocialEvidence(provider: SocialProvider, html: string): SocialEvidence {
   const src = String(html || "");
+  if (provider === "spotify") {
+    const bioText = extractSpotifyBioText(src);
+    return {
+      searchableText: bioText,
+      bodyText: "",
+      bioText,
+      metaDescription: null,
+      title: null,
+      bodyLength: 0,
+      bioLength: bioText.length
+    };
+  }
+
   if (provider !== "instagram") {
     return {
       searchableText: src,
@@ -646,7 +750,8 @@ function classifySocialFetchIssue(provider: SocialProvider, fetched: FetchUrlRes
       provider === "x" ||
       provider === "rumble" ||
       provider === "reddit" ||
-      provider === "substack") &&
+      provider === "substack" ||
+      provider === "spotify") &&
     looksHtml &&
     hasLoginWallMarker
   ) {
@@ -674,6 +779,7 @@ function socialChallengeMissReason(provider: SocialProvider): string {
   if (provider === "rumble") return "rumble-public-page-fetched-but-challenge-missing";
   if (provider === "reddit") return "reddit-public-html-missing-challenge";
   if (provider === "substack") return "substack-public-html-missing-challenge";
+  if (provider === "spotify") return "Spotify challenge was not found automatically.";
   return "x-public-page-fetched-but-challenge-missing";
 }
 
@@ -684,6 +790,7 @@ function canonicalProfileUrlForProvider(provider: SocialProvider, account: strin
   if (provider === "rumble") return `https://rumble.com/c/${account}`;
   if (provider === "reddit") return `https://www.reddit.com/user/${account}`;
   if (provider === "substack") return `https://${account}.substack.com`;
+  if (provider === "spotify") return `https://open.spotify.com/artist/${account}`;
   if (provider === "x") return `https://x.com/${account}`;
   if (/^UC[a-zA-Z0-9_-]{10,}$/.test(account)) return `https://www.youtube.com/channel/${account}`;
   return `https://www.youtube.com/@${account}`;
@@ -729,6 +836,8 @@ function providerProfileUrlCandidates(
     push(`https://${account}.substack.com/about`);
     push(`https://${account}.substack.com`);
     push(`https://substack.com/@${account}`);
+  } else if (provider === "spotify") {
+    push(`https://open.spotify.com/artist/${account}`);
   } else if (provider === "youtube") {
     if (/^UC[a-zA-Z0-9_-]{10,}$/.test(account)) {
       push(`https://www.youtube.com/channel/${account}`);
@@ -770,6 +879,10 @@ function accountFromProviderUrl(provider: SocialProvider, input: string): string
   if (provider === "substack") {
     const parsed = normalizeSubstackProfileUrl(input);
     return parsed ? parsed.account : null;
+  }
+  if (provider === "spotify") {
+    const parsed = normalizeSpotifyArtistUrl(input);
+    return parsed ? parsed.artistId : null;
   }
   return normalizeXAccountFromUrl(input);
 }
@@ -1006,7 +1119,8 @@ export async function createSocialChallenge(
     provider !== "x" &&
     provider !== "rumble" &&
     provider !== "reddit" &&
-    provider !== "substack"
+    provider !== "substack" &&
+    provider !== "spotify"
   ) {
     throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
   }
@@ -1068,10 +1182,47 @@ export async function createSocialChallenge(
     if (!/^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/i.test(account)) throw new Error("INVALID_SOCIAL_USERNAME");
     profileUrl = canonicalProfileUrlForProvider(provider, account);
     postingHint = "Add this exact text to your public Substack About bio, then verify using your publication URL.";
+  } else if (provider === "spotify") {
+    const normalizedFromUrl = normalizeSpotifyArtistUrl(inputUsername);
+    if (normalizedFromUrl) account = normalizedFromUrl.artistId;
+    if (!/^[A-Za-z0-9]{10,64}$/.test(account)) throw new Error("INVALID_SPOTIFY_ARTIST_URL");
+    profileUrl = canonicalProfileUrlForProvider(provider, account);
+    postingHint = "Experimental / best-effort: place the Certifyd proof challenge in your Spotify Artist bio, then verify using your Spotify Artist URL.";
   } else if (provider === "x") {
     if (!isValidXUsername(account)) throw new Error("INVALID_SOCIAL_USERNAME");
     profileUrl = canonicalProfileUrlForProvider(provider, account);
     postingHint = "Add this exact text to your public X bio, then verify using your public profile URL.";
+  }
+
+  if (provider === "spotify") {
+    const existingSubjects = socialSubjectCandidates(provider, account);
+    for (const existingSubject of existingSubjects) {
+      const existing = await proofModel(prisma).findUnique({
+        where: {
+          userId_proofType_subject: {
+            userId,
+            proofType: PROOF_TYPE_SOCIAL,
+            subject: existingSubject
+          }
+        },
+        select: {
+          id: true,
+          proofType: true,
+          subject: true,
+          claimJson: true,
+          signature: true,
+          status: true,
+          verificationMethod: true,
+          location: true,
+          createdAt: true,
+          updatedAt: true,
+          verifiedAt: true,
+          revokedAt: true,
+          failureReason: true
+        }
+      });
+      if (existing && !existing.revokedAt) return toDto(existing);
+    }
   }
 
   const nonce = randomBytes(16).toString("hex");
@@ -1083,6 +1234,11 @@ export async function createSocialChallenge(
     channelIdentifier: provider === "youtube" ? account : undefined,
     channelUrl,
     profileUrl,
+    platform: provider === "spotify" ? "spotify" : undefined,
+    artistId: provider === "spotify" ? account : undefined,
+    artistUrl: provider === "spotify" ? profileUrl : undefined,
+    challenge: provider === "spotify" ? challengeText : undefined,
+    expectedLocation: provider === "spotify" ? "Spotify Artist bio" : undefined,
     challengeText,
     postingHint,
     witnessFingerprint: witness.fingerprint
@@ -1175,7 +1331,8 @@ export async function verifySocialProof(
     provider !== "x" &&
     provider !== "rumble" &&
     provider !== "reddit" &&
-    provider !== "substack"
+    provider !== "substack" &&
+    provider !== "spotify"
   ) {
     throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
   }
@@ -1187,6 +1344,7 @@ export async function verifySocialProof(
     if (provider === "instagram") throw new Error("INVALID_INSTAGRAM_PROFILE_URL");
     if (provider === "tiktok") throw new Error("INVALID_TIKTOK_PROFILE_URL");
     if (provider === "rumble") throw new Error("INVALID_RUMBLE_PROFILE_URL");
+    if (provider === "spotify") throw new Error("INVALID_SPOTIFY_ARTIST_URL");
     throw new Error("INVALID_SOCIAL_USERNAME");
   }
 
@@ -1245,7 +1403,7 @@ export async function verifySocialProof(
   for (const candidateUrl of candidateUrls) {
     attemptedUrls.push(candidateUrl);
     try {
-      const fetched = await fetchUrlText(candidateUrl);
+      const fetched = await fetchUrlText(candidateUrl, provider);
       const evidence = buildSocialEvidence(provider, fetched.text);
       const candidateMatched = acceptedChallenges.find((c) => {
         if (evidence.searchableText.includes(c)) return true;
@@ -1267,7 +1425,11 @@ export async function verifySocialProof(
         failureReason = `url-fetch-http-${fetched.status}`;
       } else {
         const issue = classifySocialFetchIssue(provider, fetched);
-        if (provider === "instagram" && (evidence.metaDescription || evidence.title)) {
+        if (provider === "spotify" && !evidence.bioText) {
+          failureReason = "Spotify bio was not available to the verifier.";
+        } else if (provider === "spotify" && /Certifyd proof:/i.test(evidence.bioText)) {
+          failureReason = "Spotify bio contains a different Certifyd proof. Replace it with the current challenge shown in Certifyd.";
+        } else if (provider === "instagram" && (evidence.metaDescription || evidence.title)) {
           failureReason = "instagram-public-html-missing-challenge";
         } else {
           failureReason = issue || socialChallengeMissReason(provider);
@@ -1426,7 +1588,7 @@ export async function verifySocialProof(
   const row = await proofModel(prisma).update({
     where: { id: existing.id },
     data: {
-      status: verified ? PROOF_STATUS_VERIFIED : PROOF_STATUS_FAILED,
+      status: verified ? PROOF_STATUS_VERIFIED : PROOF_STATUS_PENDING,
       verifiedAt: verified ? new Date() : null,
       failureReason: verified ? null : failureReason,
       location: verified ? matchedUrl : candidateUrls[0] || null,

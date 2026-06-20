@@ -25,7 +25,7 @@ export type ProofRecord = {
   failureReason: string | null;
 };
 
-export type SocialProvider = "github" | "x" | "youtube" | "tiktok" | "rumble" | "reddit" | "substack";
+export type SocialProvider = "github" | "x" | "youtube" | "spotify" | "tiktok" | "rumble" | "reddit" | "substack";
 
 function witnessDebug(event: string, payload?: Record<string, unknown>): void {
   try {
@@ -165,6 +165,7 @@ export async function createSocialChallenge(provider: SocialProvider, username: 
     const status = parseStatusFromApiError(e);
     if (status === 400) {
       if (provider === "youtube") throw new Error("Enter a valid YouTube channel URL (/@handle or /channel/<id>).");
+      if (provider === "spotify") throw new Error("Enter a valid Spotify Artist URL (https://open.spotify.com/artist/<artistId>).");
       if (provider === "tiktok") throw new Error("Enter a valid TikTok profile URL (https://www.tiktok.com/@handle).");
       if (provider === "rumble") throw new Error("Enter a valid Rumble profile URL (https://rumble.com/c/<handle> or https://rumble.com/user/<handle>).");
       if (provider === "reddit") throw new Error("Enter a valid Reddit profile URL (https://www.reddit.com/user/<username>).");
@@ -189,6 +190,7 @@ export async function verifySocialProof(provider: SocialProvider, username: stri
     if (status === 404) throw new Error("Create a social challenge first.");
     if (status === 400) {
       if (provider === "youtube") throw new Error("Invalid YouTube verification input. Use your public channel URL.");
+      if (provider === "spotify") throw new Error("Invalid Spotify verification input. Use your Spotify Artist URL.");
       if (provider === "tiktok") throw new Error("Invalid TikTok verification input. Use your public profile URL.");
       if (provider === "rumble") throw new Error("Invalid Rumble verification input. Use your public channel URL.");
       if (provider === "reddit") throw new Error("Invalid Reddit verification input. Use your public profile URL.");

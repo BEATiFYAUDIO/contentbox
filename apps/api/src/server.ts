@@ -25347,6 +25347,18 @@ function normalizeRedditSourceUrl(value: unknown): { account: string; accountUrl
   return { account, accountUrl: `https://www.reddit.com/user/${account}` };
 }
 
+function normalizeSpotifyArtistSourceUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase();
+  if (host !== "open.spotify.com" && host !== "spotify.com" && host !== "www.spotify.com") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  const artistIndex = parts.findIndex((part) => part.toLowerCase() === "artist");
+  const artistId = artistIndex >= 0 ? String(parts[artistIndex + 1] || "").trim() : "";
+  if (!/^[A-Za-z0-9]{10,64}$/.test(artistId)) return null;
+  return { account: artistId, accountUrl: `https://open.spotify.com/artist/${artistId}` };
+}
+
 function domainSourceFromUrl(value: unknown): { account: string; accountUrl: string } | null {
   const url = parseConnectWorkUrl(value);
   if (!url) return null;
@@ -25366,6 +25378,8 @@ function sourceFromUrl(value: unknown): { platform: string; account: string; acc
   if (rumble) return { platform: "rumble", account: rumble.account, accountUrl: rumble.accountUrl, resolver: "rumble_url" };
   const reddit = normalizeRedditSourceUrl(value);
   if (reddit) return { platform: "reddit", account: reddit.account, accountUrl: reddit.accountUrl, resolver: "reddit_url" };
+  const spotifyArtist = normalizeSpotifyArtistSourceUrl(value);
+  if (spotifyArtist) return { platform: "spotify", account: spotifyArtist.account, accountUrl: spotifyArtist.accountUrl, resolver: "spotify_artist_url" };
   const domain = domainSourceFromUrl(value);
   if (domain) return { platform: "domain", account: domain.account, accountUrl: domain.accountUrl, resolver: "domain_url" };
   return null;
@@ -25397,7 +25411,12 @@ function emptyDiscoverySourceFields() {
 async function matchSourceProofForUser(userId: string, source: { platform: string; account: string; accountUrl: string; resolver: string } | null): Promise<ConnectWorkSourceProof> {
   if (!source) return emptySourceProof();
   const platform = source.platform.toLowerCase();
-  const account = platform === "domain" ? source.account.toLowerCase() : normalizeSourceAccount(source.account);
+  const account =
+    platform === "domain"
+      ? source.account.toLowerCase()
+      : platform === "spotify"
+        ? asString(source.account || "").trim()
+        : normalizeSourceAccount(source.account);
   if (!account) return emptySourceProof(source.resolver);
   const proofType = platform === "domain" ? "domain" : "social";
   const subject = platform === "domain" ? account : `${platform}:${account}`;
@@ -25585,7 +25604,7 @@ function spotifyUpcIdentifier(value: unknown): ConnectWorkIdentifier | null {
   return null;
 }
 
-async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null> {
+async function resolveSpotifyUrl(url: URL, userId: string): Promise<ConnectWorkDiscovery | null> {
   const parts = spotifyUrlParts(url);
   if (!parts) return null;
   const spotifyUrl = sanitizeExternalMetadataUrl(url.toString());
@@ -25602,7 +25621,17 @@ async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null>
           : null;
       const images = parts.kind === "track" ? (albumData?.images || data?.album?.images) : data?.images;
       const image = Array.isArray(images) ? images[0]?.url : null;
-      const artists = Array.isArray(data?.artists) ? data.artists.map((artist: any) => asString(artist?.name || "").trim()).filter(Boolean).join(", ") : null;
+      const artistRows = Array.isArray(data?.artists) ? data.artists : [];
+      const artists = artistRows.map((artist: any) => asString(artist?.name || "").trim()).filter(Boolean).join(", ") || null;
+      const primaryArtistId = asString(artistRows[0]?.id || "").trim();
+      const source = primaryArtistId
+        ? await matchSourceProofForUser(userId, {
+            platform: "spotify",
+            account: primaryArtistId,
+            accountUrl: `https://open.spotify.com/artist/${primaryArtistId}`,
+            resolver: "spotify_api_artist"
+          })
+        : emptySourceProof("spotify_api_artist_missing");
       const identifiers: ConnectWorkIdentifier[] = [];
       const isrc = asString(data?.external_ids?.isrc || "").trim();
       const upc = asString(albumData?.external_ids?.upc || albumData?.external_ids?.ean || data?.external_ids?.upc || data?.external_ids?.ean || "").trim();
@@ -25623,7 +25652,8 @@ async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null>
         youtubeUrl: null,
         musicBrainzUrl: null,
         discogsUrl: null,
-        provider: "Spotify"
+        provider: "Spotify",
+        ...source
       });
     }
   }
@@ -25708,7 +25738,7 @@ async function resolveConnectWorkUrl(rawUrl: unknown, userId: string): Promise<C
   const url = parseConnectWorkUrl(rawUrl);
   if (!url) return null;
   return (
-    await resolveSpotifyUrl(url) ||
+    await resolveSpotifyUrl(url, userId) ||
     await resolveAppleMusicUrl(url) ||
     await resolveYoutubeUrl(url, userId)
   );
@@ -33247,6 +33277,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         label: "YouTube",
         svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M23 7.2a3 3 0 0 0-2.1-2.1C19 4.5 12 4.5 12 4.5s-7 0-8.9.6A3 3 0 0 0 1 7.2a31 31 0 0 0 0 9.6 3 3 0 0 0 2.1 2.1c1.9.6 8.9.6 8.9.6s7 0 8.9-.6a3 3 0 0 0 2.1-2.1 31 31 0 0 0 0-9.6ZM10 15.3V8.7l6 3.3-6 3.3Z"/></svg>`
       },
+      spotify: {
+        cls: "spotify",
+        label: "Spotify Artist",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm4.6 14.4a.8.8 0 0 1-1.1.3 9.7 9.7 0 0 0-7.4-.8.8.8 0 0 1-.5-1.5 11.2 11.2 0 0 1 8.7.9.8.8 0 0 1 .3 1.1Zm1.2-3a.9.9 0 0 1-1.2.3 12.3 12.3 0 0 0-9.2-1 .9.9 0 1 1-.6-1.7 14 14 0 0 1 10.7 1.2.9.9 0 0 1 .3 1.2Zm.1-3.1a15.2 15.2 0 0 0-11.2-1.2 1 1 0 0 1-.6-1.9 17 17 0 0 1 12.7 1.4 1 1 0 1 1-.9 1.7Z"/></svg>`
+      },
       tiktok: {
         cls: "tiktok",
         label: "TikTok",
@@ -33349,7 +33384,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               }
             }
             const providerLabel =
-              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : provider ? provider : "Social";
+              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "spotify" ? "Spotify Artist" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : provider ? provider : "Social";
             let fallbackHref = "";
             if (provider === "github" && account) {
               fallbackHref = `https://github.com/${encodeURIComponent(account)}`;
@@ -33357,6 +33392,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               fallbackHref = `https://www.reddit.com/user/${encodeURIComponent(account)}`;
             } else if (provider === "substack" && account) {
               fallbackHref = `https://${encodeURIComponent(account)}.substack.com`;
+            } else if (provider === "spotify" && account) {
+              fallbackHref = `https://open.spotify.com/artist/${encodeURIComponent(account)}`;
             } else if (provider === "youtube") {
               if (account.startsWith("@")) {
                 fallbackHref = `https://www.youtube.com/${encodeURIComponent(account)}`;
@@ -34247,6 +34284,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     .proof-badge--github { background:#181613; border-color:#454034; color:#d6ceb9; }
     .proof-badge--youtube { background:#1c1411; border-color:#5c3c2d; color:#dec9b8; }
+    .proof-badge--spotify { background:#111b14; border-color:#2f5c38; color:#bde0c3; }
     .proof-badge--tiktok { background:#171413; border-color:#4b4334; color:#d7cebd; }
     .proof-badge--reddit { background:#1d1712; border-color:#614430; color:#dfc8b1; }
     .proof-badge--rumble { background:#171611; border-color:#4d432f; color:#d8ccb4; }
@@ -34255,6 +34293,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .proof-badge--instagram { background:#191315; border-color:#52403f; color:#ddc8c9; }
     .proof-badge--github,
     .proof-badge--youtube,
+    .proof-badge--spotify,
     .proof-badge--tiktok,
     .proof-badge--reddit,
     .proof-badge--rumble,
