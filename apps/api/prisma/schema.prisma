@@ -280,6 +280,10 @@ model ContentItem {
   legacyYoutubeUrl String?
   legacyMusicBrainzUrl String?
   legacyDiscogsUrl String?
+  publicationManifestJson Json?
+  publicationManifestSha256 String?
+  publicationManifestGeneratedAt DateTime?
+  proofBundleType String @default("none")
   status        ContentStatus @default(draft)
   featureOnProfile Boolean    @default(false)
   storefrontStatus StorefrontStatus @default(DISABLED)
