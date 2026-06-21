@@ -11720,13 +11720,13 @@ function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: s
       ? escHtml(theme.themeWallpaperImageUrl)
       : "";
   const cardAlpha =
-    theme.themeCardStrength === "transparent" ? 0.01 : theme.themeCardStrength === "light" ? 0.16 : theme.themeCardStrength === "strong" ? 0.30 : 0.22;
+    theme.themeCardStrength === "transparent" ? 0.10 : theme.themeCardStrength === "light" ? 0.16 : theme.themeCardStrength === "strong" ? 0.30 : 0.22;
   const cardStrongAlpha =
-    theme.themeCardStrength === "transparent" ? 0.03 : theme.themeCardStrength === "light" ? 0.22 : theme.themeCardStrength === "strong" ? 0.40 : 0.28;
+    theme.themeCardStrength === "transparent" ? 0.10 : theme.themeCardStrength === "light" ? 0.22 : theme.themeCardStrength === "strong" ? 0.40 : 0.28;
   const mobileCardAlpha =
-    theme.themeCardStrength === "transparent" ? 0.03 : theme.themeCardStrength === "light" ? 0.24 : theme.themeCardStrength === "strong" ? 0.42 : 0.32;
+    theme.themeCardStrength === "transparent" ? 0.10 : theme.themeCardStrength === "light" ? 0.24 : theme.themeCardStrength === "strong" ? 0.42 : 0.32;
   const mobileCardStrongAlpha =
-    theme.themeCardStrength === "transparent" ? 0.06 : theme.themeCardStrength === "light" ? 0.30 : theme.themeCardStrength === "strong" ? 0.50 : 0.38;
+    theme.themeCardStrength === "transparent" ? 0.10 : theme.themeCardStrength === "light" ? 0.30 : theme.themeCardStrength === "strong" ? 0.50 : 0.38;
   const overlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.24 : theme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
   const mobileOverlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.34 : theme.themeOverlayStrength === "darker" ? 0.56 : 0.44;
   const buttonBackground =
