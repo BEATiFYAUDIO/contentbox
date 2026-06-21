@@ -34947,7 +34947,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.22), transparent 64%),
           ${
             safeThemeWallpaperUrl
-              ? `url("${safeThemeWallpaperUrl}") center center / cover scroll no-repeat,`
+              ? `url("${safeThemeWallpaperUrl}") center top / cover scroll no-repeat,`
               : ""
           }
           var(--theme-bg);
