@@ -34558,9 +34558,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       ${profileThemeCss};
     }
     * { box-sizing: border-box; }
-    html { min-height:100%; background:var(--theme-bg); }
+    html { min-height:100%; width:100%; overflow-x:hidden; background:var(--theme-bg); }
     body {
       min-height:100vh;
+      width:100%;
+      max-width:100%;
+      overflow-x:hidden;
       margin:0;
       font-family: system-ui, -apple-system, Segoe UI, sans-serif;
       color:var(--theme-text);
@@ -34937,7 +34940,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       }
     }
     @media (max-width: 640px) {
-      body { background-attachment:scroll; }
+      body {
+        min-height:100dvh;
+        background:
+          radial-gradient(1100px 540px at 14% -8%, color-mix(in srgb, var(--theme-accent) 20%, transparent), transparent 62%),
+          radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.22), transparent 64%),
+          ${
+            safeThemeWallpaperUrl
+              ? `url("${safeThemeWallpaperUrl}") center center / cover scroll no-repeat,`
+              : ""
+          }
+          var(--theme-bg);
+      }
       :root {
         --profile-bg-overlay:var(--profile-bg-overlay-mobile);
         --profile-card-bg:var(--profile-card-bg-mobile);
