@@ -17,7 +17,7 @@ type Me = {
 };
 
 type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
-type ProfileCardStrength = "light" | "medium" | "strong";
+type ProfileCardStrength = "transparent" | "light" | "medium" | "strong";
 type ProfileOverlayStrength = "lighter" | "balanced" | "darker";
 type ProfileButtonStyle = "glass" | "filled" | "outline";
 
@@ -522,7 +522,8 @@ export default function ProfilePage({
   };
 
   const previewAccent = resolvedProfileAccent(profileTheme);
-  const previewCardAlpha = profileTheme.themeCardStrength === "light" ? 0.16 : profileTheme.themeCardStrength === "strong" ? 0.3 : 0.22;
+  const previewCardAlpha =
+    profileTheme.themeCardStrength === "transparent" ? 0.15 : profileTheme.themeCardStrength === "light" ? 0.16 : profileTheme.themeCardStrength === "strong" ? 0.3 : 0.22;
   const previewOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.24 : profileTheme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
   const previewButtonBackground =
     profileTheme.themeButtonStyle === "filled"
@@ -927,6 +928,7 @@ export default function ProfilePage({
                   onChange={(e) => setProfileTheme((theme) => ({ ...theme, themeCardStrength: e.target.value as ProfileCardStrength }))}
                   className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
                 >
+                  <option value="transparent">Transparent</option>
                   <option value="light">Light</option>
                   <option value="medium">Medium</option>
                   <option value="strong">Strong</option>

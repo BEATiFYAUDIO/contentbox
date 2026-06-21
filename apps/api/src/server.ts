@@ -11223,7 +11223,7 @@ async function storeAvatarBufferForUser(userId: string, buf: Buffer, contentType
 }
 
 type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
-type ProfileCardStrength = "light" | "medium" | "strong";
+type ProfileCardStrength = "transparent" | "light" | "medium" | "strong";
 type ProfileOverlayStrength = "lighter" | "balanced" | "darker";
 type ProfileButtonStyle = "glass" | "filled" | "outline";
 
@@ -11267,7 +11267,7 @@ function normalizeProfileThemeMode(value: unknown): ProfileThemeMode {
 
 function normalizeProfileCardStrength(value: unknown): ProfileCardStrength {
   const raw = asString(value || "").trim().toLowerCase();
-  if (raw === "light" || raw === "strong") return raw;
+  if (raw === "transparent" || raw === "light" || raw === "strong") return raw;
   return "medium";
 }
 
@@ -11719,10 +11719,14 @@ function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: s
     theme.themeWallpaperImageUrl && theme.themeWallpaperImageUrl.startsWith("/public/profile-wallpapers/")
       ? escHtml(theme.themeWallpaperImageUrl)
       : "";
-  const cardAlpha = theme.themeCardStrength === "light" ? 0.16 : theme.themeCardStrength === "strong" ? 0.30 : 0.22;
-  const cardStrongAlpha = theme.themeCardStrength === "light" ? 0.22 : theme.themeCardStrength === "strong" ? 0.40 : 0.28;
-  const mobileCardAlpha = theme.themeCardStrength === "light" ? 0.24 : theme.themeCardStrength === "strong" ? 0.42 : 0.32;
-  const mobileCardStrongAlpha = theme.themeCardStrength === "light" ? 0.30 : theme.themeCardStrength === "strong" ? 0.50 : 0.38;
+  const cardAlpha =
+    theme.themeCardStrength === "transparent" ? 0.15 : theme.themeCardStrength === "light" ? 0.16 : theme.themeCardStrength === "strong" ? 0.30 : 0.22;
+  const cardStrongAlpha =
+    theme.themeCardStrength === "transparent" ? 0.18 : theme.themeCardStrength === "light" ? 0.22 : theme.themeCardStrength === "strong" ? 0.40 : 0.28;
+  const mobileCardAlpha =
+    theme.themeCardStrength === "transparent" ? 0.20 : theme.themeCardStrength === "light" ? 0.24 : theme.themeCardStrength === "strong" ? 0.42 : 0.32;
+  const mobileCardStrongAlpha =
+    theme.themeCardStrength === "transparent" ? 0.24 : theme.themeCardStrength === "light" ? 0.30 : theme.themeCardStrength === "strong" ? 0.50 : 0.38;
   const overlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.24 : theme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
   const mobileOverlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.34 : theme.themeOverlayStrength === "darker" ? 0.56 : 0.44;
   const buttonBackground =
