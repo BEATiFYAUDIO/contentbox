@@ -70,6 +70,21 @@ type LibraryItem = {
   originTrust?: "stable" | "ephemeral" | "provider" | null;
   originHealth?: "healthy" | "failed" | "cooldown" | "unknown" | null;
   manifest?: { sha256?: string | null } | null;
+  assetOrigin?: "native" | "legacy_import" | string | null;
+  proofBundleType?: "media" | "publication" | "none" | string | null;
+  publicationManifestSha256?: string | null;
+  legacyArtist?: string | null;
+  legacyArtworkUrl?: string | null;
+  legacyExternalUrl?: string | null;
+  legacyYoutubeUrl?: string | null;
+  legacySpotifyUrl?: string | null;
+  legacyAppleMusicUrl?: string | null;
+  sourceReferences?: Array<{
+    platform?: string | null;
+    sourceVerified?: boolean | null;
+    sourceAccount?: string | null;
+    sourceUrl?: string | null;
+  }>;
   featureOnProfile?: boolean;
   _count?: { files: number };
 };
@@ -689,6 +704,7 @@ function applyLibraryFilters(
 export default function LibraryPage() {
   const apiBase = getApiBase();
   const [items, setItems] = React.useState<NormalizedLibraryItem[]>([]);
+  const [legacyWorks, setLegacyWorks] = React.useState<LibraryItem[]>([]);
   const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
   const [derivativeApprovalByChildId, setDerivativeApprovalByChildId] = React.useState<Record<string, DerivativeApprovalRow>>({});
   const [ownedSplitSummaryByContentId, setOwnedSplitSummaryByContentId] = React.useState<Record<string, SplitVersionSummary>>({});
@@ -731,9 +747,19 @@ export default function LibraryPage() {
             return cached.length > 0 ? cached : normalizedRows;
           })
           .catch(() => readCachedRemoteParticipations(apiBase));
-        const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes, entitlementsRes, derivativeApprovalsRes] = await Promise.all([
+        const [
+          lib,
+          mine,
+          mineLegacy,
+          localParticipationsRes,
+          remoteParticipationsRes,
+          royaltiesRes,
+          entitlementsRes,
+          derivativeApprovalsRes
+        ] = await Promise.all([
           api<LibraryItem[]>(`/content?scope=library`, "GET").catch(() => []),
           api<LibraryItem[]>(`/content?scope=mine`, "GET").catch(() => []),
+          api<LibraryItem[]>(`/content?scope=mine&assetOrigin=legacy`, "GET").catch(() => []),
           api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
           remoteParticipationsPromise,
           api<{ upstreamIncome?: Array<{ parentContentId?: string | null; childContentId?: string | null }> }>("/my/royalties", "GET").catch(() => null),
@@ -778,7 +804,19 @@ export default function LibraryPage() {
           if (parentContentId) derivativeParentContentIds.add(parentContentId);
         }
 
-        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? lib : mine;
+        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? [...lib, ...(Array.isArray(mine) ? mine : [])] : mine;
+        const nextLegacyWorks = (Array.isArray(mineLegacy) ? mineLegacy : []).filter((item) => {
+          const sourceReferences = Array.isArray(item.sourceReferences) ? item.sourceReferences : [];
+          return (
+            String(item.assetOrigin || "").trim().toLowerCase() === "legacy_import" &&
+            String(item.status || "").trim().toLowerCase() === "published" &&
+            !item.deletedAt &&
+            String(item.proofBundleType || "").trim().toLowerCase() === "publication" &&
+            Boolean(String(item.publicationManifestSha256 || "").trim()) &&
+            sourceReferences.some((source) => Boolean(source?.sourceVerified))
+          );
+        });
+        setLegacyWorks(nextLegacyWorks);
         const baseList = normalize(baseListRaw || []);
         const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
         const participationByContentId = new Map<string, LibraryParticipation>();
@@ -1538,6 +1576,12 @@ export default function LibraryPage() {
     };
   })();
 
+  const legacyWorksForView = legacyWorks.filter((item) => {
+    const relationshipOk = libraryRelationshipFilter === "all" || libraryRelationshipFilter === "authored_work";
+    const typeOk = libraryTypeFilter === "all" || mapContentType(item.type) === libraryTypeFilter;
+    return relationshipOk && typeOk;
+  });
+
   async function loadPreview(contentId: string) {
     setPreviewLoading((m) => ({ ...m, [contentId]: true }));
     setPreviewError((m) => ({ ...m, [contentId]: "" }));
@@ -1632,6 +1676,28 @@ export default function LibraryPage() {
     }
   }
 
+  async function setLegacyFeatureOnProfile(item: LibraryItem, next: boolean) {
+    const contentId = item.id;
+    setFeatureBusyById((m) => ({ ...m, [contentId]: true }));
+    setFeatureMsgById((m) => ({ ...m, [contentId]: "" }));
+    try {
+      const res = await api<{ featureOnProfile: boolean }>(
+        `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
+        "PATCH",
+        { featureOnProfile: next }
+      );
+      setLegacyWorks((prev) =>
+        prev.map((row) =>
+          row.id === contentId ? { ...row, featureOnProfile: Boolean(res?.featureOnProfile) } : row
+        )
+      );
+    } catch (e: any) {
+      setFeatureMsgById((m) => ({ ...m, [contentId]: e?.message || "Failed to update profile feature status." }));
+    } finally {
+      setFeatureBusyById((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
 function previewFileFor(previewUrl: string | null | undefined, files: any[] | null | undefined) {
     if (!previewUrl || !Array.isArray(files) || files.length === 0) return null;
     try {
@@ -1668,6 +1734,12 @@ function formatDateLabel(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
+function shortHash(value?: string | null, length = 16) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.length <= length ? raw : `${raw.slice(0, length)}…`;
 }
 
 function normalizeAssetUrl(
@@ -1973,7 +2045,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
 
       {msg ? <div className="text-sm text-red-300">{msg}</div> : null}
 
-      {items.length === 0 ? (
+      {items.length === 0 && legacyWorksForView.length === 0 ? (
         <div className="text-sm text-neutral-400">No items yet.</div>
       ) : (
         <div className="space-y-6">
@@ -2670,11 +2742,131 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                         </div>
                       </div>
                     );
-                  })}
-                </div>
+	                  })}
+	                </div>
+	              </div>
+	            );
+	          })}
+          {legacyWorksForView.length ? (
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">Legacy Works</div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {legacyWorksForView.map((item) => {
+                  const sourceReferences = Array.isArray(item.sourceReferences) ? item.sourceReferences : [];
+                  const verifiedSource = sourceReferences.find((source) => Boolean(source?.sourceVerified)) || null;
+                  const sourcePlatform = String(verifiedSource?.platform || "").trim().toLowerCase();
+                  const sourceLabel = sourcePlatform === "youtube" ? "YouTube Verified" : "Source Verified";
+                  const artworkUrl = String(item.legacyArtworkUrl || item.artworkUrl || "").trim();
+                  const artist = String(item.legacyArtist || item.owner?.displayName || item.owner?.email || "").trim();
+                  const publicationHash = String(item.publicationManifestSha256 || "").trim();
+                  const canFeatureLegacyWork =
+                    String(item.assetOrigin || "").trim().toLowerCase() === "legacy_import" &&
+                    String(item.status || "").trim().toLowerCase() === "published" &&
+                    !item.deletedAt &&
+                    String(item.proofBundleType || "").trim().toLowerCase() === "publication" &&
+                    Boolean(publicationHash);
+                  const currentlyFeatured = Boolean(item.featureOnProfile);
+                  const sourceUrl = String(
+                    item.legacyExternalUrl ||
+                      item.legacyYoutubeUrl ||
+                      item.legacySpotifyUrl ||
+                      item.legacyAppleMusicUrl ||
+                      verifiedSource?.sourceUrl ||
+                      ""
+                  ).trim();
+
+                  return (
+                    <div
+                      key={`legacy:${item.id}`}
+                      className="rounded-xl border border-purple-700/40 bg-purple-950/10 p-3 flex flex-col gap-3"
+                    >
+                      <div className="w-full aspect-[4/3] rounded-md border border-purple-900/50 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
+                        {artworkUrl ? (
+                          <img
+                            className="w-full h-full object-cover object-center"
+                            src={artworkUrl}
+                            alt={`${item.title || "Legacy work"} artwork`}
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gradient-to-br from-purple-950 via-neutral-950 to-black flex items-end">
+                            <div className="w-full px-3 py-2 border-t border-purple-900/50 bg-black/45">
+                              <div className="text-[11px] uppercase tracking-wide text-purple-300">Legacy</div>
+                              <div className="text-sm font-medium text-neutral-200 truncate">{item.title || "Untitled"}</div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-2">
+                        <div>
+                          <div className="text-sm font-medium">{item.title || "Untitled legacy work"}</div>
+                          {artist ? <div className="mt-1 text-xs text-neutral-400">{artist}</div> : null}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex rounded-full border border-purple-600/40 bg-purple-500/10 px-2 py-0.5 text-[11px] font-medium text-purple-200">
+                            Proven Legacy Work
+                          </span>
+                          <span className="inline-flex rounded-full border border-sky-600/40 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-200">
+                            Publication Manifest
+                          </span>
+                          <span className="inline-flex rounded-full border border-emerald-600/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
+                            {sourceLabel}
+                          </span>
+                        </div>
+
+                        {publicationHash ? (
+                          <div className="text-[11px] text-purple-200">
+                            Publication Hash: <span className="font-mono">{shortHash(publicationHash)}</span>
+                          </div>
+                        ) : null}
+
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {canFeatureLegacyWork ? (
+                            <button
+                              type="button"
+                              disabled={featureBusyById[item.id]}
+                              className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                              onClick={() => setLegacyFeatureOnProfile(item, !currentlyFeatured)}
+                            >
+                              {featureBusyById[item.id]
+                                ? "Updating…"
+                                : currentlyFeatured
+                                  ? "Remove from profile"
+                                  : "Feature on profile"}
+                            </button>
+                          ) : null}
+                          {sourceUrl ? (
+                            <a
+                              className="text-xs rounded border border-purple-700/60 px-2 py-1 text-purple-100 hover:bg-purple-500/10"
+                              href={sourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open Source
+                            </a>
+                          ) : null}
+                          <details className="text-xs rounded border border-neutral-800 px-2 py-1 text-neutral-300">
+                            <summary className="cursor-pointer select-none">Details</summary>
+                            <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
+                              <div>ID: <span className="font-mono">{item.id}</span></div>
+                              {publicationHash ? <div>Publication Hash: <span className="font-mono">{publicationHash}</span></div> : null}
+                              {verifiedSource?.sourceAccount ? <div>Source: {verifiedSource.sourceAccount}</div> : null}
+                            </div>
+                          </details>
+                        </div>
+                        {featureMsgById[item.id] ? (
+                          <div className="text-xs text-amber-300">{featureMsgById[item.id]}</div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
+            </div>
+          ) : null}
         </div>
       )}
 

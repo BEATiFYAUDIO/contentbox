@@ -23376,7 +23376,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           }
         : { deletedAt: null as any };
 
-  const selectBase = {
+  const selectBase = Prisma.validator<Prisma.ContentItemSelect>()({
     id: true,
     title: true,
     description: true,
@@ -23393,6 +23393,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     legacyYoutubeUrl: true,
     legacyMusicBrainzUrl: true,
     legacyDiscogsUrl: true,
+    publicationManifestJson: true,
+    publicationManifestSha256: true,
+    publicationManifestGeneratedAt: true,
+    proofBundleType: true,
     status: true,
     previousVersionContentId: true,
     previousVersion: { select: { id: true, title: true, status: true } },
@@ -23407,6 +23411,15 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     ownerUserId: true,
     owner: { select: { displayName: true, email: true } },
     manifest: { select: { sha256: true } },
+    externalIdentifiers: {
+      select: {
+        type: true,
+        value: true,
+        displayValue: true,
+        normalizedValue: true
+      },
+      orderBy: [{ type: "asc" }, { createdAt: "asc" }]
+    },
     sourceReferences: {
       select: {
         id: true,
@@ -23420,10 +23433,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         resolver: true,
         resolvedAt: true
       },
-      orderBy: { updatedAt: "desc" as const }
+      orderBy: { updatedAt: "desc" }
     },
     _count: { select: { files: true, entitlements: true } }
-  } as const;
+  });
 
   const items: any[] = [];
   const matchesRequestedType = (contentType: unknown): boolean => {
@@ -24347,6 +24360,15 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const nodeModeForDiscovery = getNodeModeStatus().nodeMode;
 
   return await Promise.all(unique.map(async (i: any) => {
+    if (asString(i?.assetOrigin || "").trim().toLowerCase() === "legacy_import") {
+      i = await ensurePublicationManifestForContent(i);
+    } else if (asString(i?.proofBundleType || "").trim() !== "media" && i?.manifest?.sha256) {
+      i = await prisma.contentItem.update({
+        where: { id: i.id },
+        data: { proofBundleType: "media" },
+        select: selectBase
+      });
+    }
     const description = asString(i?.description || "").trim() || null;
     const explicitRemoteOrigin = pickShareableOrigin(
       asString(i?.remoteOrigin || "").trim() || null,
@@ -24542,6 +24564,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       buyUrl: canonicalPublicOrigin ? `${canonicalPublicOrigin}/buy/${encodeURIComponent(contentId)}` : null,
       remoteOrigin: explicitRemoteOrigin,
       featureOnProfile: Boolean(i.featureOnProfile),
+      proofBundleType: asString(i.proofBundleType || "").trim() || (i.manifest?.sha256 ? "media" : "none"),
+      publicationManifestSha256: asString(i.publicationManifestSha256 || "").trim() || null,
+      publicationManifestGeneratedAt: i.publicationManifestGeneratedAt?.toISOString?.() || null,
+      publicationManifestSummary: publicationManifestSummary(i),
       tombstoned: isArchivedPublished(i),
       isShadow: lifecycleMeta.lifecycle === "shadow",
       lifecycle: lifecycleMeta.lifecycle,
@@ -24577,6 +24603,7 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
         assetOrigin: true,
         featureOnProfile: true,
         storefrontStatus: true,
+        proofBundleType: true,
         createdAt: true,
         updatedAt: true,
         manifest: { select: { sha256: true } }
@@ -24601,6 +24628,10 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
         legacyYoutubeUrl: true,
         legacyMusicBrainzUrl: true,
         legacyDiscogsUrl: true,
+        publicationManifestJson: true,
+        publicationManifestSha256: true,
+        publicationManifestGeneratedAt: true,
+        proofBundleType: true,
         createdAt: true,
         updatedAt: true,
         sourceReferences: {
@@ -24640,11 +24671,12 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
       assetOrigin: row.assetOrigin || "native",
       featureOnProfile: Boolean(row.featureOnProfile),
       storefrontStatus: row.storefrontStatus || "DISABLED",
+      proofBundleType: row.proofBundleType || (row.manifest?.sha256 ? "media" : "none"),
       manifestSha256: row.manifest?.sha256 || null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt
     })),
-    legacyWorks: legacyRows.map((row) => ({
+    legacyWorks: (await Promise.all(legacyRows.map((row) => ensurePublicationManifestForContent(row)))).map((row) => ({
       id: row.id,
       title: row.title,
       assetOrigin: row.assetOrigin || "legacy_import",
@@ -24656,7 +24688,10 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
       provider: row.legacyProvider || null,
       externalUrl: row.legacyExternalUrl || null,
       sourceReference: row.sourceReferences?.[0] || null,
-      sourceVerified: Boolean(row.sourceReferences?.some((source) => source.sourceVerified)),
+      sourceVerified: Boolean(row.sourceReferences?.some((source: { sourceVerified?: boolean | null }) => source.sourceVerified)),
+      proofBundleType: row.proofBundleType || "none",
+      publicationManifestSha256: row.publicationManifestSha256 || null,
+      publicationManifestSummary: publicationManifestSummary(row),
       platformUrls: {
         spotify: row.legacySpotifyUrl || null,
         appleMusic: row.legacyAppleMusicUrl || null,
@@ -24664,7 +24699,7 @@ app.get("/api/profile/works", { preHandler: requireAuth }, async (req: any, repl
         musicBrainz: row.legacyMusicBrainzUrl || null,
         discogs: row.legacyDiscogsUrl || null
       },
-      identifiers: row.externalIdentifiers.map((identifier) => ({
+      identifiers: row.externalIdentifiers.map((identifier: { type: string; displayValue?: string | null; normalizedValue?: string | null }) => ({
         type: identifier.type,
         displayValue: identifier.displayValue,
         normalizedValue: identifier.normalizedValue
@@ -25065,7 +25100,7 @@ app.post("/api/content/:contentId/manifest", { preHandler: requireAuth }, async 
     create: { contentId, json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation }
   });
 
-  await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifest.id } });
+  await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifest.id, proofBundleType: "media" } });
 
   return reply.send({ ok: true, manifestSha256 });
 });
@@ -25347,6 +25382,18 @@ function normalizeRedditSourceUrl(value: unknown): { account: string; accountUrl
   return { account, accountUrl: `https://www.reddit.com/user/${account}` };
 }
 
+function normalizeSpotifyArtistSourceUrl(value: unknown): { account: string; accountUrl: string } | null {
+  const url = parseConnectWorkUrl(value);
+  if (!url) return null;
+  const host = url.hostname.toLowerCase();
+  if (host !== "open.spotify.com" && host !== "spotify.com" && host !== "www.spotify.com") return null;
+  const parts = url.pathname.split("/").filter(Boolean);
+  const artistIndex = parts.findIndex((part) => part.toLowerCase() === "artist");
+  const artistId = artistIndex >= 0 ? String(parts[artistIndex + 1] || "").trim() : "";
+  if (!/^[A-Za-z0-9]{10,64}$/.test(artistId)) return null;
+  return { account: artistId, accountUrl: `https://open.spotify.com/artist/${artistId}` };
+}
+
 function domainSourceFromUrl(value: unknown): { account: string; accountUrl: string } | null {
   const url = parseConnectWorkUrl(value);
   if (!url) return null;
@@ -25366,6 +25413,8 @@ function sourceFromUrl(value: unknown): { platform: string; account: string; acc
   if (rumble) return { platform: "rumble", account: rumble.account, accountUrl: rumble.accountUrl, resolver: "rumble_url" };
   const reddit = normalizeRedditSourceUrl(value);
   if (reddit) return { platform: "reddit", account: reddit.account, accountUrl: reddit.accountUrl, resolver: "reddit_url" };
+  const spotifyArtist = normalizeSpotifyArtistSourceUrl(value);
+  if (spotifyArtist) return { platform: "spotify", account: spotifyArtist.account, accountUrl: spotifyArtist.accountUrl, resolver: "spotify_artist_url" };
   const domain = domainSourceFromUrl(value);
   if (domain) return { platform: "domain", account: domain.account, accountUrl: domain.accountUrl, resolver: "domain_url" };
   return null;
@@ -25397,7 +25446,12 @@ function emptyDiscoverySourceFields() {
 async function matchSourceProofForUser(userId: string, source: { platform: string; account: string; accountUrl: string; resolver: string } | null): Promise<ConnectWorkSourceProof> {
   if (!source) return emptySourceProof();
   const platform = source.platform.toLowerCase();
-  const account = platform === "domain" ? source.account.toLowerCase() : normalizeSourceAccount(source.account);
+  const account =
+    platform === "domain"
+      ? source.account.toLowerCase()
+      : platform === "spotify"
+        ? asString(source.account || "").trim()
+        : normalizeSourceAccount(source.account);
   if (!account) return emptySourceProof(source.resolver);
   const proofType = platform === "domain" ? "domain" : "social";
   const subject = platform === "domain" ? account : `${platform}:${account}`;
@@ -25585,7 +25639,7 @@ function spotifyUpcIdentifier(value: unknown): ConnectWorkIdentifier | null {
   return null;
 }
 
-async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null> {
+async function resolveSpotifyUrl(url: URL, userId: string): Promise<ConnectWorkDiscovery | null> {
   const parts = spotifyUrlParts(url);
   if (!parts) return null;
   const spotifyUrl = sanitizeExternalMetadataUrl(url.toString());
@@ -25602,7 +25656,17 @@ async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null>
           : null;
       const images = parts.kind === "track" ? (albumData?.images || data?.album?.images) : data?.images;
       const image = Array.isArray(images) ? images[0]?.url : null;
-      const artists = Array.isArray(data?.artists) ? data.artists.map((artist: any) => asString(artist?.name || "").trim()).filter(Boolean).join(", ") : null;
+      const artistRows = Array.isArray(data?.artists) ? data.artists : [];
+      const artists = artistRows.map((artist: any) => asString(artist?.name || "").trim()).filter(Boolean).join(", ") || null;
+      const primaryArtistId = asString(artistRows[0]?.id || "").trim();
+      const source = primaryArtistId
+        ? await matchSourceProofForUser(userId, {
+            platform: "spotify",
+            account: primaryArtistId,
+            accountUrl: `https://open.spotify.com/artist/${primaryArtistId}`,
+            resolver: "spotify_api_artist"
+          })
+        : emptySourceProof("spotify_api_artist_missing");
       const identifiers: ConnectWorkIdentifier[] = [];
       const isrc = asString(data?.external_ids?.isrc || "").trim();
       const upc = asString(albumData?.external_ids?.upc || albumData?.external_ids?.ean || data?.external_ids?.upc || data?.external_ids?.ean || "").trim();
@@ -25623,7 +25687,8 @@ async function resolveSpotifyUrl(url: URL): Promise<ConnectWorkDiscovery | null>
         youtubeUrl: null,
         musicBrainzUrl: null,
         discogsUrl: null,
-        provider: "Spotify"
+        provider: "Spotify",
+        ...source
       });
     }
   }
@@ -25708,7 +25773,7 @@ async function resolveConnectWorkUrl(rawUrl: unknown, userId: string): Promise<C
   const url = parseConnectWorkUrl(rawUrl);
   if (!url) return null;
   return (
-    await resolveSpotifyUrl(url) ||
+    await resolveSpotifyUrl(url, userId) ||
     await resolveAppleMusicUrl(url) ||
     await resolveYoutubeUrl(url, userId)
   );
@@ -26244,6 +26309,21 @@ app.post("/api/connect-work/connect", { preHandler: requireAuth }, async (req: a
       });
       identifierRows.push(identifierRow);
     }
+    const publicationManifest = buildPublicationManifest({
+      content,
+      identifiers: identifierRows,
+      sourceReferences: [sourceReference],
+      generatedAt: new Date()
+    });
+    await tx.contentItem.update({
+      where: { id: content.id },
+      data: {
+        publicationManifestJson: publicationManifest as any,
+        publicationManifestSha256: publicationManifestHash(publicationManifest),
+        publicationManifestGeneratedAt: new Date(asString((publicationManifest as any).generatedAt)),
+        proofBundleType: "publication"
+      }
+    });
     await tx.splitVersion.create({
       data: { contentId: content.id, versionNumber: 1, createdByUserId: userId, status: "draft" as any }
     });
@@ -26359,6 +26439,16 @@ app.post("/api/content/:contentId/source-references/resolve", { preHandler: requ
   const sourceReference = existing
     ? await prisma.contentSourceReference.update({ where: { id: existing.id }, data })
     : await prisma.contentSourceReference.create({ data: { ...data, contentId: content.id } });
+  const manifestCandidate = await prisma.contentItem.findUnique({
+    where: { id: content.id },
+    include: {
+      owner: { select: { id: true, displayName: true, email: true } },
+      externalIdentifiers: true,
+      sourceReferences: true,
+      _count: { select: { files: true } }
+    }
+  });
+  if (manifestCandidate) await ensurePublicationManifestForContent(manifestCandidate).catch(() => null);
   return reply.send({
     ok: true,
     sourceReference,
@@ -26366,6 +26456,90 @@ app.post("/api/content/:contentId/source-references/resolve", { preHandler: requ
     message: sourceReference.sourceVerified
       ? "Source account verified."
       : "Source account resolved but no matching verified proof was found."
+  });
+});
+
+app.post("/api/content/:contentId/publish-legacy", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).contentId);
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    include: { sourceReferences: true }
+  });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+  if (content.deletedAt || asString(content.deletedReason || "").trim().toLowerCase() === "hard") {
+    return reply.code(409).send({
+      code: "legacy_content_deleted",
+      message: "Deleted Legacy works cannot be published."
+    });
+  }
+  if (asString(content.assetOrigin || "").trim().toLowerCase() !== "legacy_import") {
+    return badRequest(reply, "Only Legacy assets can use this publish action.");
+  }
+  if (asString(content.proofBundleType || "").trim().toLowerCase() !== "publication") {
+    return reply.code(409).send({
+      code: "publication_manifest_required",
+      message: "A Publication Manifest is required before publishing this Legacy work."
+    });
+  }
+  const publicationHash = asString(content.publicationManifestSha256 || "").trim();
+  if (!publicationHash) {
+    return reply.code(409).send({
+      code: "publication_hash_required",
+      message: "A Publication Hash is required before publishing this Legacy work."
+    });
+  }
+  const sourceVerified = content.sourceReferences.some((source: any) => Boolean(source?.sourceVerified));
+  if (!sourceVerified) {
+    return reply.code(409).send({
+      code: "source_proof_required",
+      message: "A verified source reference is required before publishing this Legacy work."
+    });
+  }
+  const publishGuard = assertLifecycleCanPublish(content);
+  if (!publishGuard.ok) {
+    return reply.code(409).send({ code: publishGuard.code, message: publishGuard.message });
+  }
+
+  const now = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.contentItem.update({
+      where: { id: contentId },
+      data: { status: "published" }
+    });
+    await tx.auditEvent.create({
+      data: {
+        userId,
+        action: "content.publish_legacy",
+        entityType: "ContentItem",
+        entityId: contentId,
+        payloadJson: {
+          assetOrigin: "legacy_import",
+          proofBundleType: "publication",
+          publicationManifestSha256: publicationHash,
+          publishedAt: now.toISOString()
+        } as any
+      }
+    }).catch(() => null);
+  });
+  const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  app.log.info(
+    {
+      contentId,
+      userId,
+      creatorId: content.ownerUserId,
+      proofBundleType: "publication",
+      publicationManifestSha256: publicationHash,
+      cacheInvalidation
+    },
+    "legacy.publish_projection_cache_invalidated"
+  );
+  return reply.send({
+    ok: true,
+    publishedAt: now.toISOString(),
+    proofBundleType: "publication",
+    publicationManifestSha256: publicationHash
   });
 });
 
@@ -26547,8 +26721,193 @@ async function ensureManifestForContent(content: any) {
     create: { contentId: content.id, json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation }
   });
 
-  await prisma.contentItem.update({ where: { id: content.id }, data: { manifestId: manifest.id } });
+  await prisma.contentItem.update({ where: { id: content.id }, data: { manifestId: manifest.id, proofBundleType: "media" } });
   return manifest;
+}
+
+const PUBLICATION_MANIFEST_VERSION = "publication-manifest-v1";
+const PUBLICATION_IDENTIFIER_TYPES = new Set(["ISRC", "UPC", "ISWC", "EIDR", "ISBN", "DOI"]);
+
+function publicationManifestHash(manifest: unknown): string {
+  return crypto.createHash("sha256").update(stableStringify(manifest)).digest("hex");
+}
+
+function shortPublicationHash(value: unknown, length = 16): string | null {
+  const raw = asString(value || "").trim();
+  if (!raw) return null;
+  return raw.length <= length ? raw : `${raw.slice(0, length)}…`;
+}
+
+function publicSafeUrl(value: unknown): string | null {
+  const raw = asString(value || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function buildPublicationManifest(input: {
+  content: any;
+  owner?: any | null;
+  identifiers?: any[];
+  sourceReferences?: any[];
+  generatedAt?: Date;
+}) {
+  const content = input.content || {};
+  const owner = input.owner || content.owner || null;
+  const generatedAt = input.generatedAt || new Date();
+  const identifiers = (input.identifiers || content.externalIdentifiers || [])
+    .map((identifier: any) => {
+      const type = asString(identifier?.type || "").trim().toUpperCase();
+      if (!PUBLICATION_IDENTIFIER_TYPES.has(type)) return null;
+      const value = asString(identifier?.displayValue || identifier?.value || identifier?.normalizedValue || "").trim();
+      if (!value) return null;
+      return {
+        type,
+        value
+      };
+    })
+    .filter(Boolean);
+  const sourceReferences = (input.sourceReferences || content.sourceReferences || [])
+    .map((source: any) => {
+      const platform = asString(source?.platform || "").trim().toLowerCase();
+      const sourceUrl = publicSafeUrl(source?.sourceUrl);
+      const sourceAccountUrl = publicSafeUrl(source?.sourceAccountUrl);
+      if (!platform && !sourceUrl && !sourceAccountUrl) return null;
+      return {
+        platform: platform || null,
+        sourceUrl,
+        sourceAccount: asString(source?.sourceAccount || "").trim() || null,
+        sourceAccountUrl,
+        sourceProofSubject: asString(source?.sourceProofSubject || "").trim() || null,
+        sourceVerified: Boolean(source?.sourceVerified),
+        resolvedAt: source?.resolvedAt?.toISOString?.() || (source?.resolvedAt ? String(source.resolvedAt) : null)
+      };
+    })
+    .filter(Boolean);
+  const publicationLinks = {
+    spotify: publicSafeUrl(content.legacySpotifyUrl),
+    appleMusic: publicSafeUrl(content.legacyAppleMusicUrl),
+    youtube: publicSafeUrl(content.legacyYoutubeUrl),
+    musicBrainz: publicSafeUrl(content.legacyMusicBrainzUrl),
+    discogs: publicSafeUrl(content.legacyDiscogsUrl),
+    external: publicSafeUrl(content.legacyExternalUrl)
+  };
+  const hasSourceProof = sourceReferences.some((source: any) => Boolean(source?.sourceVerified || source?.sourceProofSubject || source?.sourceUrl));
+  const sourceProofStatus = sourceReferences.some((source: any) => Boolean(source?.sourceVerified))
+    ? "source_verified"
+    : hasSourceProof
+      ? "source_reference"
+      : "none";
+  const handle =
+    normalizePublicProfileHandle(owner?.displayName || "") ||
+    normalizedEmailLocalPart(owner?.email || "") ||
+    null;
+  return {
+    manifestVersion: PUBLICATION_MANIFEST_VERSION,
+    proofBundleType: "publication",
+    contentId: asString(content.id || "").trim(),
+    creatorId: asString(content.ownerUserId || owner?.id || "").trim() || null,
+    creatorHandle: handle,
+    title: asString(content.title || "").trim() || null,
+    artist: asString(content.legacyArtist || owner?.displayName || "").trim() || null,
+    creatorName: asString(owner?.displayName || content.legacyArtist || "").trim() || null,
+    type: asString(content.type || "").trim() || null,
+    kind: asString(content.assetOrigin || "").trim() || "legacy_import",
+    artworkUrl: publicSafeUrl(content.legacyArtworkUrl),
+    externalIdentifiers: identifiers,
+    externalPublicationLinks: publicationLinks,
+    sourceProofStatus,
+    sourceProofReferences: sourceReferences,
+    claimedAt: content.createdAt?.toISOString?.() || null,
+    connectedAt: content.createdAt?.toISOString?.() || null,
+    capturedAt: content.updatedAt?.toISOString?.() || content.createdAt?.toISOString?.() || null,
+    generatedAt: generatedAt.toISOString()
+  };
+}
+
+function isPublicationManifestEligible(content: any): boolean {
+  const assetOrigin = asString(content?.assetOrigin || "").trim().toLowerCase();
+  if (assetOrigin !== "legacy_import") return false;
+  const fileCount = Number(content?._count?.files || content?.files?.length || 0);
+  if (fileCount > 0) return false;
+  const hasIdentifiers = Array.isArray(content?.externalIdentifiers) && content.externalIdentifiers.length > 0;
+  const hasPublicationLinks = [
+    content?.legacySpotifyUrl,
+    content?.legacyAppleMusicUrl,
+    content?.legacyYoutubeUrl,
+    content?.legacyExternalUrl,
+    content?.legacyMusicBrainzUrl,
+    content?.legacyDiscogsUrl
+  ].some((value) => Boolean(publicSafeUrl(value)));
+  const hasSourceProof = Array.isArray(content?.sourceReferences) && content.sourceReferences.some((source: any) =>
+    Boolean(source?.sourceVerified || source?.sourceProofSubject || source?.sourceUrl)
+  );
+  return (hasIdentifiers || hasPublicationLinks) && hasSourceProof;
+}
+
+function publicationManifestSummary(content: any) {
+  const proofBundleType = asString(content?.proofBundleType || "").trim() || "none";
+  const manifestJson = content?.publicationManifestJson || null;
+  const identifiers = Array.isArray((manifestJson as any)?.externalIdentifiers)
+    ? (manifestJson as any).externalIdentifiers.map((identifier: any) => ({
+        type: asString(identifier?.type || "").trim(),
+        value: asString(identifier?.value || "").trim()
+      })).filter((identifier: any) => identifier.type && identifier.value)
+    : [];
+  return {
+    proofBundleType,
+    publicationManifestSha256: asString(content?.publicationManifestSha256 || "").trim() || null,
+    manifestVersion: asString((manifestJson as any)?.manifestVersion || "").trim() || null,
+    generatedAt: content?.publicationManifestGeneratedAt?.toISOString?.() || null,
+    externalIdentifiers: identifiers,
+    sourceProofStatus: asString((manifestJson as any)?.sourceProofStatus || "").trim() || null
+  };
+}
+
+async function ensurePublicationManifestForContent(content: any) {
+  if (!isPublicationManifestEligible(content)) {
+    if (asString(content?.proofBundleType || "").trim() !== "media" && asString(content?.proofBundleType || "").trim() !== "none") {
+      const updated = await prisma.contentItem.update({
+        where: { id: content.id },
+        data: { proofBundleType: "none" }
+      });
+      return { ...content, ...updated };
+    }
+    return content;
+  }
+  const generatedAt = new Date();
+  const manifest = buildPublicationManifest({
+    content,
+    owner: content.owner || null,
+    identifiers: content.externalIdentifiers || [],
+    sourceReferences: content.sourceReferences || [],
+    generatedAt
+  });
+  const sha256 = publicationManifestHash(manifest);
+  if (
+    content.publicationManifestSha256 === sha256 &&
+    asString(content.proofBundleType || "") === "publication"
+  ) {
+    return content;
+  }
+  const updated = await prisma.contentItem.update({
+    where: { id: content.id },
+    data: {
+      publicationManifestJson: manifest as any,
+      publicationManifestSha256: sha256,
+      publicationManifestGeneratedAt: generatedAt,
+      proofBundleType: "publication"
+    }
+  });
+  return { ...content, ...updated };
 }
 
 app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -32985,11 +33344,32 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             id: true,
             title: true,
             type: true,
+            status: true,
             priceSats: true,
             deliveryMode: true,
             deletedAt: true,
             deletedReason: true,
             description: true,
+            assetOrigin: true,
+            legacyArtist: true,
+            legacyProvider: true,
+            legacyArtworkUrl: true,
+            legacyExternalUrl: true,
+            legacySpotifyUrl: true,
+            legacyAppleMusicUrl: true,
+            legacyYoutubeUrl: true,
+            publicationManifestSha256: true,
+            publicationManifestGeneratedAt: true,
+            proofBundleType: true,
+            sourceReferences: {
+              select: {
+                platform: true,
+                sourceUrl: true,
+                sourceAccount: true,
+                sourceVerified: true
+              },
+              orderBy: [{ updatedAt: "desc" }]
+            },
             manifest: { select: { json: true } }
           }
         }),
@@ -33064,11 +33444,32 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   id: true,
                   title: true,
                   type: true,
+                  status: true,
+                  assetOrigin: true,
                   priceSats: true,
                   deliveryMode: true,
                   deletedAt: true,
                   deletedReason: true,
                   description: true,
+                  legacyArtist: true,
+                  legacyProvider: true,
+                  legacyArtworkUrl: true,
+                  legacyExternalUrl: true,
+                  legacySpotifyUrl: true,
+                  legacyAppleMusicUrl: true,
+                  legacyYoutubeUrl: true,
+                  publicationManifestSha256: true,
+                  publicationManifestGeneratedAt: true,
+                  proofBundleType: true,
+                  sourceReferences: {
+                    select: {
+                      platform: true,
+                      sourceUrl: true,
+                      sourceAccount: true,
+                      sourceVerified: true
+                    },
+                    orderBy: [{ updatedAt: "desc" }]
+                  },
                   manifest: { select: { json: true } }
                 }
               }),
@@ -33109,6 +33510,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const filteredFeaturedContent = (
     await Promise.all(
       (Array.isArray(featuredContent) ? featuredContent : []).map(async (item: any) => {
+        const isLegacyPublication = asString(item?.assetOrigin || "").trim().toLowerCase() === "legacy_import";
+        if (isLegacyPublication) {
+          const sourceVerified = Array.isArray(item?.sourceReferences)
+            ? item.sourceReferences.some((source: any) => Boolean(source?.sourceVerified))
+            : false;
+          if (
+            asString(item?.status || "").trim().toLowerCase() !== "published" ||
+            asString(item?.proofBundleType || "").trim().toLowerCase() !== "publication" ||
+            !asString(item?.publicationManifestSha256 || "").trim() ||
+            !sourceVerified ||
+            item?.deletedAt
+          ) {
+            return null;
+          }
+          return { ...item, _profileSection: "works" };
+        }
         if (!item?.deletedAt) return { ...item, _profileSection: "works" };
         const check = await isCurrentApprovedFeatureableDerivativeShadow({
           contentId: asString(item.id || "").trim(),
@@ -33247,6 +33664,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         label: "YouTube",
         svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M23 7.2a3 3 0 0 0-2.1-2.1C19 4.5 12 4.5 12 4.5s-7 0-8.9.6A3 3 0 0 0 1 7.2a31 31 0 0 0 0 9.6 3 3 0 0 0 2.1 2.1c1.9.6 8.9.6 8.9.6s7 0 8.9-.6a3 3 0 0 0 2.1-2.1 31 31 0 0 0 0-9.6ZM10 15.3V8.7l6 3.3-6 3.3Z"/></svg>`
       },
+      spotify: {
+        cls: "spotify",
+        label: "Spotify Artist",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm4.6 14.4a.8.8 0 0 1-1.1.3 9.7 9.7 0 0 0-7.4-.8.8.8 0 0 1-.5-1.5 11.2 11.2 0 0 1 8.7.9.8.8 0 0 1 .3 1.1Zm1.2-3a.9.9 0 0 1-1.2.3 12.3 12.3 0 0 0-9.2-1 .9.9 0 1 1-.6-1.7 14 14 0 0 1 10.7 1.2.9.9 0 0 1 .3 1.2Zm.1-3.1a15.2 15.2 0 0 0-11.2-1.2 1 1 0 0 1-.6-1.9 17 17 0 0 1 12.7 1.4 1 1 0 1 1-.9 1.7Z"/></svg>`
+      },
       tiktok: {
         cls: "tiktok",
         label: "TikTok",
@@ -33349,7 +33771,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               }
             }
             const providerLabel =
-              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : provider ? provider : "Social";
+              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "spotify" ? "Spotify Artist" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : provider ? provider : "Social";
             let fallbackHref = "";
             if (provider === "github" && account) {
               fallbackHref = `https://github.com/${encodeURIComponent(account)}`;
@@ -33357,6 +33779,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               fallbackHref = `https://www.reddit.com/user/${encodeURIComponent(account)}`;
             } else if (provider === "substack" && account) {
               fallbackHref = `https://${encodeURIComponent(account)}.substack.com`;
+            } else if (provider === "spotify" && account) {
+              fallbackHref = `https://open.spotify.com/artist/${encodeURIComponent(account)}`;
             } else if (provider === "youtube") {
               if (account.startsWith("@")) {
                 fallbackHref = `https://www.youtube.com/${encodeURIComponent(account)}`;
@@ -33456,6 +33880,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const renderFeaturedContentCard = (item: any, supportText?: string): string => {
             const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
             const type = asString(item.type || "").trim().toLowerCase();
+            const isLegacyPublication = asString((item as any).assetOrigin || "").trim().toLowerCase() === "legacy_import";
+            const publicationHash = asString((item as any).publicationManifestSha256 || "").trim();
+            const legacyExternalUrl =
+              publicSafeUrl((item as any).legacyYoutubeUrl) ||
+              publicSafeUrl((item as any).legacySpotifyUrl) ||
+              publicSafeUrl((item as any).legacyAppleMusicUrl) ||
+              publicSafeUrl((item as any).legacyExternalUrl) ||
+              "";
             const typeLabel =
               type === "video" ? "Video" :
               type === "song" ? "Song" :
@@ -33468,6 +33900,44 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               typeLabel === "Song" || typeLabel === "Audio" ? "Listen" :
               typeLabel === "Article" ? "Read" :
               "View";
+            if (isLegacyPublication) {
+              const artworkUrl = publicSafeUrl((item as any).legacyArtworkUrl) || "";
+              const provider = asString((item as any).legacyProvider || "").trim();
+              const legacyArtist = asString((item as any).legacyArtist || "").trim();
+              const verifiedSource =
+                Array.isArray((item as any).sourceReferences)
+                  ? (item as any).sourceReferences.find((source: any) => Boolean(source?.sourceVerified))
+                  : null;
+              const verifiedSourcePlatform = asString(verifiedSource?.platform || "").trim().toLowerCase();
+              const sourceVerifiedLabel = verifiedSourcePlatform === "youtube" ? "YouTube Verified" : "Source Verified";
+              const publicationBadge = publicationHash ? "Publication Hash" : "Legacy";
+              const legacySupport = [
+                legacyArtist ? escHtml(legacyArtist) : `${safeHandle} • Legacy work`,
+                publicationHash ? `Publication Hash ${escHtml(shortPublicationHash(publicationHash) || "")}` : null
+              ].filter(Boolean).join(" • ");
+              const mediaHtml = artworkUrl
+                ? `<img src="${escHtml(artworkUrl)}" alt="${safeTitle} artwork" class="featured-image" referrerpolicy="no-referrer" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                   <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">Legacy</span></div>`
+                : `<div class="featured-image-fallback"><span class="featured-fallback">Legacy</span></div>`;
+              return `<article class="featured-item">
+                <div class="featured-media">${mediaHtml}</div>
+                <div class="featured-meta">
+                  <div class="featured-topline">
+                    <span class="featured-type-badge">Proven Legacy Work</span>
+                    <span class="featured-verified">${escHtml(publicationBadge)}</span>
+                    ${verifiedSource ? `<span class="featured-verified">${escHtml(sourceVerifiedLabel)}</span>` : ""}
+                    ${provider ? `<span class="featured-type-badge">${escHtml(provider)}</span>` : ""}
+                  </div>
+                  <div class="featured-title">${safeTitle}</div>
+                  <div class="featured-support">${legacySupport}</div>
+                  ${
+                    legacyExternalUrl
+                      ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(legacyExternalUrl)}" target="_blank" rel="noreferrer">View external &#8599;</a></div>`
+                      : ""
+                  }
+                </div>
+              </article>`;
+            }
             const manifestJson = ((item as any).manifest?.json || {}) as any;
             const previewObjectKey = asString(manifestJson?.preview || "").trim();
             const primaryObjectKey =
@@ -33585,10 +34055,25 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     return out;
   };
 
+  const isFeaturedLegacyPublication = (item: any): boolean =>
+    asString((item as any)?.assetOrigin || "").trim().toLowerCase() === "legacy_import" &&
+    asString((item as any)?.status || "").trim().toLowerCase() === "published" &&
+    asString((item as any)?.proofBundleType || "").trim().toLowerCase() === "publication" &&
+    Boolean(asString((item as any)?.publicationManifestSha256 || "").trim());
   const featuredAuthoredForRender = dedupeProfileEntries(featuredContentForRender.filter(
-    (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
+    (item: any) =>
+      asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations" &&
+      !isFeaturedLegacyPublication(item)
   ));
-  const authoredKeys = new Set(featuredAuthoredForRender.map((item: any) => profileCanonicalContentKey(item)));
+  const featuredLegacyForRender = dedupeProfileEntries(featuredContentForRender.filter(
+    (item: any) =>
+      asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations" &&
+      isFeaturedLegacyPublication(item)
+  ));
+  const authoredKeys = new Set([
+    ...featuredAuthoredForRender.map((item: any) => profileCanonicalContentKey(item)),
+    ...featuredLegacyForRender.map((item: any) => profileCanonicalContentKey(item))
+  ]);
 
   const featuredDerivativeForRender = dedupeProfileEntries(featuredContentForRender.filter(
     (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() === "collaborations"
@@ -33596,6 +34081,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const featuredContentHtml =
     featuredAuthoredForRender.length > 0
       ? featuredAuthoredForRender.map((item) => renderFeaturedContentCard(item)).join("")
+      : "";
+  const featuredLegacyContentHtml =
+    featuredLegacyForRender.length > 0
+      ? featuredLegacyForRender.map((item) => renderFeaturedContentCard(item)).join("")
       : "";
   const featuredDerivativeCollaborationHtml =
     featuredDerivativeForRender.length > 0
@@ -34247,6 +34736,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     .proof-badge--github { background:#181613; border-color:#454034; color:#d6ceb9; }
     .proof-badge--youtube { background:#1c1411; border-color:#5c3c2d; color:#dec9b8; }
+    .proof-badge--spotify { background:#111b14; border-color:#2f5c38; color:#bde0c3; }
     .proof-badge--tiktok { background:#171413; border-color:#4b4334; color:#d7cebd; }
     .proof-badge--reddit { background:#1d1712; border-color:#614430; color:#dfc8b1; }
     .proof-badge--rumble { background:#171611; border-color:#4d432f; color:#d8ccb4; }
@@ -34255,6 +34745,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .proof-badge--instagram { background:#191315; border-color:#52403f; color:#ddc8c9; }
     .proof-badge--github,
     .proof-badge--youtube,
+    .proof-badge--spotify,
     .proof-badge--tiktok,
     .proof-badge--reddit,
     .proof-badge--rumble,
@@ -34606,11 +35097,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   </section>`
         : `<section class="section">
     <h3>Certifyd Works</h3>
-    <div class="empty-state">No published works are featured yet. New releases will appear here when the creator features content.</div>
-  </section>`
-    }
-    ${
-      highlightedParticipationsHtml
+	    <div class="empty-state">No published works are featured yet. New releases will appear here when the creator features content.</div>
+	  </section>`
+	    }
+	    ${
+	      featuredLegacyContentHtml
+	        ? `<section class="section">
+	    <h3>Proven Legacy Works</h3>
+	    <div class="section-sub">Externally published works proven with source evidence and a Publication Hash.</div>
+	    <div class="line featured-grid">${featuredLegacyContentHtml}</div>
+	  </section>`
+	        : ""
+	    }
+	    ${
+	      highlightedParticipationsHtml
         ? `<section class="section">
     <h3>Collaborations</h3>
     <div class="section-sub">Split participation credits and approved derivative collaborations.</div>
@@ -41516,17 +42016,34 @@ app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async 
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
     select: {
-      ownerUserId: true,
-      status: true,
-      deletedAt: true,
+	      ownerUserId: true,
+	      status: true,
+	      deletedAt: true,
       deletedReason: true,
       description: true,
       storefrontStatus: true,
-      featureOnProfile: true
+      featureOnProfile: true,
+      assetOrigin: true,
+      proofBundleType: true,
+      publicationManifestSha256: true
     }
   });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  if (next && asString(content.assetOrigin || "").trim().toLowerCase() === "legacy_import") {
+    if (asString(content.status || "").trim().toLowerCase() !== "published") {
+      return reply.code(409).send({ error: "Legacy works must be published before they can be featured." });
+    }
+    if (content.deletedAt || asString(content.deletedReason || "").trim().toLowerCase() === "hard") {
+      return reply.code(409).send({ error: "Deleted Legacy works cannot be featured." });
+    }
+    if (asString(content.proofBundleType || "").trim().toLowerCase() !== "publication") {
+      return reply.code(409).send({ error: "A Publication Manifest is required before featuring this Legacy work." });
+    }
+    if (!asString(content.publicationManifestSha256 || "").trim()) {
+      return reply.code(409).send({ error: "A Publication Hash is required before featuring this Legacy work." });
+    }
+  }
   if (content.featureOnProfile === next) {
     const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
     app.log.info(

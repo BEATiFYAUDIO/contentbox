@@ -76,7 +76,7 @@ export default function VerificationProofsCard({ witness }: Props) {
   const [showNostrBuilder, setShowNostrBuilder] = useState(false);
 
   const canUseProofs = state === "ready" || state === "registeredMissingLocalKey";
-  const socialEnabled = socialProvider === "github" || socialProvider === "youtube" || socialProvider === "tiktok" || socialProvider === "rumble" || socialProvider === "reddit" || socialProvider === "substack";
+  const socialEnabled = socialProvider === "github" || socialProvider === "youtube" || socialProvider === "spotify" || socialProvider === "tiktok" || socialProvider === "rumble" || socialProvider === "reddit" || socialProvider === "substack";
   const youtubeBadAccountUrl = socialProvider === "youtube" && looksLikeYouTubeNonChannelUrl(socialAccountInput);
   const youtubeBadLocationUrl = socialProvider === "youtube" && looksLikeYouTubeNonChannelUrl(socialLocation);
   const tiktokBadAccountUrl = socialProvider === "tiktok" && looksLikeTiktokNonProfileUrl(socialAccountInput);
@@ -335,6 +335,7 @@ export default function VerificationProofsCard({ witness }: Props) {
               >
                 <option value="github">GitHub</option>
                 <option value="youtube">YouTube</option>
+                <option value="spotify">Spotify Artist</option>
                 <option value="tiktok">TikTok</option>
                 <option value="rumble">Rumble</option>
                 <option value="reddit">Reddit</option>
@@ -350,6 +351,8 @@ export default function VerificationProofsCard({ witness }: Props) {
                     ? "github username"
                     : socialProvider === "youtube"
                       ? "Paste your YouTube channel URL (example: https://www.youtube.com/@yourhandle)"
+                      : socialProvider === "spotify"
+                        ? "Paste your Spotify Artist URL (example: https://open.spotify.com/artist/0TnOYISbd1XYRBk9myaseg)"
                         : socialProvider === "tiktok"
                           ? "Paste your TikTok profile URL (example: https://www.tiktok.com/@yourhandle)"
                           : socialProvider === "rumble"
@@ -391,6 +394,8 @@ export default function VerificationProofsCard({ witness }: Props) {
                     setSocialError(
                       socialProvider === "youtube"
                         ? "Enter a YouTube channel URL first."
+                        : socialProvider === "spotify"
+                          ? "Enter a Spotify Artist URL first."
                           : socialProvider === "tiktok"
                             ? "Enter a TikTok profile URL first."
                             : socialProvider === "rumble"
@@ -415,7 +420,7 @@ export default function VerificationProofsCard({ witness }: Props) {
                 }}
                 className="rounded-lg border border-neutral-800 px-3 py-2 text-sm hover:bg-neutral-900 disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {!socialEnabled ? "Provider Not Enabled" : socialBusy === "challenge" ? "Creating…" : "Create Social Challenge"}
+                {!socialEnabled ? "Provider Not Enabled" : socialBusy === "challenge" ? "Loading…" : socialChallengeProof ? "Show Current Challenge" : "Create Social Challenge"}
               </button>
               </div>
             ) : null}
@@ -424,6 +429,9 @@ export default function VerificationProofsCard({ witness }: Props) {
               <div className="mt-2 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
                 <div className="text-xs text-neutral-400">Post this exact text publicly:</div>
                 <div className="mt-1 font-mono text-xs break-all">{String((socialChallengeProof.claimJson as any)?.challengeText || "")}</div>
+                <div className="mt-2 text-xs text-neutral-500">
+                  Keep this proof text in place until verification succeeds. Some platforms cache profile updates.
+                </div>
                 {socialProvider === "github" ? (
                   <div className="mt-2 text-xs text-neutral-500">For GitHub MVP, place this in a public Gist, then paste the Gist URL below.</div>
                 ) : socialProvider === "youtube" ? (
@@ -443,6 +451,10 @@ export default function VerificationProofsCard({ witness }: Props) {
                 ) : socialProvider === "tiktok" ? (
                   <div className="mt-2 text-xs text-neutral-500">
                     For TikTok MVP, place this text in your public profile bio, then paste your public profile URL below.
+                  </div>
+                ) : socialProvider === "spotify" ? (
+                  <div className="mt-2 text-xs text-neutral-500">
+                    Experimental / best-effort: place the Certifyd proof challenge in your Spotify Artist bio, then verify with your Spotify Artist URL.
                   </div>
                 ) : socialProvider === "rumble" ? (
                   <div className="mt-2 text-xs text-neutral-500">
@@ -471,6 +483,8 @@ export default function VerificationProofsCard({ witness }: Props) {
                   ? "https://gist.github.com/<user>/<id>"
                   : socialProvider === "youtube"
                     ? "Paste your YouTube channel URL (example: https://www.youtube.com/@yourhandle)"
+                    : socialProvider === "spotify"
+                      ? "Paste your Spotify Artist URL (example: https://open.spotify.com/artist/0TnOYISbd1XYRBk9myaseg)"
                       : socialProvider === "tiktok"
                         ? "Paste your TikTok profile URL (example: https://www.tiktok.com/@yourhandle)"
                         : socialProvider === "rumble"
@@ -493,6 +507,8 @@ export default function VerificationProofsCard({ witness }: Props) {
                   setSocialError(
                     socialProvider === "youtube"
                       ? "Enter channel URL and public YouTube URL first."
+                      : socialProvider === "spotify"
+                        ? "Enter Spotify Artist URL and public Spotify Artist URL first."
                         : socialProvider === "tiktok"
                           ? "Enter profile URL and public TikTok URL first."
                           : socialProvider === "rumble"
@@ -517,7 +533,7 @@ export default function VerificationProofsCard({ witness }: Props) {
               }}
               className="mt-2 rounded-lg border border-neutral-800 px-3 py-2 text-sm hover:bg-neutral-900 disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {!socialEnabled ? "Provider Not Enabled" : socialBusy === "verify" ? "Verifying…" : "Verify Social Proof"}
+              {!socialEnabled ? "Provider Not Enabled" : socialBusy === "verify" ? "Verifying…" : socialChallengeProof?.failureReason ? "Retest Proof" : "Verify Social Proof"}
             </button> : null}
 
             {socialError ? <div className="mt-2 text-xs text-amber-300">{socialError}</div> : null}
@@ -537,7 +553,7 @@ export default function VerificationProofsCard({ witness }: Props) {
                             const idx = subjectRaw.indexOf(":");
                             const provider = String(claim?.provider || (idx > 0 ? subjectRaw.slice(0, idx) : "") || "").toLowerCase();
                             const account = String(claim?.account || claim?.username || (idx > 0 ? subjectRaw.slice(idx + 1) : subjectRaw) || "");
-                            const providerLabel = provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : "Social";
+                            const providerLabel = provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "spotify" ? "Spotify Artist" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : "Social";
                             const displayAccount = (provider === "instagram" || provider === "tiktok") && account && !account.startsWith("@") ? `@${account}` : account;
                             return `${providerLabel}: ${displayAccount}`;
                           })()}
