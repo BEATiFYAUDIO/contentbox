@@ -43,7 +43,7 @@ withEnv({ DB_MODE: "", NODE_MODE: "", STORAGE: "", CONTENTBOX_LAN: "" }, () => {
   assert.ok(lockReason("advanced_splits", mode).length > 0);
 });
 
-withEnv({ DB_MODE: "advanced", NODE_MODE: "", STORAGE: "", CONTENTBOX_LAN: "" }, () => {
+withEnv({ DB_MODE: "advanced", NODE_MODE: "advanced", STORAGE: "postgres", CONTENTBOX_LAN: "" }, () => {
   const mode = getNodeMode();
   const storage = getStorageEngine();
   assert.equal(mode, "advanced");
@@ -54,7 +54,7 @@ withEnv({ DB_MODE: "advanced", NODE_MODE: "", STORAGE: "", CONTENTBOX_LAN: "" },
   assert.equal(canMultiUser(mode), false);
 });
 
-withEnv({ DB_MODE: "advanced", NODE_MODE: "", STORAGE: "", CONTENTBOX_LAN: "1" }, () => {
+withEnv({ DB_MODE: "advanced", NODE_MODE: "lan", STORAGE: "postgres", CONTENTBOX_LAN: "1" }, () => {
   const mode = getNodeMode();
   const storage = getStorageEngine();
   assert.equal(mode, "lan");

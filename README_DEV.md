@@ -63,14 +63,15 @@ API smoke:
 
 ```bash
 cd apps/api
-npm run smoke:basic
-npm run smoke:advanced
+npm test
+npm run smoke:mode
 ```
 
-Storefront gating test:
+Runtime smoke tests require the API on `http://127.0.0.1:4000`:
 
 ```bash
 cd apps/api
+npm run test:product-tier-gating
 npm run test:storefront-gating
 ```
 

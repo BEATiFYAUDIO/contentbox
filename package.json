@@ -5,12 +5,12 @@
     "dev": "npm run dev:up",
     "dev:dashboard": "npm --prefix apps/dashboard run dev",
     "dev:api": "npm --prefix apps/api run dev",
-    "dev:api:safe": "bash ./scripts/dev-api.sh",
+    "dev:api:safe": "node ./scripts/dev-runtime.mjs start-api",
     "dev:api:safe:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev-api.ps1",
     "dev:node": "npm --prefix apps/dashboard run build && npm --prefix apps/api run dev",
-    "dev:up": "bash ./scripts/dev-runtime.sh start",
-    "dev:down": "bash ./scripts/dev-runtime.sh stop",
-    "dev:status": "bash ./scripts/dev-runtime.sh status",
-    "dev:restart": "bash ./scripts/dev-runtime.sh restart"
+    "dev:up": "node ./scripts/dev-runtime.mjs start",
+    "dev:down": "node ./scripts/dev-runtime.mjs stop",
+    "dev:status": "node ./scripts/dev-runtime.mjs status",
+    "dev:restart": "node ./scripts/dev-runtime.mjs restart"
   }
 }

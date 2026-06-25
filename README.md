@@ -39,9 +39,16 @@ Cloudflare Tunnel is optional and not required for local setup.
 Before installing Certifyd, beta testers must install:
 
 - Git
-- Node.js 20+ (includes npm)
+- Node.js 20 or newer (Node 24 is supported; Node 16 is not supported)
+- npm, included with Node.js
 
-The installer scripts (`install.sh` / `install.ps1`) do not install Git or Node.
+The installer scripts (`install.sh` / `install.ps1`) do not install Git or Node. Check versions before running the installer:
+
+```bash
+git --version
+node -v
+npm -v
+```
 
 ### Windows (PowerShell)
 
@@ -129,6 +136,41 @@ When reporting install issues, include:
 - PowerShell execution policy blocked:
   - run with:
     - `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`
+
+
+## Beta QA / smoke tests
+
+The default beta install uses SQLite (`DB_MODE=basic`). These commands are expected to be runnable after install.
+
+Start the API/runtime from the repository root:
+
+```bash
+npm run dev:up
+npm run dev:status
+```
+
+Run smoke checks from `apps/api`:
+
+```bash
+cd apps/api
+npm test
+npm run smoke:mode
+npm run test:product-tier-gating
+npm run test:storefront-gating
+```
+
+Run the dashboard compile check:
+
+```bash
+cd apps/dashboard
+npm run build
+```
+
+Notes:
+
+- `smoke:basic` is a compatibility alias for `smoke:mode`.
+- The old `smoke:advanced` and `test:buyer-auth` script entries were removed because the referenced source files are not present in this repository.
+- Postgres/Advanced workflows are optional and should be tested separately from the default SQLite beta install.
 
 ## Canonical docs
 

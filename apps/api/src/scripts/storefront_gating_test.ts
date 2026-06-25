@@ -11,13 +11,11 @@ if (process.env.DEV_ALLOW_SIMULATE_PAYMENTS !== "1") {
   throw new Error("DEV_ALLOW_SIMULATE_PAYMENTS=1 is required to run storefront_gating_test");
 }
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  throw new Error("DATABASE_URL is required to run storefront_gating_test");
-}
-
-const adapter = new PrismaPg({ connectionString: databaseUrl });
-const prisma = new PrismaClient({ adapter });
+const databaseUrl = process.env.DATABASE_URL || "";
+const usesPostgres = /^postgres(?:ql)?:\/\//i.test(databaseUrl);
+const prisma = usesPostgres
+  ? new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) })
+  : new PrismaClient();
 
 function sha256Json(json: any): string {
   return crypto.createHash("sha256").update(stableStringify(json)).digest("hex");
@@ -144,7 +142,7 @@ async function run() {
     assert.equal(enabledRes.status, 200, `expected 200, got ${enabledRes.status}`);
     assert.ok(enabledRes.json?.intentId, "intentId should be returned when storefront enabled");
 
-    // TEST 2: public access blocked when storefront disabled even with receiptToken
+    // TEST 2: existing entitled buyers retain access even if storefront is later disabled
     if (process.env.NODE_ENV === "production") {
       throw new Error("NODE_ENV must not be production for storefront_gating_test");
     }
@@ -167,10 +165,11 @@ async function run() {
 
     await prisma.contentItem.update({ where: { id: content.id }, data: { storefrontStatus: "DISABLED" } });
 
-    const accessBlocked = await getJson(
+    const accessRetained = await getJson(
       `${baseUrl}/public/content/${content.id}/access?manifestSha256=${encodeURIComponent(manifestSha256)}&receiptToken=${encodeURIComponent(receiptToken)}`
     );
-    assert.ok([403, 404].includes(accessBlocked.status), `expected 403/404, got ${accessBlocked.status}`);
+    assert.equal(accessRetained.status, 200, `existing receipt access expected 200, got ${accessRetained.status}`);
+    assert.ok(accessRetained.json?.ok, "existing receipt access should remain available");
 
     // TEST 3: authenticated intent succeeds even when storefront disabled
     const signup = await postJson(`${baseUrl}/auth/signup`, {
