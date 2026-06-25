@@ -34951,7 +34951,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.22), transparent 64%),
           ${
             safeThemeWallpaperUrl
-              ? `url("${safeThemeWallpaperUrl}") center top / cover scroll no-repeat,`
+              ? `url("${safeThemeWallpaperUrl}") center center / cover scroll no-repeat,`
               : ""
           }
           var(--theme-bg);
@@ -34992,6 +34992,37 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .signal-compact-meta { margin-top:4px; }
       .signal-chip-row { margin-top:6px; gap:5px; }
       .proof-group-title { font-size:12px; }
+      body.card-strength-transparent {
+        --profile-card-bg:rgba(10,10,10,0.06);
+        --profile-card-bg-strong:rgba(18,18,18,0.08);
+      }
+      body.card-strength-transparent .card,
+      body.card-strength-transparent .section,
+      body.card-strength-transparent .profile-header-grid,
+      body.card-strength-transparent .signal-rail,
+      body.card-strength-transparent .featured-item,
+      body.card-strength-transparent .meta-item {
+        box-shadow:0 10px 28px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.045);
+      }
+      .featured-meta { padding:8px 10px 10px; gap:0; }
+      .featured-topline { gap:7px; margin-bottom:4px; }
+      .featured-type-badge,
+      .featured-verified {
+        font-size:11px;
+        padding:3px 8px;
+        line-height:1.15;
+      }
+      .featured-title {
+        margin-top:0;
+        min-height:0;
+        line-height:1.22;
+      }
+      .featured-support {
+        margin-top:3px;
+        min-height:0;
+        line-height:1.24;
+      }
+      .featured-cta-row { padding-top:5px; }
     }
     @media (max-width: 640px) {
       body.iframe-embedded .card { padding:12px; }
@@ -35010,7 +35041,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   </style>
 </head>
-<body>
+<body class="card-strength-${escHtml(profileTheme.themeCardStrength)}">
   <script>
     (function () {
       try {
