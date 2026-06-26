@@ -34170,12 +34170,23 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     asString((item as any)?.status || "").trim().toLowerCase() === "published" &&
     asString((item as any)?.proofBundleType || "").trim().toLowerCase() === "publication" &&
     Boolean(asString((item as any)?.publicationManifestSha256 || "").trim());
-  const featuredAuthoredForRender = dedupeProfileEntries(profileVisibleContentForRender.filter(
+  const primaryFeaturedWork = dedupeProfileEntries(
+    featuredContentForRender.filter(
+      (item: any) =>
+        Boolean((item as any)?.featureOnProfile) &&
+        asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
+    )
+  )[0] || null;
+  const primaryFeaturedWorkKey = primaryFeaturedWork ? profileCanonicalContentKey(primaryFeaturedWork) : "";
+  const visibleGridContentForRender = primaryFeaturedWorkKey
+    ? profileVisibleContentForRender.filter((item: any) => profileCanonicalContentKey(item) !== primaryFeaturedWorkKey)
+    : profileVisibleContentForRender;
+  const featuredAuthoredForRender = dedupeProfileEntries(visibleGridContentForRender.filter(
     (item: any) =>
       asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations" &&
       !isFeaturedLegacyPublication(item)
   ));
-  const featuredLegacyForRender = dedupeProfileEntries(profileVisibleContentForRender.filter(
+  const featuredLegacyForRender = dedupeProfileEntries(visibleGridContentForRender.filter(
     (item: any) =>
       asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations" &&
       isFeaturedLegacyPublication(item)
@@ -34185,7 +34196,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     ...featuredLegacyForRender.map((item: any) => profileCanonicalContentKey(item))
   ]);
 
-  const featuredDerivativeForRender = dedupeProfileEntries(profileVisibleContentForRender.filter(
+  const featuredDerivativeForRender = dedupeProfileEntries(visibleGridContentForRender.filter(
     (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() === "collaborations"
   )).filter((item: any) => !authoredKeys.has(profileCanonicalContentKey(item)));
   const featuredContentHtml =
@@ -34202,13 +34213,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           .map((item) => renderFeaturedContentCard(item, "Derivative collaboration • Upstream royalty"))
           .join("")
       : "";
-  const primaryFeaturedWork = dedupeProfileEntries(
-    featuredContentForRender.filter(
-      (item: any) =>
-        Boolean((item as any)?.featureOnProfile) &&
-        asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
-    )
-  )[0] || null;
   const featuredWorkPanelHtml = primaryFeaturedWork
     ? `<section class="section featured-work-panel">
         <div class="section-kicker">Featured Work</div>
