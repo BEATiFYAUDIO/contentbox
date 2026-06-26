@@ -523,7 +523,7 @@ export default function ProfilePage({
 
   const previewAccent = resolvedProfileAccent(profileTheme);
   const previewCardAlpha =
-    profileTheme.themeCardStrength === "transparent" ? 0 : profileTheme.themeCardStrength === "light" ? 0.16 : profileTheme.themeCardStrength === "strong" ? 0.3 : 0.22;
+    profileTheme.themeCardStrength === "transparent" ? 0.01 : profileTheme.themeCardStrength === "light" ? 0.16 : profileTheme.themeCardStrength === "strong" ? 0.3 : 0.22;
   const previewOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.24 : profileTheme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
   const previewButtonBackground =
     profileTheme.themeButtonStyle === "filled"
