@@ -36,6 +36,7 @@ type ProfileTheme = {
   themeMutedTextColor: string;
   themeCardStrength: ProfileCardStrength;
   themeCardOpacityOverride: number | null;
+  themeCardBlurOverride: number | null;
   themeOverlayStrength: ProfileOverlayStrength;
   themeButtonStyle: ProfileButtonStyle;
   themeSuggestedAccentColors?: string[];
@@ -58,6 +59,7 @@ const DEFAULT_PROFILE_THEME: ProfileTheme = {
   themeMutedTextColor: "#b7afa1",
   themeCardStrength: "medium",
   themeCardOpacityOverride: null,
+  themeCardBlurOverride: null,
   themeOverlayStrength: "balanced",
   themeButtonStyle: "glass",
   themeSuggestedAccentColors: ["#d4b26a", "#38bdf8", "#a78bfa", "#ef4444", "#22c55e", "#f8fafc"],
@@ -533,7 +535,7 @@ export default function ProfilePage({
   const previewAccent = resolvedProfileAccent(profileTheme);
   const previewCardAlpha = profileTheme.themeCardOpacityOverride ?? presetCardOpacity(profileTheme.themeCardStrength);
   const previewCardOpacityPercent = Math.round(previewCardAlpha * 100);
-  const previewCardBlurPx = Math.round(Math.min(20, Math.max(0, previewCardAlpha * 80)));
+  const previewCardBlurPx = profileTheme.themeCardBlurOverride ?? 20;
   const previewOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.24 : profileTheme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
   const previewButtonBackground =
     profileTheme.themeButtonStyle === "filled"
@@ -997,6 +999,29 @@ export default function ProfilePage({
               />
               <div className="mt-1 text-xs text-neutral-500">
                 Presets set a starting point. Use the slider when the wallpaper needs more or less visibility.
+              </div>
+            </label>
+            <label className="mt-3 block text-xs text-neutral-400">
+              <div className="flex items-center justify-between gap-3">
+                <span>Glass blur</span>
+                <span className="font-mono text-neutral-300">{previewCardBlurPx}px</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={24}
+                step={1}
+                value={previewCardBlurPx}
+                onChange={(e) =>
+                  setProfileTheme((theme) => ({
+                    ...theme,
+                    themeCardBlurOverride: Math.max(0, Math.min(24, Number(e.target.value)))
+                  }))
+                }
+                className="mt-2 w-full accent-amber-400"
+              />
+              <div className="mt-1 text-xs text-neutral-500">
+                Lower blur keeps the wallpaper clearer. Higher blur gives a frosted-glass effect.
               </div>
             </label>
           </div>
