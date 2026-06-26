@@ -2132,8 +2132,12 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       participationInfo
                     );
                     const currentlyFeatured = shouldUseParticipationHighlight ? participationFeatured : ownerFeatured;
-                    const isOwnedPublished = entry.relation === "owner" && String(it.status || "").toLowerCase() === "published";
-                    const isAddedToProfile = String(it.storefrontStatus || "DISABLED").toUpperCase() !== "DISABLED";
+                    const isPublished = String(it.status || "").toLowerCase() === "published";
+                    const isOwnedPublished = entry.relation === "owner" && isPublished;
+                    const canAddToProfile = isPublished && !it.deletedAt && (entry.relation === "owner" || entry.relation === "participant");
+                    const isAddedToProfile = entry.relation === "owner"
+                      ? String(it.storefrontStatus || "DISABLED").toUpperCase() !== "DISABLED"
+                      : currentlyFeatured;
                     const featureAllowed = isOwnedPublished;
                     const preview = previewById[it.id];
                     const previewUrl = preview?.previewUrl || null;
@@ -2590,14 +2594,20 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             ) : null}
                             <button
                               type="button"
-                              disabled={featureBusyById[it.id] || !isOwnedPublished}
+                              disabled={featureBusyById[it.id] || !canAddToProfile}
                               className={`text-xs rounded border px-2 py-1 ${
-                                isOwnedPublished
+                                canAddToProfile
                                   ? "border-neutral-800 hover:bg-neutral-900"
                                   : "border-neutral-900 text-neutral-600 cursor-not-allowed"
                               }`}
-                              onClick={() => setProfileVisibilityForContent(it.id, !isAddedToProfile)}
-                              title={isOwnedPublished ? "" : "Only owned published content can be added to profile."}
+                              onClick={() => {
+                                if (entry.relation === "owner") {
+                                  setProfileVisibilityForContent(it.id, !isAddedToProfile);
+                                  return;
+                                }
+                                setFeatureOnProfile(entry, !isAddedToProfile);
+                              }}
+                              title={canAddToProfile ? "" : "Only published owned or shared content can be added to profile."}
                             >
                               {featureBusyById[it.id]
                                 ? "Updating…"
