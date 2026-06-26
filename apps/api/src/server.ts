@@ -33907,7 +33907,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
           .join("")
       : "";
-  const creatorSignalCompactHtml = `<div class="signal-compact-title">Trust Score</div>
+  const creatorSignalCompactHtml = `<div class="signal-compact-title">Certifyd ID Score</div>
       <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">· ${escHtml(creatorSignal.tier)}</span></div>
       <div class="signal-meter signal-compact-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
         <div class="signal-meter-fill" style="width:${creatorSignalPercent}%"></div>
@@ -34658,7 +34658,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       padding:24px;
       overflow:hidden;
       box-shadow:0 30px 90px rgba(0,0,0,0.36), 0 0 54px var(--profile-accent-soft);
-      backdrop-filter: blur(20px) saturate(125%);
+      backdrop-filter: var(--profile-card-blur);
     }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     .brand-logo-image { display:block; width:var(--profile-logo-size); max-width:100%; height:auto; object-fit:contain; }
