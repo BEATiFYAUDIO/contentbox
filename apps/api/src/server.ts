@@ -12903,6 +12903,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
   appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
+  appPublic.get("/public/profile-wallpapers/:userId/:filename", handlePublicProfileWallpaper);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
   appPublic.post("/public/interactions", handlePublicAudienceInteraction);
   appPublic.get("/public/users/:id", handlePublicUser);
@@ -34192,6 +34193,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       isFeaturedLegacyPublication(item)
   ));
   const authoredKeys = new Set([
+    ...(primaryFeaturedWorkKey ? [primaryFeaturedWorkKey] : []),
     ...featuredAuthoredForRender.map((item: any) => profileCanonicalContentKey(item)),
     ...featuredLegacyForRender.map((item: any) => profileCanonicalContentKey(item))
   ]);
@@ -34456,7 +34458,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       : (cachedRenderSnapshot?.highlightedRemoteParticipations || []);
 
   const dedupedHighlightedParticipationsForRender = dedupeProfileEntries(highlightedParticipationsForRender).filter(
-    (item: any) => !authoredKeys.has(profileCanonicalContentKey(item))
+    (item: any) =>
+      !authoredKeys.has(profileCanonicalContentKey(item)) &&
+      asString((item as any)?.creatorUserId || "").trim() !== user.id
   );
   const dedupedHighlightedRemoteParticipationsForRender = dedupeProfileEntries(highlightedRemoteParticipationsForRender).filter(
     (item: any) => !authoredKeys.has(profileCanonicalContentKey(item))
@@ -34695,26 +34699,33 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       font-family: system-ui, -apple-system, Segoe UI, sans-serif;
       color:var(--theme-text);
       padding:24px;
-      background:
-        ${
-          safeThemeWallpaperUrl
-            ? `url("${safeThemeWallpaperUrl}") center / cover fixed no-repeat,`
-            : ""
-        }
-        var(--theme-bg);
+      background:var(--theme-bg);
       position:relative;
+    }
+    body::after {
+      ${
+        safeThemeWallpaperUrl
+          ? `content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      background:url("${safeThemeWallpaperUrl}") center / cover no-repeat;
+      transform:translateZ(0);`
+          : ""
+      }
     }
     body::before {
       content:"";
       position:fixed;
       inset:0;
       pointer-events:none;
-      z-index:0;
+      z-index:1;
       background:var(--profile-bg-overlay);
     }
     .card {
       position:relative;
-      z-index:1;
+      z-index:2;
       width:min(940px, 100%);
       margin:0 auto;
       background:linear-gradient(180deg, var(--profile-card-bg-strong) 0%, var(--profile-card-bg) 100%);
@@ -35062,20 +35073,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         background:var(--theme-bg);
       }
       body::after {
-        ${
-          safeThemeWallpaperUrl
-            ? `content:"";
-        position:fixed;
-        inset:0;
-        pointer-events:none;
-        z-index:0;
-        background:url("${safeThemeWallpaperUrl}") var(--profile-wallpaper-position-mobile) / cover no-repeat;
-        transform:translateZ(0);`
-            : ""
-        }
-      }
-      body::before {
-        z-index:1;
+        background-position:var(--profile-wallpaper-position-mobile);
       }
       .card {
         z-index:2;
