@@ -35,6 +35,7 @@ type ProfileTheme = {
   themeTextColor: string;
   themeMutedTextColor: string;
   themeCardStrength: ProfileCardStrength;
+  themeCardOpacityOverride: number | null;
   themeOverlayStrength: ProfileOverlayStrength;
   themeButtonStyle: ProfileButtonStyle;
   themeSuggestedAccentColors?: string[];
@@ -56,6 +57,7 @@ const DEFAULT_PROFILE_THEME: ProfileTheme = {
   themeTextColor: "#f4f2ec",
   themeMutedTextColor: "#b7afa1",
   themeCardStrength: "medium",
+  themeCardOpacityOverride: null,
   themeOverlayStrength: "balanced",
   themeButtonStyle: "glass",
   themeSuggestedAccentColors: ["#d4b26a", "#38bdf8", "#a78bfa", "#ef4444", "#22c55e", "#f8fafc"],
@@ -132,6 +134,13 @@ function contrastRatio(a: string, b: string): number {
 
 function readableTextFor(background: string): string {
   return contrastRatio(background, "#f8fafc") >= contrastRatio(background, "#08090b") ? "#f8fafc" : "#08090b";
+}
+
+function presetCardOpacity(strength: ProfileCardStrength): number {
+  if (strength === "transparent") return 0.01;
+  if (strength === "light") return 0.16;
+  if (strength === "strong") return 0.30;
+  return 0.22;
 }
 
 function resolvedProfileAccent(theme: ProfileTheme): string {
@@ -522,8 +531,9 @@ export default function ProfilePage({
   };
 
   const previewAccent = resolvedProfileAccent(profileTheme);
-  const previewCardAlpha =
-    profileTheme.themeCardStrength === "transparent" ? 0.01 : profileTheme.themeCardStrength === "light" ? 0.16 : profileTheme.themeCardStrength === "strong" ? 0.3 : 0.22;
+  const previewCardAlpha = profileTheme.themeCardOpacityOverride ?? presetCardOpacity(profileTheme.themeCardStrength);
+  const previewCardOpacityPercent = Math.round(previewCardAlpha * 100);
+  const previewCardBlurPx = Math.round(Math.min(20, Math.max(0, previewCardAlpha * 80)));
   const previewOverlayAlpha = profileTheme.themeOverlayStrength === "lighter" ? 0.24 : profileTheme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
   const previewButtonBackground =
     profileTheme.themeButtonStyle === "filled"
@@ -835,7 +845,7 @@ export default function ProfilePage({
               style={{
                 borderColor: `${profileTheme.themeBorderColor}bb`,
                 background: `rgba(10,10,10,${previewCardAlpha})`,
-                backdropFilter: "blur(20px) saturate(125%)",
+                backdropFilter: `blur(${previewCardBlurPx}px) saturate(125%)`,
                 boxShadow: `0 18px 45px rgba(0,0,0,.32), 0 0 36px ${previewAccent}22`
               }}
             >
@@ -925,7 +935,14 @@ export default function ProfilePage({
                 Card Strength
                 <select
                   value={profileTheme.themeCardStrength}
-                  onChange={(e) => setProfileTheme((theme) => ({ ...theme, themeCardStrength: e.target.value as ProfileCardStrength }))}
+                  onChange={(e) => {
+                    const nextStrength = e.target.value as ProfileCardStrength;
+                    setProfileTheme((theme) => ({
+                      ...theme,
+                      themeCardStrength: nextStrength,
+                      themeCardOpacityOverride: presetCardOpacity(nextStrength)
+                    }));
+                  }}
                   className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
                 >
                   <option value="transparent">Transparent</option>
@@ -959,6 +976,29 @@ export default function ProfilePage({
                 </select>
               </label>
             </div>
+            <label className="mt-3 block text-xs text-neutral-400">
+              <div className="flex items-center justify-between gap-3">
+                <span>Card opacity</span>
+                <span className="font-mono text-neutral-300">{previewCardOpacityPercent}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={60}
+                step={1}
+                value={previewCardOpacityPercent}
+                onChange={(e) =>
+                  setProfileTheme((theme) => ({
+                    ...theme,
+                    themeCardOpacityOverride: Math.max(0, Math.min(60, Number(e.target.value))) / 100
+                  }))
+                }
+                className="mt-2 w-full accent-amber-400"
+              />
+              <div className="mt-1 text-xs text-neutral-500">
+                Presets set a starting point. Use the slider when the wallpaper needs more or less visibility.
+              </div>
+            </label>
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">

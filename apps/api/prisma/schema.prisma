@@ -137,6 +137,7 @@ model User {
   themeTextColor         String?
   themeMutedTextColor    String?
   themeCardStrength      String   @default("medium")
+  themeCardOpacityOverride Float?
   themeOverlayStrength   String   @default("balanced")
   themeButtonStyle       String   @default("glass")
   themeGeneratedFromImage Boolean @default(false)

@@ -11241,6 +11241,7 @@ type ProfileTheme = {
   themeTextColor: string;
   themeMutedTextColor: string;
   themeCardStrength: ProfileCardStrength;
+  themeCardOpacityOverride: number | null;
   themeOverlayStrength: ProfileOverlayStrength;
   themeButtonStyle: ProfileButtonStyle;
   themeSuggestedAccentColors: string[];
@@ -11269,6 +11270,13 @@ function normalizeProfileCardStrength(value: unknown): ProfileCardStrength {
   const raw = asString(value || "").trim().toLowerCase();
   if (raw === "transparent" || raw === "light" || raw === "strong") return raw;
   return "medium";
+}
+
+function normalizeProfileCardOpacityOverride(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.min(0.6, Math.round(numeric * 100) / 100));
 }
 
 function normalizeProfileOverlayStrength(value: unknown): ProfileOverlayStrength {
@@ -11645,6 +11653,7 @@ function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): Pr
     themeTextColor: "#f8fafc",
     themeMutedTextColor: mode === "high_contrast" ? "#e5e7eb" : "#b8c0cc",
     themeCardStrength: "medium" as ProfileCardStrength,
+    themeCardOpacityOverride: null,
     themeOverlayStrength: "balanced" as ProfileOverlayStrength,
     themeButtonStyle: "glass" as ProfileButtonStyle,
     themeSuggestedAccentColors: [] as string[],
@@ -11694,6 +11703,7 @@ function userToProfileTheme(user: any): ProfileTheme {
     themeTextColor: normalizeHexColor(user?.themeTextColor) || PROFILE_THEME_DEFAULTS.themeTextColor,
     themeMutedTextColor: normalizeHexColor(user?.themeMutedTextColor) || PROFILE_THEME_DEFAULTS.themeMutedTextColor,
     themeCardStrength: normalizeProfileCardStrength(user?.themeCardStrength),
+    themeCardOpacityOverride: normalizeProfileCardOpacityOverride(user?.themeCardOpacityOverride),
     themeOverlayStrength: normalizeProfileOverlayStrength(user?.themeOverlayStrength),
     themeButtonStyle: normalizeProfileButtonStyle(user?.themeButtonStyle),
     themeSuggestedAccentColors: uniqueProfileAccentSuggestions([
@@ -11727,6 +11737,12 @@ function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: s
     theme.themeCardStrength === "transparent" ? 0.01 : theme.themeCardStrength === "light" ? 0.24 : theme.themeCardStrength === "strong" ? 0.42 : 0.32;
   const mobileCardStrongAlpha =
     theme.themeCardStrength === "transparent" ? 0.01 : theme.themeCardStrength === "light" ? 0.30 : theme.themeCardStrength === "strong" ? 0.50 : 0.38;
+  const opacityOverride = theme.themeCardOpacityOverride;
+  const resolvedCardAlpha = opacityOverride ?? cardAlpha;
+  const resolvedCardStrongAlpha = opacityOverride === null ? cardStrongAlpha : Math.min(0.6, opacityOverride + 0.04);
+  const resolvedMobileCardAlpha = opacityOverride === null ? mobileCardAlpha : Math.min(0.6, opacityOverride + 0.02);
+  const resolvedMobileCardStrongAlpha = opacityOverride === null ? mobileCardStrongAlpha : Math.min(0.6, opacityOverride + 0.04);
+  const cardBlurPx = Math.round(Math.min(20, Math.max(0, resolvedCardAlpha * 80)));
   const overlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.24 : theme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
   const mobileOverlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.34 : theme.themeOverlayStrength === "darker" ? 0.56 : 0.44;
   const buttonBackground =
@@ -11746,13 +11762,13 @@ function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: s
     `--theme-text:${theme.themeTextColor}`,
     `--theme-muted:${theme.themeMutedTextColor}`,
     `--profile-bg-overlay:rgba(0,0,0,${overlayAlpha})`,
-    `--profile-card-bg:rgba(10,10,10,${cardAlpha})`,
-    `--profile-card-bg-strong:rgba(18,18,18,${cardStrongAlpha})`,
-    `--profile-card-bg-mobile:rgba(10,10,10,${mobileCardAlpha})`,
-    `--profile-card-bg-mobile-strong:rgba(18,18,18,${mobileCardStrongAlpha})`,
+    `--profile-card-bg:rgba(10,10,10,${resolvedCardAlpha})`,
+    `--profile-card-bg-strong:rgba(18,18,18,${resolvedCardStrongAlpha})`,
+    `--profile-card-bg-mobile:rgba(10,10,10,${resolvedMobileCardAlpha})`,
+    `--profile-card-bg-mobile-strong:rgba(18,18,18,${resolvedMobileCardStrongAlpha})`,
     `--profile-bg-overlay-mobile:rgba(0,0,0,${mobileOverlayAlpha})`,
     `--profile-card-border:color-mix(in srgb, ${theme.themeBorderColor} 78%, transparent)`,
-    `--profile-card-blur:blur(20px) saturate(125%)`,
+    `--profile-card-blur:blur(${cardBlurPx}px) saturate(125%)`,
     `--profile-accent:${theme.themeResolvedAccentColor}`,
     `--profile-accent-soft:color-mix(in srgb, ${theme.themeResolvedAccentColor} 18%, transparent)`,
     `--profile-button-bg:${buttonBackground}`,
@@ -17861,6 +17877,7 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
       themeTextColor: true,
       themeMutedTextColor: true,
       themeCardStrength: true,
+      themeCardOpacityOverride: true,
       themeOverlayStrength: true,
       themeButtonStyle: true,
       themeGeneratedFromImage: true,
@@ -22428,6 +22445,7 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
       themeTextColor: true,
       themeMutedTextColor: true,
       themeCardStrength: true,
+      themeCardOpacityOverride: true,
       themeOverlayStrength: true,
       themeButtonStyle: true,
       themeGeneratedFromImage: true,
@@ -22447,6 +22465,7 @@ app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (r
       themeWallpaperImageUrl: true,
       themeAccentOverrideColor: true,
       themeCardStrength: true,
+      themeCardOpacityOverride: true,
       themeOverlayStrength: true,
       themeButtonStyle: true
     }
@@ -22472,6 +22491,7 @@ app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (r
   theme.themeWallpaperImageUrl = wallpaperPath || null;
   theme.themeAccentOverrideColor = normalizeHexColor(user.themeAccentOverrideColor);
   theme.themeCardStrength = normalizeProfileCardStrength(user.themeCardStrength);
+  theme.themeCardOpacityOverride = normalizeProfileCardOpacityOverride(user.themeCardOpacityOverride);
   theme.themeOverlayStrength = normalizeProfileOverlayStrength(user.themeOverlayStrength);
   theme.themeButtonStyle = normalizeProfileButtonStyle(user.themeButtonStyle);
   theme.themeResolvedAccentColor = theme.themeAccentOverrideColor || theme.themeAccentColor;
@@ -22505,6 +22525,7 @@ app.patch("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any,
   data.themeAccentOverrideColor = accentOverrideRaw ? normalizeHexColor(accentOverrideRaw) : null;
   if (accentOverrideRaw && !data.themeAccentOverrideColor) return badRequest(reply, "themeAccentOverrideColor must be a valid hex color.");
   data.themeCardStrength = normalizeProfileCardStrength(themeInput.themeCardStrength);
+  data.themeCardOpacityOverride = normalizeProfileCardOpacityOverride(themeInput.themeCardOpacityOverride);
   data.themeOverlayStrength = normalizeProfileOverlayStrength(themeInput.themeOverlayStrength);
   data.themeButtonStyle = normalizeProfileButtonStyle(themeInput.themeButtonStyle);
   const checkedTheme = userToProfileTheme({ ...data, themeWallpaperImageUrl: themeInput.themeWallpaperImageUrl || null, themeGeneratedFromImage: themeInput.themeGeneratedFromImage });
@@ -22530,6 +22551,7 @@ app.post("/api/me/profile-theme/reset", { preHandler: requireAuth }, async (req:
       themeMode: "auto",
       themeAccentOverrideColor: null,
       themeCardStrength: "medium",
+      themeCardOpacityOverride: null,
       themeOverlayStrength: "balanced",
       themeButtonStyle: "glass",
       ...PROFILE_THEME_DEFAULTS,
@@ -22568,6 +22590,7 @@ app.post("/api/me/profile-theme/wallpaper/upload", { preHandler: requireAuth }, 
         themeTextColor: generated.themeTextColor,
         themeMutedTextColor: generated.themeMutedTextColor,
         themeCardStrength: "medium",
+        themeCardOpacityOverride: null,
         themeOverlayStrength: "balanced",
         themeButtonStyle: "glass",
         themeGeneratedFromImage: true,
@@ -33249,6 +33272,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     themeTextColor: true,
     themeMutedTextColor: true,
     themeCardStrength: true,
+    themeCardOpacityOverride: true,
     themeOverlayStrength: true,
     themeButtonStyle: true,
     themeGeneratedFromImage: true,
@@ -34992,10 +35016,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .signal-compact-meta { margin-top:4px; }
       .signal-chip-row { margin-top:6px; gap:5px; }
       .proof-group-title { font-size:12px; }
-      body.card-strength-transparent {
-        --profile-card-bg:rgba(10,10,10,0.01);
-        --profile-card-bg-strong:rgba(18,18,18,0.01);
-      }
       body.card-strength-transparent .card,
       body.card-strength-transparent .section,
       body.card-strength-transparent .profile-header-grid,
@@ -35997,6 +36017,7 @@ async function handleBuyPage(req: any, reply: any) {
           themeTextColor: true,
           themeMutedTextColor: true,
           themeCardStrength: true,
+          themeCardOpacityOverride: true,
           themeOverlayStrength: true,
           themeButtonStyle: true,
           themeGeneratedFromImage: true,
@@ -38086,6 +38107,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
                   themeTextColor: true,
                   themeMutedTextColor: true,
                   themeCardStrength: true,
+                  themeCardOpacityOverride: true,
                   themeOverlayStrength: true,
                   themeButtonStyle: true,
                   themeGeneratedFromImage: true,
