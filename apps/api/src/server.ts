@@ -35025,21 +35025,26 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     @media (max-width: 640px) {
       body {
         min-height:100dvh;
-        background:
-          ${
-            safeThemeWallpaperUrl
-              ? `url("${safeThemeWallpaperUrl}") center center / cover scroll no-repeat,`
-              : ""
-          }
-          var(--theme-bg);
+        background:var(--theme-bg);
+      }
+      body::after {
         ${
           safeThemeWallpaperUrl
-            ? `background-position:var(--profile-wallpaper-position-mobile), center;
-        background-size:cover, auto;
-        background-attachment:scroll, scroll;
-        background-repeat:no-repeat, repeat;`
+            ? `content:"";
+        position:fixed;
+        inset:0;
+        pointer-events:none;
+        z-index:0;
+        background:url("${safeThemeWallpaperUrl}") var(--profile-wallpaper-position-mobile) / cover no-repeat;
+        transform:translateZ(0);`
             : ""
         }
+      }
+      body::before {
+        z-index:1;
+      }
+      .card {
+        z-index:2;
       }
       :root {
         --profile-bg-overlay:var(--profile-bg-overlay-mobile);
@@ -36510,14 +36515,26 @@ async function handleBuyPage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       body {
+        background:var(--theme-bg);
+      }
+      body::after {
         ${
           ownerAppearance.wallpaperUrl
-            ? `background-position:var(--profile-wallpaper-position-mobile), center;
-        background-size:cover, auto;
-        background-attachment:scroll, scroll;
-        background-repeat:no-repeat, repeat;`
+            ? `content:"";
+        position:fixed;
+        inset:0;
+        pointer-events:none;
+        z-index:0;
+        background:url("${ownerAppearance.wallpaperUrl}") var(--profile-wallpaper-position-mobile) / cover no-repeat;
+        transform:translateZ(0);`
             : ""
         }
+      }
+      body::before {
+        z-index:1;
+      }
+      .wrap {
+        z-index:2;
       }
       .wrap { padding: 14px; }
       .card { padding: 14px; border-radius: 14px; }
@@ -38292,14 +38309,26 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
     .footer { margin-top:20px; font-size:12px; color:var(--profile-muted); }
     @media (max-width: 640px) {
       body {
+        background:var(--theme-bg);
+      }
+      body::after {
         ${
           libraryAppearance.wallpaperUrl
-            ? `background-position:var(--profile-wallpaper-position-mobile), center;
-        background-size:cover, auto;
-        background-attachment:scroll, scroll;
-        background-repeat:no-repeat, repeat;`
+            ? `content:"";
+        position:fixed;
+        inset:0;
+        pointer-events:none;
+        z-index:0;
+        background:url("${libraryAppearance.wallpaperUrl}") var(--profile-wallpaper-position-mobile) / cover no-repeat;
+        transform:translateZ(0);`
             : ""
         }
+      }
+      body::before {
+        z-index:1;
+      }
+      .wrap {
+        z-index:2;
       }
       .wrap { padding: 16px; }
       .card { padding: 16px; }
