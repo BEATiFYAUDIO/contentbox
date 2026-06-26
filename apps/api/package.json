@@ -15,6 +15,7 @@
     "test": "npm run smoke:mode && npm run test:lightning-onboarding",
     "smoke:mode": "tsx src/scripts/node_mode_test.ts",
     "smoke:basic": "npm run smoke:mode",
+    "smoke:advanced": "tsx src/scripts/node_mode_persist_test.ts && cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/single_identity_guard_test.ts",
     "smoke:public-host": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/public_host_smoke.ts",
     "test:storefront-gating": "cross-env API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 tsx src/scripts/storefront_gating_test.ts",
     "test:delegated-invoice-harness": "npx tsx src/payments/delegated_invoice_harness.ts",
@@ -23,6 +24,7 @@
     "test:product-tier-gating": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/product_tier_gating_test.ts",
     "test:smoke-invite-split": "npx tsx src/scripts/smoke_invite_split_flow.ts",
     "test:participant-payout-phase2": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/payments/participant_payout_phase2.test.ts",
+    "test:buyer-auth": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/buyer_auth_test.ts",
     "test:lightning-onboarding": "npx tsx --test src/payments/lightning.onboarding.test.ts",
     "test:derivative-accounting-regression": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/derivative_accounting_regression_checks.ts"
   },

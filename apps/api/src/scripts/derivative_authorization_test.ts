@@ -2,16 +2,11 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
 import { stableStringify } from "../lib/proof.js";
 import { finalizePurchase } from "../payments/finalizePurchase.js";
 
 const baseUrl = (process.env.API_BASE_URL || "http://127.0.0.1:4000").replace(/\/$/, "");
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error("DATABASE_URL is required");
-
-const adapter = new PrismaPg({ connectionString: databaseUrl });
-const prisma = new PrismaClient({ adapter });
+const prisma = new PrismaClient();
 
 async function postJson(url: string, body: any, token?: string | null) {
   const res = await fetch(url, {

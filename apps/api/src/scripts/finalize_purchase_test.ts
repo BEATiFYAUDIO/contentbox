@@ -1,16 +1,9 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
 import { finalizePurchase } from "../payments/finalizePurchase.js";
 
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) {
-  throw new Error("DATABASE_URL is required to run finalize_purchase_test");
-}
-
-const adapter = new PrismaPg({ connectionString: databaseUrl });
-const prisma = new PrismaClient({ adapter });
+const prisma = new PrismaClient();
 
 async function run() {
   const user = await prisma.user.create({

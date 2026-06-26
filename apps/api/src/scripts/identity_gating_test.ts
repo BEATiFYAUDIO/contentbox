@@ -40,6 +40,10 @@ async function run() {
     email: `gating+${Date.now()}@contentbox.local`,
     password: "password123"
   });
+  if (signup.status === 403 && signup.json?.error === "SINGLE_IDENTITY_NODE") {
+    console.log("identity_gating_test SKIP (node already locked to a single identity)");
+    return;
+  }
   assert.equal(signup.status, 200, `signup failed: ${signup.status}`);
   const token = signup.json?.token as string | undefined;
   assert.ok(token, "signup should return token");

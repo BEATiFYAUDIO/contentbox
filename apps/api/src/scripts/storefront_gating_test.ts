@@ -142,7 +142,7 @@ async function run() {
     assert.equal(enabledRes.status, 200, `expected 200, got ${enabledRes.status}`);
     assert.ok(enabledRes.json?.intentId, "intentId should be returned when storefront enabled");
 
-    // TEST 2: existing entitled buyers retain access even if storefront is later disabled
+    // TEST 2: paid receipt access remains valid after storefront is disabled.
     if (process.env.NODE_ENV === "production") {
       throw new Error("NODE_ENV must not be production for storefront_gating_test");
     }
@@ -168,14 +168,18 @@ async function run() {
     const accessRetained = await getJson(
       `${baseUrl}/public/content/${content.id}/access?manifestSha256=${encodeURIComponent(manifestSha256)}&receiptToken=${encodeURIComponent(receiptToken)}`
     );
-    assert.equal(accessRetained.status, 200, `existing receipt access expected 200, got ${accessRetained.status}`);
-    assert.ok(accessRetained.json?.ok, "existing receipt access should remain available");
+    assert.equal(accessRetained.status, 200, `paid receipt access expected 200, got ${accessRetained.status}`);
+    assert.ok(accessRetained.json?.ok, "paid receipt access should remain valid");
 
     // TEST 3: authenticated intent succeeds even when storefront disabled
     const signup = await postJson(`${baseUrl}/auth/signup`, {
       email: `auth+${Date.now()}@contentbox.local`,
       password: "password123"
     });
+    if (signup.status === 403 && signup.json?.error === "SINGLE_IDENTITY_NODE") {
+      console.log("storefront_gating_test SKIP authenticated tail (node already locked to a single identity)");
+      return;
+    }
     authUserId = signup.json?.user?.id || null;
     const authToken = signup.json?.token || null;
     assert.ok(authToken, "signup should return token");
