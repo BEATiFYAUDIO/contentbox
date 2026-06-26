@@ -33438,7 +33438,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           where: {
             ownerUserId: user.id,
             status: "published",
-            featureOnProfile: true
+            OR: [{ featureOnProfile: true }, { storefrontStatus: { not: "DISABLED" as any } }]
           },
           orderBy: { createdAt: "desc" },
           take: 12,
@@ -33447,6 +33447,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             title: true,
             type: true,
             status: true,
+            storefrontStatus: true,
             priceSats: true,
             deliveryMode: true,
             deletedAt: true,
@@ -33538,7 +33539,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 where: {
                   ownerUserId: user.id,
                   status: "published",
-                  featureOnProfile: true
+                  OR: [{ featureOnProfile: true }, { storefrontStatus: { not: "DISABLED" as any } }]
                 },
                 orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
                 take: 12,
@@ -33548,6 +33549,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   type: true,
                   status: true,
                   assetOrigin: true,
+                  storefrontStatus: true,
                   priceSats: true,
                   deliveryMode: true,
                   deletedAt: true,
@@ -33979,6 +33981,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     filteredFeaturedContent.length > 0
       ? filteredFeaturedContent
       : (cachedRenderSnapshot?.featuredContent || []);
+  const profileVisibleContentForRender = featuredContentForRender.filter((item: any) =>
+    asString((item as any)?.storefrontStatus || "").trim().toUpperCase() !== "DISABLED" ||
+    Boolean((item as any)?.featureOnProfile)
+  );
   const renderFeaturedContentCard = (item: any, supportText?: string): string => {
             const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
             const type = asString(item.type || "").trim().toLowerCase();
@@ -34162,12 +34168,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     asString((item as any)?.status || "").trim().toLowerCase() === "published" &&
     asString((item as any)?.proofBundleType || "").trim().toLowerCase() === "publication" &&
     Boolean(asString((item as any)?.publicationManifestSha256 || "").trim());
-  const featuredAuthoredForRender = dedupeProfileEntries(featuredContentForRender.filter(
+  const featuredAuthoredForRender = dedupeProfileEntries(profileVisibleContentForRender.filter(
     (item: any) =>
       asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations" &&
       !isFeaturedLegacyPublication(item)
   ));
-  const featuredLegacyForRender = dedupeProfileEntries(featuredContentForRender.filter(
+  const featuredLegacyForRender = dedupeProfileEntries(profileVisibleContentForRender.filter(
     (item: any) =>
       asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations" &&
       isFeaturedLegacyPublication(item)
@@ -34177,7 +34183,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     ...featuredLegacyForRender.map((item: any) => profileCanonicalContentKey(item))
   ]);
 
-  const featuredDerivativeForRender = dedupeProfileEntries(featuredContentForRender.filter(
+  const featuredDerivativeForRender = dedupeProfileEntries(profileVisibleContentForRender.filter(
     (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() === "collaborations"
   )).filter((item: any) => !authoredKeys.has(profileCanonicalContentKey(item)));
   const featuredContentHtml =
@@ -34196,7 +34202,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       : "";
   const primaryFeaturedWork = dedupeProfileEntries(
     featuredContentForRender.filter(
-      (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
+      (item: any) =>
+        Boolean((item as any)?.featureOnProfile) &&
+        asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
     )
   )[0] || null;
   const featuredWorkPanelHtml = primaryFeaturedWork
@@ -42189,6 +42197,70 @@ app.patch("/content/:id/delivery-mode", { preHandler: requireAuth }, async (req:
   return reply.send({ ok: true, deliveryMode: updated.deliveryMode || null });
 });
 
+app.patch("/content/:id/profile-visibility", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).id || "").trim();
+  if (!contentId) return badRequest(reply, "contentId required");
+
+  const raw = (req.body ?? {}) as { showOnProfile?: unknown };
+  if (typeof raw.showOnProfile !== "boolean") {
+    return badRequest(reply, "showOnProfile must be boolean");
+  }
+  const showOnProfile = Boolean(raw.showOnProfile);
+
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    select: {
+      ownerUserId: true,
+      status: true,
+      deletedAt: true,
+      deletedReason: true,
+      featureOnProfile: true,
+      storefrontStatus: true,
+      assetOrigin: true,
+      proofBundleType: true,
+      publicationManifestSha256: true,
+      sourceReferences: {
+        select: { sourceVerified: true }
+      }
+    }
+  });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+  if (showOnProfile) {
+    if (asString(content.status || "").trim().toLowerCase() !== "published") {
+      return reply.code(409).send({ error: "Only published content can be added to profile." });
+    }
+    if (content.deletedAt || asString(content.deletedReason || "").trim().toLowerCase() === "hard") {
+      return reply.code(409).send({ error: "Deleted content cannot be added to profile." });
+    }
+    if (asString(content.assetOrigin || "").trim().toLowerCase() === "legacy_import") {
+      const sourceVerified = Array.isArray(content.sourceReferences)
+        ? content.sourceReferences.some((source: { sourceVerified?: boolean | null }) => Boolean(source.sourceVerified))
+        : false;
+      if (asString(content.proofBundleType || "").trim().toLowerCase() !== "publication" || !asString(content.publicationManifestSha256 || "").trim() || !sourceVerified) {
+        return reply.code(409).send({ error: "Verify source account before showing this Legacy work publicly." });
+      }
+    }
+  }
+
+  const updated = await prisma.contentItem.update({
+    where: { id: contentId },
+    data: showOnProfile
+      ? { storefrontStatus: "UNLISTED" as any }
+      : { storefrontStatus: "DISABLED" as any, featureOnProfile: false },
+    select: { storefrontStatus: true, featureOnProfile: true }
+  });
+  const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
+  app.log.info({ contentId, userId, creatorId: content.ownerUserId, showOnProfile, cacheInvalidation }, "profile.visibility.updated");
+  return reply.send({
+    ok: true,
+    showOnProfile: updated.storefrontStatus !== "DISABLED",
+    storefrontStatus: updated.storefrontStatus,
+    featureOnProfile: Boolean(updated.featureOnProfile)
+  });
+});
+
 app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id || "").trim();
@@ -42251,8 +42323,10 @@ app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async 
 
   const updated = await prisma.contentItem.update({
     where: { id: contentId },
-    data: { featureOnProfile: next },
-    select: { featureOnProfile: true }
+    data: next
+      ? { featureOnProfile: true, storefrontStatus: content.storefrontStatus === "DISABLED" ? "UNLISTED" : content.storefrontStatus }
+      : { featureOnProfile: false },
+    select: { featureOnProfile: true, storefrontStatus: true }
   });
   const cacheInvalidation = invalidatePublicProfileProjectionCachesForUser(content.ownerUserId);
   app.log.info(

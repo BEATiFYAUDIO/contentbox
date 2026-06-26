@@ -1596,6 +1596,47 @@ export default function LibraryPage() {
     }
   }
 
+  async function setProfileVisibilityForContent(contentId: string, next: boolean) {
+    setFeatureBusyById((m) => ({ ...m, [contentId]: true }));
+    setFeatureMsgById((m) => ({ ...m, [contentId]: "" }));
+    try {
+      const res = await api<{ storefrontStatus: string; featureOnProfile: boolean }>(
+        `/content/${encodeURIComponent(contentId)}/profile-visibility`,
+        "PATCH",
+        { showOnProfile: next }
+      );
+      setItems((prev) =>
+        prev.map((row) =>
+          row.item.id === contentId
+            ? {
+                ...row,
+                item: {
+                  ...row.item,
+                  storefrontStatus: res?.storefrontStatus || (next ? "UNLISTED" : "DISABLED"),
+                  featureOnProfile: Boolean(res?.featureOnProfile)
+                }
+              }
+            : row
+        )
+      );
+      setLegacyWorks((prev) =>
+        prev.map((row) =>
+          row.id === contentId
+            ? {
+                ...row,
+                storefrontStatus: res?.storefrontStatus || (next ? "UNLISTED" : "DISABLED"),
+                featureOnProfile: Boolean(res?.featureOnProfile)
+              }
+            : row
+        )
+      );
+    } catch (e: any) {
+      setFeatureMsgById((m) => ({ ...m, [contentId]: e?.message || "Failed to update profile visibility." }));
+    } finally {
+      setFeatureBusyById((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
   async function setFeatureOnProfile(entry: NormalizedLibraryItem, next: boolean) {
     const contentId = entry.item.id;
     setFeatureBusyById((m) => ({ ...m, [contentId]: true }));
@@ -1608,7 +1649,7 @@ export default function LibraryPage() {
 
       // Attempt owner feature flag path first for deterministic profile rendering.
       try {
-        const res = await api<{ featureOnProfile: boolean }>(
+        const res = await api<{ featureOnProfile: boolean; storefrontStatus?: string }>(
           `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
           "PATCH",
           { featureOnProfile: next }
@@ -1616,7 +1657,14 @@ export default function LibraryPage() {
         setItems((prev) =>
           prev.map((row) =>
             row.item.id === contentId
-              ? { ...row, item: { ...row.item, featureOnProfile: Boolean(res?.featureOnProfile) } }
+              ? {
+                  ...row,
+                  item: {
+                    ...row.item,
+                    featureOnProfile: Boolean(res?.featureOnProfile),
+                    storefrontStatus: res?.storefrontStatus || row.item.storefrontStatus
+                  }
+                }
               : row
           )
         );
@@ -1681,14 +1729,20 @@ export default function LibraryPage() {
     setFeatureBusyById((m) => ({ ...m, [contentId]: true }));
     setFeatureMsgById((m) => ({ ...m, [contentId]: "" }));
     try {
-      const res = await api<{ featureOnProfile: boolean }>(
+      const res = await api<{ featureOnProfile: boolean; storefrontStatus?: string }>(
         `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
         "PATCH",
         { featureOnProfile: next }
       );
       setLegacyWorks((prev) =>
         prev.map((row) =>
-          row.id === contentId ? { ...row, featureOnProfile: Boolean(res?.featureOnProfile) } : row
+          row.id === contentId
+            ? {
+                ...row,
+                featureOnProfile: Boolean(res?.featureOnProfile),
+                storefrontStatus: res?.storefrontStatus || row.storefrontStatus
+              }
+            : row
         )
       );
     } catch (e: any) {
@@ -2078,7 +2132,9 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                       participationInfo
                     );
                     const currentlyFeatured = shouldUseParticipationHighlight ? participationFeatured : ownerFeatured;
-                    const featureAllowed = true;
+                    const isOwnedPublished = entry.relation === "owner" && String(it.status || "").toLowerCase() === "published";
+                    const isAddedToProfile = String(it.storefrontStatus || "DISABLED").toUpperCase() !== "DISABLED";
+                    const featureAllowed = isOwnedPublished;
                     const preview = previewById[it.id];
                     const previewUrl = preview?.previewUrl || null;
                     const pf = previewFileFor(previewUrl, preview?.files || []);
@@ -2500,6 +2556,9 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                               {accessModeLabel ? ` · ${accessModeLabel}` : ""}
                             </div>
                           ) : null}
+                          {isAddedToProfile ? (
+                            <div className="mt-1 text-[11px] text-emerald-300">ADDED TO PROFILE</div>
+                          ) : null}
                           {currentlyFeatured ? (
                             <div className="mt-1 text-[11px] text-sky-300">FEATURED WORK</div>
                           ) : null}
@@ -2526,9 +2585,26 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                                 target="_blank"
                                 rel="noreferrer"
                               >
-                                Open public page
+                                Open Public Page
                               </a>
                             ) : null}
+                            <button
+                              type="button"
+                              disabled={featureBusyById[it.id] || !isOwnedPublished}
+                              className={`text-xs rounded border px-2 py-1 ${
+                                isOwnedPublished
+                                  ? "border-neutral-800 hover:bg-neutral-900"
+                                  : "border-neutral-900 text-neutral-600 cursor-not-allowed"
+                              }`}
+                              onClick={() => setProfileVisibilityForContent(it.id, !isAddedToProfile)}
+                              title={isOwnedPublished ? "" : "Only owned published content can be added to profile."}
+                            >
+                              {featureBusyById[it.id]
+                                ? "Updating…"
+                                : isAddedToProfile
+                                  ? "Remove from Profile"
+                                  : "Add to Profile"}
+                            </button>
                             <button
                               type="button"
                               disabled={featureBusyById[it.id] || !featureAllowed}
@@ -2538,7 +2614,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                                   : "border-neutral-900 text-neutral-600 cursor-not-allowed"
                               }`}
                               onClick={() => setFeatureOnProfile(entry, !currentlyFeatured)}
-                              title={featureAllowed ? "" : "Feature toggle unavailable."}
+                              title={featureAllowed ? "" : "Only owned published content can be featured."}
                             >
                               {featureBusyById[it.id]
                                 ? "Updating…"
@@ -2764,8 +2840,10 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                     String(item.status || "").trim().toLowerCase() === "published" &&
                     !item.deletedAt &&
                     String(item.proofBundleType || "").trim().toLowerCase() === "publication" &&
-                    Boolean(publicationHash);
+                    Boolean(publicationHash) &&
+                    Boolean(verifiedSource);
                   const currentlyFeatured = Boolean(item.featureOnProfile);
+                  const isAddedToProfile = String(item.storefrontStatus || "DISABLED").toUpperCase() !== "DISABLED";
                   const sourceUrl = String(
                     item.legacyExternalUrl ||
                       item.legacyYoutubeUrl ||
@@ -2824,20 +2902,32 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                         ) : null}
 
                         <div className="flex flex-wrap gap-2 pt-1">
-                          {canFeatureLegacyWork ? (
-                            <button
-                              type="button"
-                              disabled={featureBusyById[item.id]}
-                              className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                              onClick={() => setLegacyFeatureOnProfile(item, !currentlyFeatured)}
-                            >
-                              {featureBusyById[item.id]
-                                ? "Updating…"
-                                : currentlyFeatured
-                                  ? "Remove Feature"
-                                  : "Feature on Profile"}
-                            </button>
-                          ) : null}
+                          <button
+                            type="button"
+                            disabled={featureBusyById[item.id] || !canFeatureLegacyWork}
+                            className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                            onClick={() => setProfileVisibilityForContent(item.id, !isAddedToProfile)}
+                            title={canFeatureLegacyWork ? "" : "Verify source account before showing this Legacy work publicly."}
+                          >
+                            {featureBusyById[item.id]
+                              ? "Updating…"
+                              : isAddedToProfile
+                                ? "Remove from Profile"
+                                : "Add to Profile"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={featureBusyById[item.id] || !canFeatureLegacyWork}
+                            className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                            onClick={() => setLegacyFeatureOnProfile(item, !currentlyFeatured)}
+                            title={canFeatureLegacyWork ? "" : "Verify source account before featuring this Legacy work."}
+                          >
+                            {featureBusyById[item.id]
+                              ? "Updating…"
+                              : currentlyFeatured
+                                ? "Remove Feature"
+                                : "Feature on Profile"}
+                          </button>
                           {sourceUrl ? (
                             <a
                               className="text-xs rounded border border-purple-700/60 px-2 py-1 text-purple-100 hover:bg-purple-500/10"
