@@ -34874,7 +34874,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-video-thumb { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-video-preview { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
     .featured-video-fallback { position:absolute; inset:0; min-height:0; z-index:2; }
-    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:var(--profile-button-bg); border:1px solid var(--profile-button-border); color:var(--profile-accent); font-size:12px; line-height:1; z-index:3; box-shadow:0 0 18px var(--profile-accent-soft); backdrop-filter:blur(8px); }
+    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:var(--profile-button-bg); border:1px solid var(--profile-button-border); color:var(--theme-button-text); font-size:12px; line-height:1; z-index:3; box-shadow:0 0 18px var(--profile-accent-soft); backdrop-filter:blur(8px); }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
     .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid var(--profile-card-border); background:rgba(255,255,255,0.045); display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
@@ -34883,8 +34883,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-audio { width:100%; }
     .featured-fallback { font-size:10px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
     .featured-topline { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
-    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:var(--profile-muted); background:var(--profile-button-bg); border:1px solid var(--profile-card-border); border-radius:999px; padding:2px 7px; }
-    .featured-verified { font-size:10px; color:var(--profile-accent); background:var(--profile-button-bg); border:1px solid var(--profile-button-border); border-radius:999px; padding:2px 7px; }
+    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:var(--theme-button-text); background:var(--profile-button-bg); border:1px solid var(--profile-card-border); border-radius:999px; padding:2px 7px; }
+    .featured-verified { font-size:10px; color:var(--theme-button-text); background:var(--profile-button-bg); border:1px solid var(--profile-button-border); border-radius:999px; padding:2px 7px; }
     .posture-pill { font-size:10px; border-radius:999px; padding:2px 9px; border:1px solid transparent; letter-spacing:0.01em; white-space:nowrap; }
     .posture-pill--basic,
     .posture-pill--creator,
