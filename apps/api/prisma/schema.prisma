@@ -126,6 +126,7 @@ model User {
   bio          String?
   avatarUrl    String?
   themeWallpaperImageUrl String?
+  themeMobileWallpaperFocus String @default("center")
   themeMode              String   @default("auto")
   themeAccentColor       String?
   themeAccentOverrideColor String?

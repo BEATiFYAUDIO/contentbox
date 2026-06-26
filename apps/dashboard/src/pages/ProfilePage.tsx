@@ -17,12 +17,14 @@ type Me = {
 };
 
 type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
+type ProfileMobileWallpaperFocus = "top" | "center" | "bottom";
 type ProfileCardStrength = "transparent" | "light" | "medium" | "strong";
 type ProfileOverlayStrength = "lighter" | "balanced" | "darker";
 type ProfileButtonStyle = "glass" | "filled" | "outline";
 
 type ProfileTheme = {
   themeWallpaperImageUrl: string | null;
+  themeMobileWallpaperFocus: ProfileMobileWallpaperFocus;
   themeMode: ProfileThemeMode;
   themeAccentColor: string;
   themeAccentOverrideColor: string | null;
@@ -46,6 +48,7 @@ type ProfileTheme = {
 
 const DEFAULT_PROFILE_THEME: ProfileTheme = {
   themeWallpaperImageUrl: null,
+  themeMobileWallpaperFocus: "center",
   themeMode: "auto",
   themeAccentColor: "#d4b26a",
   themeAccentOverrideColor: null,
@@ -895,6 +898,22 @@ export default function ProfilePage({
             <div className="text-xs text-neutral-500 md:self-end">
               Themes are generated server-side with high-contrast text and button safety checks.
             </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-neutral-400">
+              Mobile wallpaper focus
+              <select
+                value={profileTheme.themeMobileWallpaperFocus || "center"}
+                onChange={(e) => setProfileTheme((theme) => ({ ...theme, themeMobileWallpaperFocus: e.target.value as ProfileMobileWallpaperFocus }))}
+                className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+              >
+                <option value="top">Top</option>
+                <option value="center">Center</option>
+                <option value="bottom">Bottom</option>
+              </select>
+              <span className="mt-1 block text-xs text-neutral-500">Controls mobile crop only. Desktop stays centered.</span>
+            </label>
           </div>
 
           <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/25 p-3">

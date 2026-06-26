@@ -11223,12 +11223,14 @@ async function storeAvatarBufferForUser(userId: string, buf: Buffer, contentType
 }
 
 type ProfileThemeMode = "auto" | "vibrant" | "dark" | "minimal" | "high_contrast";
+type ProfileMobileWallpaperFocus = "top" | "center" | "bottom";
 type ProfileCardStrength = "transparent" | "light" | "medium" | "strong";
 type ProfileOverlayStrength = "lighter" | "balanced" | "darker";
 type ProfileButtonStyle = "glass" | "filled" | "outline";
 
 type ProfileTheme = {
   themeWallpaperImageUrl: string | null;
+  themeMobileWallpaperFocus: ProfileMobileWallpaperFocus;
   themeMode: ProfileThemeMode;
   themeAccentColor: string;
   themeAccentOverrideColor: string | null;
@@ -11265,6 +11267,18 @@ function normalizeProfileThemeMode(value: unknown): ProfileThemeMode {
   const mode = asString(value || "").trim().toLowerCase().replace(/-/g, "_");
   if (mode === "vibrant" || mode === "dark" || mode === "minimal" || mode === "high_contrast") return mode;
   return "auto";
+}
+
+function normalizeProfileMobileWallpaperFocus(value: unknown): ProfileMobileWallpaperFocus {
+  const raw = asString(value || "").trim().toLowerCase();
+  if (raw === "top" || raw === "bottom") return raw;
+  return "center";
+}
+
+function mobileWallpaperPositionForFocus(focus: ProfileMobileWallpaperFocus): string {
+  if (focus === "top") return "center top";
+  if (focus === "bottom") return "center bottom";
+  return "center center";
 }
 
 function normalizeProfileCardStrength(value: unknown): ProfileCardStrength {
@@ -11649,6 +11663,7 @@ function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): Pr
   if (contrastRatio(button, buttonText) < 4.5) buttonText = "#08090b";
   const theme = {
     themeWallpaperImageUrl: null,
+    themeMobileWallpaperFocus: "center" as ProfileMobileWallpaperFocus,
     themeMode: mode,
     themeAccentColor: normalizeHexColor(accent) || PROFILE_THEME_DEFAULTS.themeAccentColor,
     themeAccentOverrideColor: null,
@@ -11700,6 +11715,7 @@ function userToProfileTheme(user: any): ProfileTheme {
   const buttonText = readableTextFor(effectiveButtonColor);
   return {
     themeWallpaperImageUrl: asString(user?.themeWallpaperImageUrl || "").trim() || null,
+    themeMobileWallpaperFocus: normalizeProfileMobileWallpaperFocus(user?.themeMobileWallpaperFocus),
     themeMode: normalizeProfileThemeMode(user?.themeMode),
     themeAccentColor: generatedAccent,
     themeAccentOverrideColor: accentOverride,
@@ -11779,6 +11795,7 @@ function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: s
     `--profile-bg-overlay-mobile:rgba(0,0,0,${mobileOverlayAlpha})`,
     `--profile-card-border:color-mix(in srgb, ${theme.themeBorderColor} 78%, transparent)`,
     `--profile-card-blur:blur(${cardBlurPx}px) saturate(125%)`,
+    `--profile-wallpaper-position-mobile:${mobileWallpaperPositionForFocus(theme.themeMobileWallpaperFocus)}`,
     `--profile-accent:${theme.themeResolvedAccentColor}`,
     `--profile-accent-soft:color-mix(in srgb, ${theme.themeResolvedAccentColor} 18%, transparent)`,
     `--profile-button-bg:${buttonBackground}`,
@@ -17876,6 +17893,7 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
       bio: true,
       avatarUrl: true,
       themeWallpaperImageUrl: true,
+      themeMobileWallpaperFocus: true,
       themeMode: true,
       themeAccentColor: true,
       themeAccentOverrideColor: true,
@@ -22445,6 +22463,7 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
     where: { id: userId },
     select: {
       themeWallpaperImageUrl: true,
+      themeMobileWallpaperFocus: true,
       themeMode: true,
       themeAccentColor: true,
       themeAccentOverrideColor: true,
@@ -22475,6 +22494,7 @@ app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (r
     where: { id: userId },
     select: {
       themeWallpaperImageUrl: true,
+      themeMobileWallpaperFocus: true,
       themeAccentOverrideColor: true,
       themeCardStrength: true,
       themeCardOpacityOverride: true,
@@ -22502,6 +22522,7 @@ app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (r
   }
   const theme = generateProfileThemeFromImage(sourceBuffer, body.mode);
   theme.themeWallpaperImageUrl = wallpaperPath || null;
+  theme.themeMobileWallpaperFocus = normalizeProfileMobileWallpaperFocus(user.themeMobileWallpaperFocus);
   theme.themeAccentOverrideColor = normalizeHexColor(user.themeAccentOverrideColor);
   theme.themeCardStrength = normalizeProfileCardStrength(user.themeCardStrength);
   theme.themeCardOpacityOverride = normalizeProfileCardOpacityOverride(user.themeCardOpacityOverride);
@@ -22518,6 +22539,7 @@ app.patch("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any,
   const themeInput = typeof body.theme === "object" && body.theme ? (body.theme as Record<string, unknown>) : body;
   const data: any = {
     themeMode: normalizeProfileThemeMode(themeInput.themeMode || themeInput.mode),
+    themeMobileWallpaperFocus: normalizeProfileMobileWallpaperFocus(themeInput.themeMobileWallpaperFocus),
     themeUpdatedAt: new Date()
   };
   const colorFields = [
@@ -22563,6 +22585,7 @@ app.post("/api/me/profile-theme/reset", { preHandler: requireAuth }, async (req:
     where: { id: userId },
     data: {
       themeWallpaperImageUrl: null,
+      themeMobileWallpaperFocus: "center",
       themeMode: "auto",
       themeAccentOverrideColor: null,
       themeCardStrength: "medium",
@@ -22595,6 +22618,7 @@ app.post("/api/me/profile-theme/wallpaper/upload", { preHandler: requireAuth }, 
       where: { id: userId },
       data: {
         themeWallpaperImageUrl: wallpaperUrl,
+        themeMobileWallpaperFocus: "center",
         themeMode: generated.themeMode,
         themeAccentColor: generated.themeAccentColor,
         themeAccentOverrideColor: null,
@@ -34997,6 +35021,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               : ""
           }
           var(--theme-bg);
+        ${
+          safeThemeWallpaperUrl
+            ? `background-position:14% -8%, 88% -12%, var(--profile-wallpaper-position-mobile), center;
+        background-size:auto, auto, cover, auto;
+        background-attachment:scroll, scroll, scroll, scroll;
+        background-repeat:no-repeat, no-repeat, no-repeat, repeat;`
+            : ""
+        }
       }
       :root {
         --profile-bg-overlay:var(--profile-bg-overlay-mobile);
@@ -36024,6 +36056,7 @@ async function handleBuyPage(req: any, reply: any) {
           email: true,
           avatarUrl: true,
           themeWallpaperImageUrl: true,
+          themeMobileWallpaperFocus: true,
           themeMode: true,
           themeAccentColor: true,
           themeAccentOverrideColor: true,
@@ -36477,6 +36510,16 @@ async function handleBuyPage(req: any, reply: any) {
       background: rgba(27, 24, 41, 0.44);
     }
     @media (max-width: 640px) {
+      body {
+        ${
+          ownerAppearance.wallpaperUrl
+            ? `background-position:100% -10%, -8% 20%, var(--profile-wallpaper-position-mobile), center;
+        background-size:auto, auto, cover, auto;
+        background-attachment:scroll, scroll, scroll, scroll;
+        background-repeat:no-repeat, no-repeat, no-repeat, repeat;`
+            : ""
+        }
+      }
       .wrap { padding: 14px; }
       .card { padding: 14px; border-radius: 14px; }
       .purchase-card { padding: 12px; }
@@ -38115,6 +38158,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
               owner: {
                 select: {
                   themeWallpaperImageUrl: true,
+                  themeMobileWallpaperFocus: true,
                   themeMode: true,
                   themeAccentColor: true,
                   themeAccentOverrideColor: true,
@@ -38260,6 +38304,16 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
     a { color:var(--profile-accent); }
     .footer { margin-top:20px; font-size:12px; color:var(--profile-muted); }
     @media (max-width: 640px) {
+      body {
+        ${
+          libraryAppearance.wallpaperUrl
+            ? `background-position:12% -10%, 90% -12%, var(--profile-wallpaper-position-mobile), center;
+        background-size:auto, auto, cover, auto;
+        background-attachment:scroll, scroll, scroll, scroll;
+        background-repeat:no-repeat, no-repeat, no-repeat, repeat;`
+            : ""
+        }
+      }
       .wrap { padding: 16px; }
       .card { padding: 16px; }
       .item-title { font-size:18px; }
