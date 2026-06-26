@@ -34668,8 +34668,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       color:var(--theme-text);
       padding:24px;
       background:
-        radial-gradient(1100px 540px at 14% -8%, color-mix(in srgb, var(--theme-accent) 20%, transparent), transparent 62%),
-        radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.22), transparent 64%),
         ${
           safeThemeWallpaperUrl
             ? `url("${safeThemeWallpaperUrl}") center / cover fixed no-repeat,`
@@ -34684,21 +34682,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       inset:0;
       pointer-events:none;
       z-index:0;
-      background:
-        radial-gradient(circle at 50% 12%, rgba(0,0,0,0.04), rgba(0,0,0,0.28) 62%, rgba(0,0,0,0.55) 100%),
-        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, var(--profile-bg-overlay) 48%, rgba(0,0,0,0.56) 100%);
-    }
-    body::after {
-      content:"";
-      position:fixed;
-      inset:0;
-      pointer-events:none;
-      z-index:0;
-      background:
-        radial-gradient(800px 300px at 50% 0%, var(--profile-accent-soft), transparent 70%),
-        radial-gradient(700px 400px at 12% 24%, rgba(255,255,255,0.04), transparent 72%);
-      mix-blend-mode:screen;
-      opacity:.75;
+      background:var(--profile-bg-overlay);
     }
     .card {
       position:relative;
@@ -35042,8 +35026,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       body {
         min-height:100dvh;
         background:
-          radial-gradient(1100px 540px at 14% -8%, color-mix(in srgb, var(--theme-accent) 20%, transparent), transparent 62%),
-          radial-gradient(900px 520px at 88% -12%, rgba(28, 38, 60, 0.22), transparent 64%),
           ${
             safeThemeWallpaperUrl
               ? `url("${safeThemeWallpaperUrl}") center center / cover scroll no-repeat,`
@@ -35052,10 +35034,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           var(--theme-bg);
         ${
           safeThemeWallpaperUrl
-            ? `background-position:14% -8%, 88% -12%, var(--profile-wallpaper-position-mobile), center;
-        background-size:auto, auto, cover, auto;
-        background-attachment:scroll, scroll, scroll, scroll;
-        background-repeat:no-repeat, no-repeat, no-repeat, repeat;`
+            ? `background-position:var(--profile-wallpaper-position-mobile), center;
+        background-size:cover, auto;
+        background-attachment:scroll, scroll;
+        background-repeat:no-repeat, repeat;`
             : ""
         }
       }
@@ -36150,8 +36132,6 @@ async function handleBuyPage(req: any, reply: any) {
       min-height: 100vh;
       color: var(--profile-text);
       background:
-        radial-gradient(1100px 520px at 100% -10%, var(--profile-accent-soft), transparent 56%),
-        radial-gradient(900px 460px at -8% 20%, rgba(255,255,255,0.04), transparent 50%),
         ${
           ownerAppearance.wallpaperUrl
             ? `url("${ownerAppearance.wallpaperUrl}") center / cover fixed no-repeat,`
@@ -36166,19 +36146,7 @@ async function handleBuyPage(req: any, reply: any) {
       inset: 0;
       pointer-events: none;
       z-index: 0;
-      background:
-        radial-gradient(circle at 50% 10%, rgba(0,0,0,0.04), rgba(0,0,0,0.28) 62%, rgba(0,0,0,0.56) 100%),
-        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, var(--profile-bg-overlay) 48%, rgba(0,0,0,0.58) 100%);
-    }
-    body::after {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 0;
-      opacity: .72;
-      background: radial-gradient(760px 260px at 50% 0%, var(--profile-accent-soft), transparent 72%);
-      mix-blend-mode: screen;
+      background:var(--profile-bg-overlay);
     }
     .wrap {
       position: relative;
@@ -36544,10 +36512,10 @@ async function handleBuyPage(req: any, reply: any) {
       body {
         ${
           ownerAppearance.wallpaperUrl
-            ? `background-position:100% -10%, -8% 20%, var(--profile-wallpaper-position-mobile), center;
-        background-size:auto, auto, cover, auto;
-        background-attachment:scroll, scroll, scroll, scroll;
-        background-repeat:no-repeat, no-repeat, no-repeat, repeat;`
+            ? `background-position:var(--profile-wallpaper-position-mobile), center;
+        background-size:cover, auto;
+        background-attachment:scroll, scroll;
+        background-repeat:no-repeat, repeat;`
             : ""
         }
       }
@@ -38235,8 +38203,6 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
       margin:0;
       min-height:100vh;
       background:
-        radial-gradient(900px 500px at 12% -10%, var(--profile-accent-soft), transparent 60%),
-        radial-gradient(900px 500px at 90% -12%, rgba(255,255,255,0.04), transparent 62%),
         ${
           libraryAppearance.wallpaperUrl
             ? `url("${libraryAppearance.wallpaperUrl}") center / cover fixed no-repeat,`
@@ -38252,19 +38218,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
       inset:0;
       pointer-events:none;
       z-index:0;
-      background:
-        radial-gradient(circle at 50% 10%, rgba(0,0,0,0.04), rgba(0,0,0,0.28) 62%, rgba(0,0,0,0.56) 100%),
-        linear-gradient(180deg, rgba(0,0,0,0.20) 0%, var(--profile-bg-overlay) 48%, rgba(0,0,0,0.58) 100%);
-    }
-    body::after {
-      content:"";
-      position:fixed;
-      inset:0;
-      pointer-events:none;
-      z-index:0;
-      opacity:.72;
-      background:radial-gradient(760px 260px at 50% 0%, var(--profile-accent-soft), transparent 72%);
-      mix-blend-mode:screen;
+      background:var(--profile-bg-overlay);
     }
     .wrap { position:relative; z-index:1; max-width: 1120px; margin: 0 auto; padding: 26px; }
     .card {
@@ -38340,10 +38294,10 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
       body {
         ${
           libraryAppearance.wallpaperUrl
-            ? `background-position:12% -10%, 90% -12%, var(--profile-wallpaper-position-mobile), center;
-        background-size:auto, auto, cover, auto;
-        background-attachment:scroll, scroll, scroll, scroll;
-        background-repeat:no-repeat, no-repeat, no-repeat, repeat;`
+            ? `background-position:var(--profile-wallpaper-position-mobile), center;
+        background-size:cover, auto;
+        background-attachment:scroll, scroll;
+        background-repeat:no-repeat, repeat;`
             : ""
         }
       }
