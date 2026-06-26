@@ -25,6 +25,8 @@ type ProfileButtonStyle = "glass" | "filled" | "outline";
 type ProfileTheme = {
   themeWallpaperImageUrl: string | null;
   themeMobileWallpaperFocus: ProfileMobileWallpaperFocus;
+  themeMobileWallpaperFocusX: number;
+  themeMobileWallpaperFocusY: number;
   themeMode: ProfileThemeMode;
   themeAccentColor: string;
   themeAccentOverrideColor: string | null;
@@ -49,6 +51,8 @@ type ProfileTheme = {
 const DEFAULT_PROFILE_THEME: ProfileTheme = {
   themeWallpaperImageUrl: null,
   themeMobileWallpaperFocus: "center",
+  themeMobileWallpaperFocusX: 50,
+  themeMobileWallpaperFocusY: 50,
   themeMode: "auto",
   themeAccentColor: "#d4b26a",
   themeAccentOverrideColor: null,
@@ -900,20 +904,53 @@ export default function ProfilePage({
             </div>
           </div>
 
-          <div className="mt-3 grid gap-3 md:grid-cols-3">
-            <label className="text-xs text-neutral-400">
-              Mobile wallpaper focus
-              <select
-                value={profileTheme.themeMobileWallpaperFocus || "center"}
-                onChange={(e) => setProfileTheme((theme) => ({ ...theme, themeMobileWallpaperFocus: e.target.value as ProfileMobileWallpaperFocus }))}
-                className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
-              >
-                <option value="top">Top</option>
-                <option value="center">Center</option>
-                <option value="bottom">Bottom</option>
-              </select>
-              <span className="mt-1 block text-xs text-neutral-500">Controls mobile crop only. Desktop stays centered.</span>
-            </label>
+          <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/25 p-3">
+            <div className="text-xs font-medium text-neutral-200">Mobile Wallpaper Focal Point</div>
+            <div className="mt-1 text-xs text-neutral-500">Controls mobile crop only. Desktop stays centered.</div>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <label className="text-xs text-neutral-400">
+                <div className="flex items-center justify-between gap-3">
+                  <span>Focus X</span>
+                  <span className="font-mono text-neutral-300">{Math.round(profileTheme.themeMobileWallpaperFocusX ?? 50)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={profileTheme.themeMobileWallpaperFocusX ?? 50}
+                  onChange={(e) =>
+                    setProfileTheme((theme) => ({
+                      ...theme,
+                      themeMobileWallpaperFocus: "center",
+                      themeMobileWallpaperFocusX: Math.max(0, Math.min(100, Number(e.target.value)))
+                    }))
+                  }
+                  className="mt-2 w-full accent-amber-400"
+                />
+              </label>
+              <label className="text-xs text-neutral-400">
+                <div className="flex items-center justify-between gap-3">
+                  <span>Focus Y</span>
+                  <span className="font-mono text-neutral-300">{Math.round(profileTheme.themeMobileWallpaperFocusY ?? 50)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={profileTheme.themeMobileWallpaperFocusY ?? 50}
+                  onChange={(e) =>
+                    setProfileTheme((theme) => ({
+                      ...theme,
+                      themeMobileWallpaperFocus: "center",
+                      themeMobileWallpaperFocusY: Math.max(0, Math.min(100, Number(e.target.value)))
+                    }))
+                  }
+                  className="mt-2 w-full accent-amber-400"
+                />
+              </label>
+            </div>
           </div>
 
           <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/25 p-3">

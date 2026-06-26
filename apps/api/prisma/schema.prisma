@@ -127,6 +127,8 @@ model User {
   avatarUrl    String?
   themeWallpaperImageUrl String?
   themeMobileWallpaperFocus String @default("center")
+  themeMobileWallpaperFocusX Float  @default(50)
+  themeMobileWallpaperFocusY Float  @default(50)
   themeMode              String   @default("auto")
   themeAccentColor       String?
   themeAccentOverrideColor String?

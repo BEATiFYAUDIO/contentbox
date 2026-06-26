@@ -11231,6 +11231,8 @@ type ProfileButtonStyle = "glass" | "filled" | "outline";
 type ProfileTheme = {
   themeWallpaperImageUrl: string | null;
   themeMobileWallpaperFocus: ProfileMobileWallpaperFocus;
+  themeMobileWallpaperFocusX: number;
+  themeMobileWallpaperFocusY: number;
   themeMode: ProfileThemeMode;
   themeAccentColor: string;
   themeAccentOverrideColor: string | null;
@@ -11275,10 +11277,19 @@ function normalizeProfileMobileWallpaperFocus(value: unknown): ProfileMobileWall
   return "center";
 }
 
-function mobileWallpaperPositionForFocus(focus: ProfileMobileWallpaperFocus): string {
-  if (focus === "top") return "center top";
-  if (focus === "bottom") return "center bottom";
-  return "center center";
+function normalizeProfileMobileWallpaperFocusPercent(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function mobileWallpaperFocalPointForUser(user: any): { x: number; y: number } {
+  const focus = normalizeProfileMobileWallpaperFocus(user?.themeMobileWallpaperFocus);
+  const fallbackY = focus === "top" ? 0 : focus === "bottom" ? 100 : 50;
+  return {
+    x: normalizeProfileMobileWallpaperFocusPercent(user?.themeMobileWallpaperFocusX, 50),
+    y: normalizeProfileMobileWallpaperFocusPercent(user?.themeMobileWallpaperFocusY, fallbackY)
+  };
 }
 
 function normalizeProfileCardStrength(value: unknown): ProfileCardStrength {
@@ -11664,6 +11675,8 @@ function generateProfileThemeFromImage(buf: Buffer | null, modeRaw: unknown): Pr
   const theme = {
     themeWallpaperImageUrl: null,
     themeMobileWallpaperFocus: "center" as ProfileMobileWallpaperFocus,
+    themeMobileWallpaperFocusX: 50,
+    themeMobileWallpaperFocusY: 50,
     themeMode: mode,
     themeAccentColor: normalizeHexColor(accent) || PROFILE_THEME_DEFAULTS.themeAccentColor,
     themeAccentOverrideColor: null,
@@ -11716,6 +11729,8 @@ function userToProfileTheme(user: any): ProfileTheme {
   return {
     themeWallpaperImageUrl: asString(user?.themeWallpaperImageUrl || "").trim() || null,
     themeMobileWallpaperFocus: normalizeProfileMobileWallpaperFocus(user?.themeMobileWallpaperFocus),
+    themeMobileWallpaperFocusX: mobileWallpaperFocalPointForUser(user).x,
+    themeMobileWallpaperFocusY: mobileWallpaperFocalPointForUser(user).y,
     themeMode: normalizeProfileThemeMode(user?.themeMode),
     themeAccentColor: generatedAccent,
     themeAccentOverrideColor: accentOverride,
@@ -11795,7 +11810,7 @@ function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: s
     `--profile-bg-overlay-mobile:rgba(0,0,0,${mobileOverlayAlpha})`,
     `--profile-card-border:color-mix(in srgb, ${theme.themeBorderColor} 78%, transparent)`,
     `--profile-card-blur:blur(${cardBlurPx}px) saturate(125%)`,
-    `--profile-wallpaper-position-mobile:${mobileWallpaperPositionForFocus(theme.themeMobileWallpaperFocus)}`,
+    `--profile-wallpaper-position-mobile:${theme.themeMobileWallpaperFocusX}% ${theme.themeMobileWallpaperFocusY}%`,
     `--profile-accent:${theme.themeResolvedAccentColor}`,
     `--profile-accent-soft:color-mix(in srgb, ${theme.themeResolvedAccentColor} 18%, transparent)`,
     `--profile-button-bg:${buttonBackground}`,
@@ -17894,6 +17909,8 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
       avatarUrl: true,
       themeWallpaperImageUrl: true,
       themeMobileWallpaperFocus: true,
+      themeMobileWallpaperFocusX: true,
+      themeMobileWallpaperFocusY: true,
       themeMode: true,
       themeAccentColor: true,
       themeAccentOverrideColor: true,
@@ -22464,6 +22481,8 @@ app.get("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any, r
     select: {
       themeWallpaperImageUrl: true,
       themeMobileWallpaperFocus: true,
+      themeMobileWallpaperFocusX: true,
+      themeMobileWallpaperFocusY: true,
       themeMode: true,
       themeAccentColor: true,
       themeAccentOverrideColor: true,
@@ -22495,6 +22514,8 @@ app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (r
     select: {
       themeWallpaperImageUrl: true,
       themeMobileWallpaperFocus: true,
+      themeMobileWallpaperFocusX: true,
+      themeMobileWallpaperFocusY: true,
       themeAccentOverrideColor: true,
       themeCardStrength: true,
       themeCardOpacityOverride: true,
@@ -22523,6 +22544,8 @@ app.post("/api/me/profile-theme/generate", { preHandler: requireAuth }, async (r
   const theme = generateProfileThemeFromImage(sourceBuffer, body.mode);
   theme.themeWallpaperImageUrl = wallpaperPath || null;
   theme.themeMobileWallpaperFocus = normalizeProfileMobileWallpaperFocus(user.themeMobileWallpaperFocus);
+  theme.themeMobileWallpaperFocusX = mobileWallpaperFocalPointForUser(user).x;
+  theme.themeMobileWallpaperFocusY = mobileWallpaperFocalPointForUser(user).y;
   theme.themeAccentOverrideColor = normalizeHexColor(user.themeAccentOverrideColor);
   theme.themeCardStrength = normalizeProfileCardStrength(user.themeCardStrength);
   theme.themeCardOpacityOverride = normalizeProfileCardOpacityOverride(user.themeCardOpacityOverride);
@@ -22540,6 +22563,8 @@ app.patch("/api/me/profile-theme", { preHandler: requireAuth }, async (req: any,
   const data: any = {
     themeMode: normalizeProfileThemeMode(themeInput.themeMode || themeInput.mode),
     themeMobileWallpaperFocus: normalizeProfileMobileWallpaperFocus(themeInput.themeMobileWallpaperFocus),
+    themeMobileWallpaperFocusX: normalizeProfileMobileWallpaperFocusPercent(themeInput.themeMobileWallpaperFocusX, 50),
+    themeMobileWallpaperFocusY: normalizeProfileMobileWallpaperFocusPercent(themeInput.themeMobileWallpaperFocusY, 50),
     themeUpdatedAt: new Date()
   };
   const colorFields = [
@@ -22586,6 +22611,8 @@ app.post("/api/me/profile-theme/reset", { preHandler: requireAuth }, async (req:
     data: {
       themeWallpaperImageUrl: null,
       themeMobileWallpaperFocus: "center",
+      themeMobileWallpaperFocusX: 50,
+      themeMobileWallpaperFocusY: 50,
       themeMode: "auto",
       themeAccentOverrideColor: null,
       themeCardStrength: "medium",
@@ -22619,6 +22646,8 @@ app.post("/api/me/profile-theme/wallpaper/upload", { preHandler: requireAuth }, 
       data: {
         themeWallpaperImageUrl: wallpaperUrl,
         themeMobileWallpaperFocus: "center",
+        themeMobileWallpaperFocusX: 50,
+        themeMobileWallpaperFocusY: 50,
         themeMode: generated.themeMode,
         themeAccentColor: generated.themeAccentColor,
         themeAccentOverrideColor: null,
@@ -36057,6 +36086,8 @@ async function handleBuyPage(req: any, reply: any) {
           avatarUrl: true,
           themeWallpaperImageUrl: true,
           themeMobileWallpaperFocus: true,
+          themeMobileWallpaperFocusX: true,
+          themeMobileWallpaperFocusY: true,
           themeMode: true,
           themeAccentColor: true,
           themeAccentOverrideColor: true,
@@ -38159,6 +38190,8 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
                 select: {
                   themeWallpaperImageUrl: true,
                   themeMobileWallpaperFocus: true,
+                  themeMobileWallpaperFocusX: true,
+                  themeMobileWallpaperFocusY: true,
                   themeMode: true,
                   themeAccentColor: true,
                   themeAccentOverrideColor: true,
