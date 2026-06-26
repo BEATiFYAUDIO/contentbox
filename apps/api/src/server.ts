@@ -11749,9 +11749,9 @@ function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: s
     theme.themeCardStrength === "transparent" ? 0.01 : theme.themeCardStrength === "light" ? 0.30 : theme.themeCardStrength === "strong" ? 0.50 : 0.38;
   const opacityOverride = theme.themeCardOpacityOverride;
   const resolvedCardAlpha = opacityOverride ?? cardAlpha;
-  const resolvedCardStrongAlpha = opacityOverride === null ? cardStrongAlpha : Math.min(0.6, opacityOverride + 0.04);
-  const resolvedMobileCardAlpha = opacityOverride === null ? mobileCardAlpha : Math.min(0.6, opacityOverride + 0.02);
-  const resolvedMobileCardStrongAlpha = opacityOverride === null ? mobileCardStrongAlpha : Math.min(0.6, opacityOverride + 0.04);
+  const resolvedCardStrongAlpha = opacityOverride ?? cardStrongAlpha;
+  const resolvedMobileCardAlpha = opacityOverride ?? mobileCardAlpha;
+  const resolvedMobileCardStrongAlpha = opacityOverride ?? mobileCardStrongAlpha;
   const cardBlurPx = theme.themeCardBlurOverride ?? 20;
   const overlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.24 : theme.themeOverlayStrength === "darker" ? 0.48 : 0.34;
   const mobileOverlayAlpha = theme.themeOverlayStrength === "lighter" ? 0.34 : theme.themeOverlayStrength === "darker" ? 0.56 : 0.44;
