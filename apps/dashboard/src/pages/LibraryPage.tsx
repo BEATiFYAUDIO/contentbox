@@ -2501,7 +2501,7 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                             </div>
                           ) : null}
                           {currentlyFeatured ? (
-                            <div className="mt-1 text-[11px] text-sky-300">FEATURED ON PROFILE</div>
+                            <div className="mt-1 text-[11px] text-sky-300">FEATURED WORK</div>
                           ) : null}
                         </div>
 
@@ -2543,8 +2543,8 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                               {featureBusyById[it.id]
                                 ? "Updating…"
                                 : currentlyFeatured
-                                  ? "Unfeature on profile"
-                                  : "Feature on profile"}
+                                  ? "Remove Feature"
+                                  : "Feature on Profile"}
                             </button>
                           </div>
                           {featureMsgById[it.id] ? (
@@ -2834,8 +2834,8 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                               {featureBusyById[item.id]
                                 ? "Updating…"
                                 : currentlyFeatured
-                                  ? "Remove from profile"
-                                  : "Feature on profile"}
+                                  ? "Remove Feature"
+                                  : "Feature on Profile"}
                             </button>
                           ) : null}
                           {sourceUrl ? (

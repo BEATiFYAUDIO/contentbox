@@ -3384,7 +3384,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       ) : null}
                       {Boolean(it.featureOnProfile) && uiState === "published" ? (
                         <div className="mt-1 inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
-                          Featured on profile
+                          Featured Work
                         </div>
                       ) : null}
                       {!Boolean(it.featureOnProfile) && participationFeatured && uiState === "published" ? (

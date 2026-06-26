@@ -34194,6 +34194,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           .map((item) => renderFeaturedContentCard(item, "Derivative collaboration • Upstream royalty"))
           .join("")
       : "";
+  const primaryFeaturedWork = dedupeProfileEntries(
+    featuredContentForRender.filter(
+      (item: any) => asString((item as any)?._profileSection || "").trim().toLowerCase() !== "collaborations"
+    )
+  )[0] || null;
+  const featuredWorkPanelHtml = primaryFeaturedWork
+    ? `<section class="section featured-work-panel">
+        <div class="section-kicker">Featured Work</div>
+        <div class="featured-work-spotlight">${renderFeaturedContentCard(primaryFeaturedWork)}</div>
+      </section>`
+    : "";
   const highlightedParticipations = (
     await Promise.all(
       lockedParticipations.map(async (row) => {
@@ -34845,6 +34856,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       border-color:var(--profile-button-border);
       color:var(--profile-accent);
     }
+    .profile-priority-grid { display:grid; grid-template-columns:1fr; gap:12px; }
+    .profile-priority-grid.has-featured-work { grid-template-columns:minmax(0, 1.15fr) minmax(260px, 0.85fr); align-items:start; }
+    .profile-priority-grid.has-featured-work .featured-work-panel { order:2; }
+    .profile-priority-grid.has-featured-work .verification-panel { order:1; }
+    .section-kicker { margin-bottom:8px; font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--profile-accent); font-weight:700; }
+    .featured-work-spotlight .featured-grid { grid-template-columns:1fr; }
+    .featured-work-spotlight .featured-item { box-shadow:0 14px 34px rgba(0,0,0,0.24), 0 0 32px var(--profile-accent-soft), inset 0 1px 0 rgba(255,255,255,0.06); }
+    .featured-work-spotlight .featured-media { aspect-ratio:16 / 10; }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:12px; }
     .featured-item {
       border:1px solid var(--profile-card-border);
@@ -34895,25 +34914,23 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-title {
       font-weight:650;
       font-size:15px;
-      line-height:1.28;
+      line-height:1.24;
       display:-webkit-box;
       -webkit-line-clamp:2;
       -webkit-box-orient:vertical;
       overflow:hidden;
-      min-height:2.56em;
     }
     .featured-support {
       margin-top:4px;
       font-size:12px;
       color:var(--profile-muted);
-      line-height:1.3;
+      line-height:1.25;
       display:-webkit-box;
       -webkit-line-clamp:2;
       -webkit-box-orient:vertical;
       overflow:hidden;
-      min-height:2.6em;
     }
-    .featured-cta-row { margin-top:auto; padding-top:7px; }
+    .featured-cta-row { margin-top:8px; padding-top:3px; }
     .featured-cta {
       display:inline-flex;
       align-items:center;
@@ -35093,6 +35110,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       body.card-strength-transparent .meta-item {
         box-shadow:0 10px 28px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.045);
       }
+      .profile-priority-grid.has-featured-work { grid-template-columns:1fr; }
+      .profile-priority-grid.has-featured-work .featured-work-panel { order:1; }
+      .profile-priority-grid.has-featured-work .verification-panel { order:2; }
       .featured-meta { padding:8px 10px 10px; gap:0; }
       .featured-topline { gap:7px; margin-bottom:4px; }
       .featured-type-badge,
@@ -35208,24 +35228,27 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <aside class="signal-rail">${creatorSignalCompactHtml}</aside>
     </section>
 
-    <section class="section">
-      <h3>Verification</h3>
-      <div class="section-sub">Identity and presence signals tied to this creator profile.</div>
-      <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
-      <div class="proof-group">
-        <div class="proof-group-title">Domains</div>
-        ${domainProofsHtml}
-      </div>
-      <div class="proof-group">
-        <div class="proof-group-title">Social</div>
-        ${socialProofsHtml}
-      </div>
-      <div class="proof-group">
-        <div class="proof-group-title">Nostr</div>
-        ${nostrProofsHtml}
-      </div>
-      ${otherProofsHtml ? `<div class="proof-group"><div class="proof-group-title">Other</div>${otherProofsHtml}</div>` : ""}
-    </section>
+    <div class="profile-priority-grid${featuredWorkPanelHtml ? " has-featured-work" : ""}">
+      ${featuredWorkPanelHtml}
+      <section class="section verification-panel">
+        <h3>Verification</h3>
+        <div class="section-sub">Identity and presence signals tied to this creator profile.</div>
+        <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
+        <div class="proof-group">
+          <div class="proof-group-title">Domains</div>
+          ${domainProofsHtml}
+        </div>
+        <div class="proof-group">
+          <div class="proof-group-title">Social</div>
+          ${socialProofsHtml}
+        </div>
+        <div class="proof-group">
+          <div class="proof-group-title">Nostr</div>
+          ${nostrProofsHtml}
+        </div>
+        ${otherProofsHtml ? `<div class="proof-group"><div class="proof-group-title">Other</div>${otherProofsHtml}</div>` : ""}
+      </section>
+    </div>
     ${
       featuredContentHtml
         ? `<section class="section">
