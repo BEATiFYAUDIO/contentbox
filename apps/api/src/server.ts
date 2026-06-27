@@ -33375,6 +33375,7 @@ async function handlePublicCredits(req: any, reply: any) {
 app.get("/public/content/:id/credits", handlePublicCredits);
 
 async function handlePublicNodeProfilePage(req: any, reply: any) {
+  applyFanReadCors(reply);
   const matchedHandle = asString((req.params as any).handle || "").trim();
   const requested = normalizePublicProfileHandle(matchedHandle);
   if (!requested) return notFound(reply, "Not found");
