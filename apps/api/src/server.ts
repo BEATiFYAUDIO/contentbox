@@ -11794,6 +11794,35 @@ function userToProfileTheme(user: any): ProfileTheme {
   };
 }
 
+const PUBLIC_PROFILE_THEME_USER_SELECT = {
+  themeWallpaperImageUrl: true,
+  themeMobileWallpaperFocus: true,
+  themeMobileWallpaperFocusX: true,
+  themeMobileWallpaperFocusY: true,
+  themeMode: true,
+  themeAccentColor: true,
+  themeAccentOverrideColor: true,
+  themeBackgroundColor: true,
+  themeCardColor: true,
+  themeBorderColor: true,
+  themeButtonColor: true,
+  themeButtonTextColor: true,
+  themeTextColor: true,
+  themeMutedTextColor: true,
+  themeCardStrength: true,
+  themeCardOpacityOverride: true,
+  themeCardBlurOverride: true,
+  themeOverlayStrength: true,
+  themeButtonStyle: true,
+  themeGeneratedFromImage: true,
+  themeUpdatedAt: true
+} as const;
+
+function publicProfileThemeFromUser(user: any): ProfileTheme | null {
+  if (!user) return null;
+  return userToProfileTheme(user);
+}
+
 function buildPublicAppearanceThemeCss(user: any): { theme: ProfileTheme; css: string; wallpaperUrl: string } {
   const theme = userToProfileTheme(user);
   const wallpaperUrl =
@@ -29851,6 +29880,7 @@ type PublicContentContextCreator = {
   avatarUrl: string | null;
   profileUrl: string | null;
   publicOrigin: string | null;
+  profileTheme?: ProfileTheme | null;
 };
 
 type PublicContentContextParticipant = PublicContentContextCreator & {
@@ -29969,7 +29999,8 @@ function publicContentContextCreatorFromUser(
     displayName,
     avatarUrl: resolveCreatorAvatarUrlForPublicPayload(user.avatarUrl || null, publicOrigin),
     profileUrl,
-    publicOrigin
+    publicOrigin,
+    profileTheme: publicProfileThemeFromUser(user)
   };
 }
 
@@ -30204,7 +30235,7 @@ async function resolvePublicContentContextUpstream(input: {
     const parentContent = link?.parentContent || (parentContentId
       ? await prisma.contentItem.findUnique({
           where: { id: parentContentId },
-          include: { owner: { select: { displayName: true, email: true, avatarUrl: true } } }
+          include: { owner: { select: { displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } } }
         }).catch(() => null)
       : null);
     const parentOrigin = getRemoteOriginFromDescription((parentContent as any)?.description || null) || input.publicOrigin;
@@ -30327,7 +30358,7 @@ async function handlePublicContentContext(req: any, reply: any) {
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
     include: {
-      owner: { select: { id: true, displayName: true, email: true, avatarUrl: true } },
+      owner: { select: { id: true, displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } },
       credits: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
       manifest: { select: { json: true, sha256: true, createdAt: true } },
       splitVersions: {
@@ -30347,7 +30378,7 @@ async function handlePublicContentContext(req: any, reply: any) {
         include: {
           parentContent: {
             include: {
-              owner: { select: { displayName: true, email: true, avatarUrl: true } }
+              owner: { select: { displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } }
             }
           }
         },
@@ -30357,7 +30388,7 @@ async function handlePublicContentContext(req: any, reply: any) {
         include: {
           childContent: {
             include: {
-              owner: { select: { displayName: true, email: true, avatarUrl: true } }
+              owner: { select: { displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } }
             }
           }
         },
@@ -30392,7 +30423,7 @@ async function handlePublicContentContext(req: any, reply: any) {
   const users = userIds.length
     ? await prisma.user.findMany({
         where: { id: { in: userIds } },
-        select: { id: true, displayName: true, avatarUrl: true }
+        select: { id: true, displayName: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT }
       })
     : [];
   const userById = new Map(users.map((u) => [u.id, u]));
@@ -30501,7 +30532,7 @@ async function handlePublicContentContext(req: any, reply: any) {
         ...(collaboratorUserIds.length ? [{ credits: { some: { userId: { in: collaboratorUserIds } } } }] : [])
       ]
     } as any,
-    include: { owner: { select: { displayName: true, email: true, avatarUrl: true } } },
+    include: { owner: { select: { displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } } },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: 8
   });
@@ -30652,6 +30683,7 @@ type PublicDiscoverySignalWork = {
   creatorHandle: string | null;
   creatorDisplayName: string | null;
   creatorAvatarUrl: string | null;
+  profileTheme?: ProfileTheme | null;
   publicUrl: string | null;
   coverUrl: string | null;
   previewUrl: string | null;
@@ -30664,6 +30696,7 @@ type PublicDiscoverySignalWork = {
     avatarUrl: string | null;
     profileUrl: string | null;
     role: string | null;
+    profileTheme?: ProfileTheme | null;
   }[];
   relationshipSummary?: PublicRelationshipSummary;
   relationshipTypes?: string[];
@@ -30686,6 +30719,7 @@ type PublicDiscoveryCreatorSignal = {
   avatarUrl: string | null;
   profileUrl: string | null;
   publicOrigin: string | null;
+  profileTheme?: ProfileTheme | null;
   workCount: number;
   recentWorkCount: number;
   topicCount: number;
@@ -30762,6 +30796,7 @@ function discoveryPublicWorkFromContent(input: {
     creatorHandle,
     creatorDisplayName: asString(row.owner?.displayName || "").trim() || creatorHandle,
     creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload(row.owner?.avatarUrl || null, input.publicOrigin),
+    profileTheme: publicProfileThemeFromUser(row.owner),
     publicUrl: buildPublicUrlFromOrigin(input.publicOrigin, `/buy/${encodeURIComponent(row.id)}`) || null,
     coverUrl: buildPublicUrlFromOrigin(input.publicOrigin, `/public/content/${encodeURIComponent(row.id)}/cover`) || null,
     previewUrl: buildPublicUrlFromOrigin(input.publicOrigin, `/public/content/${encodeURIComponent(row.id)}/preview-file`) || null,
@@ -30838,7 +30873,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
       storefrontStatus: "LISTED" as any
     } as any,
     include: {
-      owner: { select: { id: true, displayName: true, email: true, avatarUrl: true } },
+      owner: { select: { id: true, displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } },
       credits: { select: { id: true, userId: true } },
       splitVersions: {
         where: { status: "locked" as any },
@@ -31060,7 +31095,8 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
         handle: person.handle,
         avatarUrl: person.avatarUrl,
         profileUrl: person.profileUrl,
-        role: person.role
+        role: person.role,
+        profileTheme: (person as any).profileTheme || null
       }));
     if (contributors.length) contributorsByContent.set(row.id, contributors);
   }));
@@ -31134,6 +31170,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     handle: string | null;
     displayName: string | null;
     avatarUrl: string | null;
+    profileTheme: ProfileTheme | null;
     rows: any[];
     topics: Set<string>;
     types: Set<string>;
@@ -31153,6 +31190,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
       handle,
       displayName: asString(row.owner?.displayName || "").trim() || handle,
       avatarUrl: resolveCreatorAvatarUrlForPublicPayload(row.owner?.avatarUrl || null, canonicalOrigin),
+      profileTheme: publicProfileThemeFromUser(row.owner),
       rows: [],
       topics: new Set<string>(),
       types: new Set<string>(),
@@ -31213,6 +31251,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
       avatarUrl: creator.avatarUrl,
       profileUrl: creator.handle ? buildPublicUrlFromOrigin(canonicalOrigin, `/u/${encodeURIComponent(creator.handle)}`) || null : null,
       publicOrigin: canonicalOrigin,
+      profileTheme: (creator as any).profileTheme || null,
       workCount,
       recentWorkCount,
       topicCount,
@@ -31375,7 +31414,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         : {})
     } as any,
     include: {
-      owner: { select: { displayName: true, email: true, avatarUrl: true } },
+      owner: { select: { displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } },
       credits: { select: { id: true } },
       splitVersions: {
         where: { status: "locked" as any },
@@ -31505,6 +31544,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         publishedAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
         creatorHandle,
         creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload((row as any).owner?.avatarUrl || null, canonicalOrigin),
+        profileTheme: publicProfileThemeFromUser((row as any).owner),
         contentType: row.type,
         primaryTopic: normalizePrimaryTopic((row as any).primaryTopic),
         coverUrl,
