@@ -2187,7 +2187,7 @@ export default function ConfigPage({
                       ? productTier === "advanced"
                         ? "Temporary (testing only — admin access only)"
                         : "Temporary (Quick)"
-                      : "Local"}
+                      : "Public: OFF / Local only"}
                 </span>
               </div>
             ) : null}
@@ -2199,6 +2199,7 @@ export default function ConfigPage({
             {publicMsg ? <div style={{ color: "#ffb4b4" }}>{publicMsg}</div> : null}
             <div><b>OK</b>: {health.ok ? "yes" : "no"}</div>
             <div><b>Canonical public origin</b>: {publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</div>
+            <div><b>Public state</b>: {publicStatus?.mode === "off" ? "Public: OFF / Local only" : publicStatus?.status === "online" ? "Public Test URL: ON" : "Public Test URL: OFF"}</div>
             <div><b>Tunnel mode</b>: {publicStatus?.mode || "—"}</div>
             <div><b>Tunnel status</b>: {publicStatus?.status || "—"}</div>
             <div><b>Last seen</b>: {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}</div>
@@ -2220,28 +2221,32 @@ export default function ConfigPage({
                 <div><b>cloudflared</b>: {publicStatus?.cloudflared?.available ? "yes" : "no"}</div>
                 <div><b>cloudflared path</b>: {publicStatus?.cloudflared?.managedPath || "—"}</div>
                 <div><b>cloudflared version</b>: {publicStatus?.cloudflared?.version || "—"}</div>
-                <label style={{ display: "flex", alignItems: "center", gap: 8 }} htmlFor="diagnostics-public-autostart">
-                  <input
-                    id="diagnostics-public-autostart"
-                    name="diagnosticsPublicAutostart"
-                    type="checkbox"
-                    checked={Boolean(publicStatus?.autoStartEnabled)}
-                    onChange={async (e) => {
-                      try {
-                        const res = await fetch(`${apiBase}/api/public/autostart`, {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                          body: JSON.stringify({ enabled: e.target.checked })
-                        });
-                        const json = await res.json();
-                        setPublicStatus(json || null);
-                      } catch {
-                        setPublicMsg("Failed to update auto-start setting.");
-                      }
-                    }}
-                  />
-                  Auto-start Public Link on launch
-                </label>
+                {publicStatus?.mode !== "off" ? (
+                  <label style={{ display: "flex", alignItems: "center", gap: 8 }} htmlFor="diagnostics-public-autostart">
+                    <input
+                      id="diagnostics-public-autostart"
+                      name="diagnosticsPublicAutostart"
+                      type="checkbox"
+                      checked={Boolean(publicStatus?.autoStartEnabled)}
+                      onChange={async (e) => {
+                        try {
+                          const res = await fetch(`${apiBase}/api/public/autostart`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                            body: JSON.stringify({ enabled: e.target.checked })
+                          });
+                          const json = await res.json();
+                          setPublicStatus(json || null);
+                        } catch {
+                          setPublicMsg("Failed to update auto-start setting.");
+                        }
+                      }}
+                    />
+                    Auto-start Public Link on launch
+                  </label>
+                ) : (
+                  <div style={{ opacity: 0.7 }}>Set PUBLIC_MODE=quick to enable a temporary public test URL.</div>
+                )}
                 <div>
                   <button
                     onClick={async () => {

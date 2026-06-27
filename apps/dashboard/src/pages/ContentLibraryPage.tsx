@@ -348,6 +348,7 @@ async function uploadToRepo(contentId: string, file: File, idempotencyKey: strin
   const form = new FormData();
   form.append("file", file);
 
+  console.info("content.upload.request.start", { contentId, filename: file.name, size: file.size, type: file.type });
   const res = await fetch(`${base}/content/${contentId}/files`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
@@ -364,6 +365,13 @@ async function uploadToRepo(contentId: string, file: File, idempotencyKey: strin
     const code = json?.code ? ` (${json.code})` : "";
     const msg = `${json?.error || json?.message || text || `Upload failed (${res.status})`}${code}`;
     throw new Error(msg);
+  }
+  console.info("content.upload.response", { contentId, status: res.status, body: json });
+  if (!json?.ok || !json?.id || !json?.objectKey || !(Number(json?.sizeBytes || 0) > 0)) {
+    throw new Error("Upload response did not confirm a persisted file.");
+  }
+  if (json?.sha256MatchesManifest === false) {
+    throw new Error("Upload response reported a manifest hash mismatch.");
   }
   return json;
 }
@@ -1255,10 +1263,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const files = await api<ContentFile[]>(`/content/${contentId}/files`);
       setFilesByContent((m) => ({ ...m, [contentId]: files }));
+      return files;
     } catch (e: any) {
       const msg = String(e?.message || "");
       setFilesByContent((m) => ({ ...m, [contentId]: [] }));
       setError((prev) => prev || (msg ? `File list refresh failed: ${msg}` : "File list refresh failed."));
+      throw e;
     } finally {
       setFilesLoading((m) => ({ ...m, [contentId]: false }));
     }
@@ -2295,14 +2305,27 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
         try {
           setUpload({ status: "uploading", kind: "content", contentId, filename: file.name });
-          await uploadToRepo(contentId, file, idempotencyKey);
-          setUpload({ status: "done", kind: "content", contentId, filename: file.name });
+          const uploaded = await uploadToRepo(contentId, file, idempotencyKey);
 
           await load();
 
           // Auto-open the card and refresh files/split so the file ID shows immediately.
           setExpanded((m) => ({ ...m, [contentId]: true }));
-          await Promise.allSettled([loadFiles(contentId), loadLatestSplit(contentId), loadPreview(contentId)]);
+          const [filesResult] = await Promise.allSettled([loadFiles(contentId), loadLatestSplit(contentId), loadPreview(contentId)]);
+          if (filesResult.status !== "fulfilled") {
+            throw new Error("Upload saved, but file list refresh failed. Refresh the page and check the work.");
+          }
+          const visibleFiles = Array.isArray(filesResult.value) ? filesResult.value : [];
+          const visible = visibleFiles.some(
+            (f) =>
+              String(f.id || "") === String(uploaded.id || "") ||
+              String(f.objectKey || "") === String(uploaded.objectKey || "")
+          );
+          console.info("content.upload.refetch", { contentId, uploaded, files: visibleFiles });
+          if (!visible) {
+            throw new Error("Upload saved, but the uploaded file did not appear in the file list.");
+          }
+          setUpload({ status: "done", kind: "content", contentId, filename: file.name });
         } catch (err: any) {
           const raw = String(err?.message || "Upload failed");
           const message = raw.includes("PUBLISHED_IMMUTABLE")
@@ -5006,6 +5029,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             const isOn = status === "online";
                             const isError = status === "error";
                             const isOffline = status === "offline";
+                            const isLocalOnly = publicStatus?.mode === "off";
                             const originBase = isOn ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const publicUrl = originBase ? `${originBase.replace(/\/$/, "")}/p/${it.id}` : "";
                             return (
@@ -5017,7 +5041,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       ? `Permanent (${publicStatus?.tunnelName || "Named"})`
                                       : publicStatus?.mode === "quick"
                                         ? "Temporary (Quick)"
-                                        : "Local"}
+                                        : "Public: OFF / Local only"}
                                   </span>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -5048,7 +5072,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 {isOffline ? (
                                   <>
                                     <div className="text-xs text-neutral-400">
-                                      {publicStatus?.mode === "named"
+                                      {isLocalOnly
+                                        ? "Public: OFF / Local only. Set PUBLIC_MODE=quick to enable a temporary public test URL."
+                                        : publicStatus?.mode === "named"
                                         ? "Permanent identity link (stable hostname)."
                                         : "Temporary link (changes on restart)."}
                                     </div>
@@ -5066,14 +5092,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                         Named tunnel configured, but local runtime is still in quick mode.
                                       </div>
                                     ) : null}
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      onClick={startPublicLink}
-                                      disabled={publicBusy || isStarting || isOn}
-                                    >
-                                      Enable Public Link
-                                    </button>
+                                    {!isLocalOnly ? (
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={startPublicLink}
+                                        disabled={publicBusy || isStarting || isOn}
+                                      >
+                                        Enable Public Link
+                                      </button>
+                                    ) : null}
                                   </>
                                 ) : null}
 

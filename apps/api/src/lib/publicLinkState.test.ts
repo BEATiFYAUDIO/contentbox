@@ -46,6 +46,20 @@ test("no named config + quick active => mode quick, not canonical", () => {
   assert.equal(state.status, "online");
 });
 
+test("missing public mode defaults to local-only", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: undefined,
+    dbModeEnv: "basic",
+    namedEnv: { tunnelName: null, publicOrigin: null },
+    config: { provider: null, domain: null, tunnelName: null },
+    quick: { status: "ACTIVE", publicOrigin: "https://abc.trycloudflare.com" },
+    namedHealthOk: null
+  });
+  assert.equal(state.mode, "off");
+  assert.equal(state.status, "offline");
+  assert.equal(state.canonicalOrigin, null);
+});
+
 test("named configured only wins when mode is named", () => {
   const state = computePublicLinkState({
     publicModeEnv: "named",

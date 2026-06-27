@@ -17,6 +17,7 @@
     "smoke:basic": "npm run smoke:mode",
     "smoke:advanced": "tsx src/scripts/node_mode_persist_test.ts && cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/single_identity_guard_test.ts",
     "smoke:public-host": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/public_host_smoke.ts",
+    "test:dashboard-upload": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/dashboard_upload_smoke_test.ts",
     "test:storefront-gating": "cross-env API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 tsx src/scripts/storefront_gating_test.ts",
     "test:delegated-invoice-harness": "npx tsx src/payments/delegated_invoice_harness.ts",
     "test:delegated-invoice-harness:ci": "cross-env EXPECT_SETTLED=1 EXPECT_UI_CONSISTENT=1 tsx src/payments/delegated_invoice_harness.ts",

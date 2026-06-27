@@ -1576,7 +1576,7 @@ if (!String(process.env.CONTENTBOX_ROOT || "").trim()) {
 }
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
 const NODE_HTTP_PORT = Number(process.env.PORT || 4000);
-const PUBLIC_MODE = String(process.env.PUBLIC_MODE || "quick").trim().toLowerCase();
+const PUBLIC_MODE = String(process.env.PUBLIC_MODE || "").trim().toLowerCase();
 const PUBLIC_HEALTH_INTERVAL_MS = Math.max(5000, Math.floor(Number(process.env.PUBLIC_HEALTH_INTERVAL_MS || "60000")));
 const PUBLIC_HEALTH_FAILURE_THRESHOLD = Math.max(1, Math.floor(Number(process.env.PUBLIC_HEALTH_FAILURE_THRESHOLD || "2")));
 const CLOUDFLARED_BIN_DIR = String(process.env.CLOUDFLARED_BIN_DIR || "").trim() || path.join(CONTENTBOX_ROOT, ".bin");
@@ -1817,13 +1817,22 @@ function clearPublicSharingConsent() {
 function getPublicSharingAutoStart(): boolean {
   const s = readLocalState();
   if (typeof s.publicSharingAutoStart === "boolean") return s.publicSharingAutoStart;
-  return true;
+  return false;
 }
 
 function setPublicSharingAutoStart(enabled: boolean) {
   const s = readLocalState();
   s.publicSharingAutoStart = enabled;
   writeLocalState(s);
+}
+
+function getConfiguredPublicMode(): PublicMode {
+  if (PUBLIC_MODE === "off" || PUBLIC_MODE === "quick" || PUBLIC_MODE === "named") {
+    return PUBLIC_MODE as PublicMode;
+  }
+  const consent = getPublicSharingConsent();
+  if ((consent.granted || consent.dontAskAgain) && getPublicSharingAutoStart()) return "quick";
+  return "off";
 }
 
 function getPublicSharingProtocolPreference(): "auto" | "http2" | "quic" {
@@ -10552,7 +10561,8 @@ function getPublicLinkState(): PublicLinkState {
   const namedHealthOk = namedCfg ? namedHealthCache.ok : null;
   const nodeMode = getNodeModeStatus().nodeMode;
   const preferNamed = (nodeMode === "advanced" || nodeMode === "lan") && isNamedConfigured();
-  const publicModeEnv = preferNamed ? "named" : PUBLIC_MODE;
+  const configuredPublicMode = getConfiguredPublicMode();
+  const publicModeEnv = preferNamed ? "named" : configuredPublicMode;
   const state = computePublicLinkState({
     publicModeEnv,
     dbModeEnv: dbModeCompatFromStorage(RUNTIME_CONFIG.storage),
@@ -10778,7 +10788,7 @@ function getPublicStatus() {
     tunnelControl,
     hostInvariant,
     consentRequired,
-    autoStartEnabled
+    autoStartEnabled: state.mode === "quick" ? true : autoStartEnabled
   };
 }
 
@@ -10925,7 +10935,18 @@ async function warmStartupRuntimeCaches() {
 
 async function triggerPublicStartBestEffort() {
   const state = getPublicLinkState();
+  if (state.mode === "off") {
+    app.log.info(
+      { publicMode: getConfiguredPublicMode(), publicUrl: null },
+      "public.local_only.configured"
+    );
+    return;
+  }
   if (state.mode === "quick") {
+    app.log.info(
+      { publicMode: "quick", status: state.status },
+      "public.quick.enabled_by_config"
+    );
     const defer = shouldDeferNamedTunnelToServiceControl();
     const namedConfigured = Boolean(getNamedTunnelConfig());
     if (namedConfigured || defer.shouldDefer) {
@@ -10937,8 +10958,17 @@ async function triggerPublicStartBestEffort() {
       return;
     }
     const prep = await tunnelManager.ensureBinary();
-    if (!prep.ok) return;
-    tunnelManager.startQuick().catch(() => {});
+    if (!prep.ok) {
+      app.log.warn({ lastError: prep.error || "cloudflared_unavailable" }, "public.quick.start_skipped");
+      return;
+    }
+    tunnelManager
+      .startQuick()
+      .then((status) => {
+        const publicUrl = status.publicOrigin || tunnelManager.status().publicOrigin || null;
+        app.log.info({ publicMode: "quick", publicUrl }, "public.quick.url_ready");
+      })
+      .catch((e) => app.log.warn({ err: String(e?.message || e) }, "public.quick.start_failed"));
     return;
   }
   if (state.mode === "named") {
@@ -36174,26 +36204,33 @@ async function handleBuyPage(req: any, reply: any) {
       margin: 0;
       min-height: 100vh;
       color: var(--profile-text);
-      background:
-        ${
-          ownerAppearance.wallpaperUrl
-            ? `url("${ownerAppearance.wallpaperUrl}") center / cover fixed no-repeat,`
-            : ""
-        }
-        var(--theme-bg);
+      background:var(--theme-bg);
       position: relative;
+    }
+    body::after {
+      ${
+        ownerAppearance.wallpaperUrl
+          ? `content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      background:url("${ownerAppearance.wallpaperUrl}") center / cover no-repeat;
+      transform:translateZ(0);`
+          : ""
+      }
     }
     body::before {
       content: "";
       position: fixed;
       inset: 0;
       pointer-events: none;
-      z-index: 0;
+      z-index: 1;
       background:var(--profile-bg-overlay);
     }
     .wrap {
       position: relative;
-      z-index: 1;
+      z-index: 2;
       max-width: 980px;
       margin: 0 auto;
       padding: 28px 20px 36px;
@@ -36556,23 +36593,7 @@ async function handleBuyPage(req: any, reply: any) {
         background:var(--theme-bg);
       }
       body::after {
-        ${
-          ownerAppearance.wallpaperUrl
-            ? `content:"";
-        position:fixed;
-        inset:0;
-        pointer-events:none;
-        z-index:0;
-        background:url("${ownerAppearance.wallpaperUrl}") var(--profile-wallpaper-position-mobile) / cover no-repeat;
-        transform:translateZ(0);`
-            : ""
-        }
-      }
-      body::before {
-        z-index:1;
-      }
-      .wrap {
-        z-index:2;
+        background-position:var(--profile-wallpaper-position-mobile);
       }
       .wrap { padding: 14px; }
       .card { padding: 14px; border-radius: 14px; }
@@ -38257,25 +38278,32 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
       margin:0;
       min-height:100vh;
-      background:
-        ${
-          libraryAppearance.wallpaperUrl
-            ? `url("${libraryAppearance.wallpaperUrl}") center / cover fixed no-repeat,`
-            : ""
-        }
-        var(--theme-bg);
+      background:var(--theme-bg);
       color:var(--profile-text);
       position:relative;
+    }
+    body::after {
+      ${
+        libraryAppearance.wallpaperUrl
+          ? `content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      z-index:0;
+      background:url("${libraryAppearance.wallpaperUrl}") center / cover no-repeat;
+      transform:translateZ(0);`
+          : ""
+      }
     }
     body::before {
       content:"";
       position:fixed;
       inset:0;
       pointer-events:none;
-      z-index:0;
+      z-index:1;
       background:var(--profile-bg-overlay);
     }
-    .wrap { position:relative; z-index:1; max-width: 1120px; margin: 0 auto; padding: 26px; }
+    .wrap { position:relative; z-index:2; max-width: 1120px; margin: 0 auto; padding: 26px; }
     .card {
       background:linear-gradient(180deg, var(--profile-card-bg-strong), var(--profile-card-bg));
       border:1px solid var(--profile-card-border);
@@ -38350,23 +38378,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
         background:var(--theme-bg);
       }
       body::after {
-        ${
-          libraryAppearance.wallpaperUrl
-            ? `content:"";
-        position:fixed;
-        inset:0;
-        pointer-events:none;
-        z-index:0;
-        background:url("${libraryAppearance.wallpaperUrl}") var(--profile-wallpaper-position-mobile) / cover no-repeat;
-        transform:translateZ(0);`
-            : ""
-        }
-      }
-      body::before {
-        z-index:1;
-      }
-      .wrap {
-        z-index:2;
+        background-position:var(--profile-wallpaper-position-mobile);
       }
       .wrap { padding: 16px; }
       .card { padding: 16px; }
@@ -40867,6 +40879,15 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       err.statusCode = 400;
       throw err;
     }
+    req.log.info(
+      {
+        contentId,
+        originalName,
+        mime,
+        repoPath
+      },
+      "upload.file.write_start"
+    );
 
     const fileEntry = await addFileToContentRepo({
       repoPath,
@@ -40877,6 +40898,37 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       setAsPrimary: true,
       preferMasterName: false
     });
+    const writtenAbs = path.resolve(repoPath, fileEntry.path);
+    const repoRootAbs = path.resolve(repoPath);
+    if (!writtenAbs.startsWith(repoRootAbs + path.sep)) {
+      const err: any = new Error("uploaded file path escaped content repository");
+      err.statusCode = 500;
+      throw err;
+    }
+    const writtenStat = await fs.stat(writtenAbs).catch(() => null);
+    req.log.info(
+      {
+        contentId,
+        originalName,
+        mime,
+        objectKey: fileEntry.path,
+        destinationPath: writtenAbs,
+        reportedSizeBytes: fileEntry.sizeBytes,
+        finalSizeBytes: writtenStat?.size ?? null,
+        sha256: fileEntry.sha256 || null
+      },
+      "upload.file.write_complete"
+    );
+    if (!writtenStat || !writtenStat.isFile()) {
+      const err: any = new Error("uploaded file was not persisted");
+      err.statusCode = 500;
+      throw err;
+    }
+    if (writtenStat.size <= 0 || Number(fileEntry.sizeBytes || 0) <= 0) {
+      const err: any = new Error("uploaded file is empty");
+      err.statusCode = 400;
+      throw err;
+    }
 
     // upsert into DB
     const created = await prisma.contentFile.upsert({
@@ -40899,6 +40951,16 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
         encAlg: ""
       }
     });
+    req.log.info(
+      {
+        contentId,
+        contentFileId: created.id,
+        objectKey: created.objectKey,
+        sizeBytes: created.sizeBytes ? created.sizeBytes.toString() : null,
+        sha256: created.sha256 || null
+      },
+      "upload.db.file_registered"
+    );
 
     // Rebuild manifest with derived assets (preview + cover thumbnail) on upload.
     const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
@@ -40925,6 +40987,25 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
     const manifestFiles = Array.isArray((manifestJson as any)?.files) ? (manifestJson as any).files : [];
     const uploadedManifestFile = manifestFiles.find((f: any) => asString(f?.objectKey || f?.path || "") === fileEntry.path) || null;
     const manifestSha = asString(uploadedManifestFile?.sha256 || "").trim() || null;
+    if (!manifestSha) {
+      const err: any = new Error("uploaded file missing from manifest");
+      err.statusCode = 500;
+      throw err;
+    }
+    if (manifestSha.toLowerCase() !== String(created.sha256 || "").toLowerCase()) {
+      const err: any = new Error("uploaded file hash mismatch");
+      err.statusCode = 500;
+      throw err;
+    }
+    req.log.info(
+      {
+        contentId,
+        manifestId: manifestRecord.id,
+        manifestSha: manifestHash,
+        fileManifestSha: manifestSha
+      },
+      "upload.manifest.updated"
+    );
 
     try {
       await prisma.auditEvent.create({
@@ -40945,6 +41026,14 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
     } catch {}
 
     const filesCount = await prisma.contentFile.count({ where: { contentId } });
+    const persisted = await prisma.contentFile.findUnique({
+      where: { contentId_objectKey: { contentId, objectKey: created.objectKey } }
+    });
+    if (!persisted || Number(persisted.sizeBytes || 0) <= 0) {
+      const err: any = new Error("uploaded file registration verification failed");
+      err.statusCode = 500;
+      throw err;
+    }
     const payload = {
       ok: true,
       contentId,
@@ -40960,6 +41049,18 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       manifestSha256: manifestSha,
       sha256MatchesManifest: manifestSha ? manifestSha.toLowerCase() === (created.sha256 || "").toLowerCase() : null
     };
+    req.log.info(
+      {
+        contentId,
+        contentFileId: created.id,
+        objectKey: created.objectKey,
+        filesCount,
+        sizeBytes: Number(created.sizeBytes),
+        manifestSha,
+        sha256MatchesManifest: payload.sha256MatchesManifest
+      },
+      "upload.response.success"
+    );
     if (idempotencyKey) {
       uploadIdempotency.set(idempotencyKey, {
         status: "done",
@@ -40991,7 +41092,7 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       return reply.code(code).send({ error: code === 401 ? "Unauthorized" : "Forbidden" });
     }
     if (code === 400 || msg === "file is required") {
-      return reply.code(400).send({ error: "file is required" });
+      return reply.code(400).send({ error: msg === "uploaded file is empty" ? "uploaded file is empty" : "file is required" });
     }
     if (code === 415 || msg.toLowerCase().includes("multipart/form-data")) {
       return reply.code(415).send({ error: "multipart/form-data required" });
@@ -51264,21 +51365,9 @@ async function start() {
   if (state.mode !== "off") {
     const host = getPublicBindHost(state.mode);
     await startPublicServer(registerPublicRoutes, host);
-    const autoStart = getPublicSharingAutoStart();
+    const autoStart = state.mode === "quick" ? true : getPublicSharingAutoStart();
     if (autoStart) {
       triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
-    } else if (state.mode === "quick") {
-      const defer = shouldDeferNamedTunnelToServiceControl();
-      const namedConfigured = Boolean(getNamedTunnelConfig());
-      if (namedConfigured || defer.shouldDefer) {
-        if (defer.shouldDefer) reconcileNamedTunnelOwnership();
-      } else {
-      const consent = getPublicSharingConsent();
-      const consentGranted = consent.granted || consent.dontAskAgain;
-      if (consentGranted) {
-        tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
-      }
-      }
     }
   }
   logPublicHostInvariantOnStartup();

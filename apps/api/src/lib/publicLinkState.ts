@@ -54,7 +54,7 @@ export interface PublicLinkStateInput {
 const normalizeMode = (value: string | undefined): PublicMode => {
   const v = String(value || "").trim().toLowerCase();
   if (v === "off" || v === "quick" || v === "named") return v;
-  return "quick";
+  return "off";
 };
 
 const normalizeOrigin = (value: string | null | undefined): string | null => {

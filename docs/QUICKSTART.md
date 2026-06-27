@@ -84,9 +84,12 @@ Open:
 
 ### Basic Creator
 
-- temporary tunnel is valid
+- local-only is the default
+- temporary tunnel is valid only when `PUBLIC_MODE=quick`
 - publish, preview, tips
 - no durable paid-commerce posture
+
+Public test URLs are opt-in. Set `PUBLIC_MODE=off` for local-only, or `PUBLIC_MODE=quick` to create a temporary public test URL while dev is running.
 
 ### Sovereign Creator
 

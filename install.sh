@@ -81,8 +81,8 @@ if [ "$LAN_MODE" -eq 1 ]; then
 fi
 
 if ! grep -q '^PUBLIC_MODE=' "$API_ENV"; then
-  echo "PUBLIC_MODE=quick" >> "$API_ENV"
-  echo "[install] Set PUBLIC_MODE=quick (default)."
+  echo "PUBLIC_MODE=off" >> "$API_ENV"
+  echo "[install] Set PUBLIC_MODE=off (local only)."
 fi
 
 ensure_contentbox_root() {
@@ -135,10 +135,6 @@ if grep -q '^CONTENTBOX_ROOT=' "$DASH_ENV"; then
 fi
 
 prompt_install_cloudflared() {
-  if command -v cloudflared >/dev/null 2>&1; then
-    return
-  fi
-
   local root_val
   root_val="$(grep '^CONTENTBOX_ROOT=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '"')"
   if [ -z "$root_val" ] || echo "$root_val" | grep -q "<user>"; then
@@ -157,24 +153,45 @@ prompt_install_cloudflared() {
   local bin_name="cloudflared"
   local dest="$bin_dir/$bin_name"
 
-  if [ -x "$dest" ]; then
-    return
-  fi
-
   echo ""
-  echo "Public Link helper tool (optional)"
+  echo "Public test URL (optional)"
+  echo "Create a temporary public test URL so others can view your local Certifyd while dev is running?"
   echo "This will download a small helper tool into:"
   echo "  $bin_dir"
-  echo "It can be removed anytime."
-  printf "Download now? [y/N]: "
+  echo "Yes = public test URL while dev is running. No = local only."
+  printf "Create temporary public test URL? [y/N]: "
   read -r ans
   case "$ans" in
     y|Y|yes|YES)
+      if grep -q '^PUBLIC_MODE=' "$API_ENV"; then
+        sed -i.bak 's/^PUBLIC_MODE=.*/PUBLIC_MODE=quick/' "$API_ENV" && rm -f "$API_ENV.bak"
+      else
+        echo "PUBLIC_MODE=quick" >> "$API_ENV"
+      fi
       ;;
     *)
+      if grep -q '^PUBLIC_MODE=' "$API_ENV"; then
+        sed -i.bak 's/^PUBLIC_MODE=.*/PUBLIC_MODE=off/' "$API_ENV" && rm -f "$API_ENV.bak"
+      else
+        echo "PUBLIC_MODE=off" >> "$API_ENV"
+      fi
+      echo "[install] Public test URL disabled. Set PUBLIC_MODE=quick later to enable it."
       return
       ;;
   esac
+
+  local state_file="$root_val/state.json"
+  if [ ! -f "$state_file" ]; then
+    echo "{\"publicSharingConsent\":{\"granted\":true,\"dontAskAgain\":true,\"grantedAt\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"},\"publicSharingAutoStart\":true}" > "$state_file"
+  else
+    node -e "const fs=require('fs');const p='$state_file';const s=JSON.parse(fs.readFileSync(p,'utf8'));s.publicSharingConsent={granted:true,dontAskAgain:true,grantedAt:new Date().toISOString()};s.publicSharingAutoStart=true;fs.writeFileSync(p,JSON.stringify(s,null,2));"
+  fi
+
+  if command -v cloudflared >/dev/null 2>&1 || [ -x "$dest" ]; then
+    echo "[install] cloudflared already available."
+    echo "[install] PUBLIC_MODE=quick. Dev startup will create a temporary public test URL."
+    return
+  fi
 
   if ! command -v curl >/dev/null 2>&1; then
     if ! command -v wget >/dev/null 2>&1; then
@@ -254,14 +271,8 @@ prompt_install_cloudflared() {
   fi
   chmod +x "$dest"
 
-  # Store consent and enable auto-start (user opted in)
-  local state_file="$root_val/state.json"
-  if [ ! -f "$state_file" ]; then
-    echo "{\"publicSharingConsent\":{\"granted\":true,\"dontAskAgain\":true,\"grantedAt\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"},\"publicSharingAutoStart\":true}" > "$state_file"
-  else
-    node -e "const fs=require('fs');const p='$state_file';const s=JSON.parse(fs.readFileSync(p,'utf8'));s.publicSharingConsent={granted:true,dontAskAgain:true,grantedAt:new Date().toISOString()};s.publicSharingAutoStart=true;fs.writeFileSync(p,JSON.stringify(s,null,2));"
-  fi
   echo "[install] Helper tool installed."
+  echo "[install] PUBLIC_MODE=quick. Dev startup will create a temporary public test URL."
 }
 
 prompt_install_cloudflared || true

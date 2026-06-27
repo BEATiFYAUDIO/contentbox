@@ -83,6 +83,31 @@ Then open:
 
 `npm run dev` is acceptable, but `npm run dev:up` is the preferred beta start command.
 
+## Local-only vs public test URL
+
+Certifyd starts local-only unless public testing is explicitly enabled.
+
+- `PUBLIC_MODE=off`: local-only. No `trycloudflare.com` URL is started, even if `cloudflared` is installed.
+- `PUBLIC_MODE=quick`: starts a temporary public test URL while dev is running.
+
+During bootstrap, the installer asks:
+
+> Create a temporary public test URL so others can view your local Certifyd while dev is running?
+
+Choose `Yes` to write `PUBLIC_MODE=quick`. Choose `No` to write `PUBLIC_MODE=off`.
+
+To turn public testing off later, set this in `apps/api/.env`:
+
+```env
+PUBLIC_MODE=off
+```
+
+The dashboard Public Link area shows whether the node is local-only, starting, online, or unavailable. `cloudflared` being installed only means the helper exists; it does not grant permission to expose your local API.
+
+## Upload reliability
+
+Dashboard uploads report success only after the API confirms the file was fully written, has non-zero size, is registered in the database, appears in the manifest, and appears in the refreshed file list. If persistence or refresh fails, the dashboard shows an upload error instead of a false success.
+
 ## Manual fallback (secondary)
 
 If the recommended install path fails, run API and dashboard manually.

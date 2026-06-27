@@ -217,6 +217,15 @@ export async function addFileToContentRepo(opts: {
 
   await pipeline(opts.stream, out);
 
+  if (sizeBytes <= 0) {
+    try {
+      await fsp.unlink(absTarget);
+    } catch {}
+    const err: any = new Error("uploaded file is empty");
+    err.statusCode = 400;
+    throw err;
+  }
+
   const sha256 = hash.digest("hex");
   const committedAt = new Date().toISOString();
 

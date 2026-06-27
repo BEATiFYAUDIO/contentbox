@@ -84,8 +84,8 @@ if (-not ($envText -match "^CONTENTBOX_ROOT=")) {
 }
 
 if (-not ($envText -match "^PUBLIC_MODE=")) {
-  Set-EnvLine $apiEnv "PUBLIC_MODE" "quick"
-  Write-Output "[install] Set PUBLIC_MODE=quick (default)."
+  Set-EnvLine $apiEnv "PUBLIC_MODE" "off"
+  Write-Output "[install] Set PUBLIC_MODE=off (local only)."
 }
 
 Set-EnvLine $apiEnv "DB_MODE" "basic"
@@ -104,8 +104,6 @@ Write-Output "[install] Using SQLite for basic mode."
 Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
 
 function Prompt-InstallCloudflared {
-  if (Get-Command cloudflared -ErrorAction SilentlyContinue) { return }
-
   $rootLine = (Get-Content $apiEnv | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
   $rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
   $rootVal = $rootVal.Trim('"')
@@ -116,16 +114,48 @@ function Prompt-InstallCloudflared {
 
   $binDir = Join-Path $rootVal ".bin"
   $dest = Join-Path $binDir "cloudflared.exe"
-  if (Test-Path $dest) { return }
 
   Write-Output ""
-  Write-Output "Public Link helper tool (optional)"
-  Write-Output "Download cloudflared for Public Link feature? (y/N)"
+  Write-Output "Public test URL (optional)"
+  Write-Output "Create a temporary public test URL so others can view your local Certifyd while dev is running? (y/N)"
   Write-Output "This will download a small helper tool into:"
   Write-Output "  $binDir"
-  Write-Output "It can be removed anytime."
-  $ans = Read-Host "Download cloudflared for Public Link feature? (y/N)"
-  if ($ans -notmatch '^(y|Y|yes|YES)$') { return }
+  Write-Output "Yes = public test URL while dev is running. No = local only."
+  $ans = Read-Host "Create temporary public test URL? (y/N)"
+  if ($ans -notmatch '^(y|Y|yes|YES)$') {
+    Set-EnvLine $apiEnv "PUBLIC_MODE" "off"
+    Write-Output "[install] Public test URL disabled. Set PUBLIC_MODE=quick later to enable it."
+    return
+  }
+  Set-EnvLine $apiEnv "PUBLIC_MODE" "quick"
+
+  $stateFile = Join-Path $rootVal "state.json"
+  $consent = @{
+    publicSharingConsent = @{
+      granted = $true
+      dontAskAgain = $true
+      grantedAt = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    publicSharingAutoStart = $true
+  }
+  if (Test-Path $stateFile) {
+    try {
+      $existing = Get-Content $stateFile | ConvertFrom-Json
+      $existing.publicSharingConsent = $consent.publicSharingConsent
+      $existing.publicSharingAutoStart = $true
+      $existing | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
+    } catch {
+      $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
+    }
+  } else {
+    $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
+  }
+
+  if ((Get-Command cloudflared -ErrorAction SilentlyContinue) -or (Test-Path $dest)) {
+    Write-Output "[install] cloudflared already available."
+    Write-Output "[install] PUBLIC_MODE=quick. Dev startup will create a temporary public test URL."
+    return
+  }
 
   New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
@@ -172,29 +202,8 @@ function Prompt-InstallCloudflared {
     return
   }
 
-  $stateFile = Join-Path $rootVal "state.json"
-  $consent = @{
-    publicSharingConsent = @{
-      granted = $true
-      dontAskAgain = $true
-      grantedAt = (Get-Date).ToUniversalTime().ToString("o")
-    }
-    publicSharingAutoStart = $true
-  }
-  if (Test-Path $stateFile) {
-    try {
-      $existing = Get-Content $stateFile | ConvertFrom-Json
-      $existing.publicSharingConsent = $consent.publicSharingConsent
-      $existing.publicSharingAutoStart = $true
-      $existing | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
-    } catch {
-      $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
-    }
-  } else {
-    $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
-  }
-
   Write-Output "[install] cloudflared installed: $dest"
+  Write-Output "[install] PUBLIC_MODE=quick. Dev startup will create a temporary public test URL."
 }
 
 Prompt-InstallCloudflared
