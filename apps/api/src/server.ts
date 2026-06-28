@@ -23190,7 +23190,9 @@ async function handlePublicProfileWallpaper(req: any, reply: any) {
       ext === ".avif" ? "image/avif" :
       "application/octet-stream";
     if (!mime.startsWith("image/")) return notFound(reply, "Not found");
-    reply.header("cache-control", "public, max-age=86400");
+    const stat = await fs.stat(abs);
+    reply.header("cache-control", "public, max-age=31536000, immutable");
+    reply.header("content-length", String(stat.size));
     reply.type(mime);
     return reply.send(fsSync.createReadStream(abs));
   } catch {
