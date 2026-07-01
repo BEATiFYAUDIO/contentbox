@@ -159,6 +159,7 @@ import {
   isSaleable
 } from "./lib/contentLifecycle.js";
 import { hasFullAccess, isFreeContent, shouldShowPreview } from "./lib/contentAccess.js";
+import { buildCanonicalPlayback } from "./lib/publicPlayback.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -34080,8 +34081,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               "Other";
             const safeType = escHtml(typeLabel);
             const ctaLabel =
-              typeLabel === "Video" ? "Watch" :
-              typeLabel === "Song" || typeLabel === "Audio" ? "Listen" :
+              typeLabel === "Video" || typeLabel === "Song" || typeLabel === "Audio" ? "Play in Certifyd" :
               typeLabel === "Article" ? "Read" :
               "View";
             if (isLegacyPublication) {
@@ -34163,6 +34163,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const buyUrl = itemRemoteOrigin
               ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
               : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
+            const offerUrl = itemRemoteOrigin
+              ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/content/${encodeURIComponent(item.id)}/offer`)
+              : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/content/${encodeURIComponent(item.id)}/offer`);
+            const playAttrs = ctaLabel === "Play in Certifyd"
+              ? ` data-certifyd-play="1" data-offer-url="${escHtml(offerUrl)}" data-buy-url="${escHtml(buyUrl)}" data-title="${safeTitle}" data-creator="${safeHandle}" data-artwork="${escHtml(coverUrl)}"`
+              : "";
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
@@ -34195,7 +34201,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">${supportLine}</div>
-                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} &#8594;</a></div>
+                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}"${playAttrs}>${escHtml(ctaLabel)} &#8594;</a></div>
               </div>
             </article>`;
   };
@@ -34549,8 +34555,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   );
   const participationCtaLabel = (typeRaw: unknown): string => {
     const t = asString(typeRaw || "").trim().toLowerCase();
-    if (t === "video") return "Watch";
-    if (t === "song") return "Listen";
+    if (t === "video" || t === "song" || t === "audio") return "Play in Certifyd";
     if (t === "book") return "Read";
     return "View";
   };
@@ -34613,6 +34618,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               originBase: canonicalCommerceOrigin || currentPublicOrigin,
               title: asString(item.contentTitle || "").trim() || "Content"
             });
+            const playAttrs = buyUrl && cta === "Play in Certifyd"
+              ? ` data-certifyd-play="1" data-offer-url="${escHtml(
+                  buildPublicUrlFromOrigin(canonicalCommerceOrigin || currentPublicOrigin, `/buy/content/${encodeURIComponent(asString(item.contentId || "").trim())}/offer`)
+                )}" data-buy-url="${escHtml(buyUrl)}" data-title="${safeTitle}" data-creator="${safeRole}" data-artwork="${escHtml(
+                  buildPublicUrlFromOrigin(canonicalCommerceOrigin || currentPublicOrigin, `/public/content/${encodeURIComponent(asString(item.contentId || "").trim())}/cover`)
+                )}"`
+              : "";
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
@@ -34624,7 +34636,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 <div class="featured-support">Role: ${safeRole} - Share: ${safeShare}</div>
                 ${
                   linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &#8599;</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}"${playAttrs}>${escHtml(cta)} &#8599;</a></div>`
                     : ""
                 }
               </div>
@@ -34642,6 +34654,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeShare = escHtml(shareLabel);
             const base = normalizeOrigin(item.remoteOrigin || "") || "";
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
+            const offerUrl = item.contentId ? `${base}/buy/content/${encodeURIComponent(item.contentId)}/offer` : "";
             const attributionUrl = item.contentId ? `${base}/public/content/${encodeURIComponent(item.contentId)}/attribution` : "";
             const originalWorkUrl = (item as any).parentContentId
               ? `${base}/buy/${encodeURIComponent(String((item as any).parentContentId))}`
@@ -34659,6 +34672,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               originBase: base,
               title: asString(item.contentTitle || "").trim() || "Content"
             });
+            const playAttrs = buyUrl && offerUrl && cta === "Play in Certifyd"
+              ? ` data-certifyd-play="1" data-offer-url="${escHtml(offerUrl)}" data-buy-url="${escHtml(buyUrl)}" data-title="${safeTitle}" data-creator="${safeRole}" data-artwork="${escHtml(
+                  item.contentId ? `${base}/public/content/${encodeURIComponent(item.contentId)}/cover` : ""
+                )}"`
+              : "";
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
@@ -34677,7 +34695,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 }
                 ${
                   linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &#8599;</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}"${playAttrs}>${escHtml(cta)} &#8599;</a></div>`
                     : ""
                 }
               </div>
@@ -35029,14 +35047,63 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       overflow:hidden;
     }
     .featured-cta-row { margin-top:8px; padding-top:3px; }
-    .featured-cta {
-      display:inline-flex;
-      align-items:center;
-      font-weight:600;
-      font-size:12px;
-      color:var(--profile-accent);
-    }
-    .empty-state {
+	    .featured-cta {
+	      display:inline-flex;
+	      align-items:center;
+	      font-weight:600;
+	      font-size:12px;
+	      color:var(--profile-accent);
+	    }
+	    .mini-player {
+	      position:fixed;
+	      left:12px;
+	      right:12px;
+	      bottom:12px;
+	      z-index:40;
+	      display:none;
+	      align-items:center;
+	      gap:10px;
+	      max-width:920px;
+	      margin:0 auto;
+	      padding:10px;
+	      border:1px solid var(--profile-card-border);
+	      border-radius:14px;
+	      background:var(--profile-card-bg-strong);
+	      color:var(--profile-text);
+	      box-shadow:0 18px 55px rgba(0,0,0,0.46), 0 0 36px var(--profile-accent-soft);
+	      backdrop-filter:var(--profile-card-blur);
+	    }
+	    .mini-player.is-open { display:flex; }
+	    .mini-art { width:48px; height:48px; border-radius:10px; border:1px solid var(--profile-card-border); background:rgba(255,255,255,0.05); object-fit:cover; flex:none; }
+	    .mini-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:5px; }
+	    .mini-title { font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+	    .mini-meta { font-size:11px; color:var(--profile-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+	    .mini-controls { display:flex; align-items:center; gap:8px; }
+	    .mini-btn, .mini-support, .mini-close {
+	      border:1px solid var(--profile-button-border);
+	      border-radius:999px;
+	      background:var(--profile-button-bg);
+	      color:var(--theme-button-text);
+	      font-weight:700;
+	      cursor:pointer;
+	      text-decoration:none;
+	    }
+	    .mini-btn { width:34px; height:34px; display:inline-flex; align-items:center; justify-content:center; }
+	    .mini-close { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.045); color:var(--profile-text); }
+	    .mini-support { padding:8px 11px; font-size:12px; white-space:nowrap; }
+	    .mini-progress { flex:1; min-width:80px; accent-color:var(--profile-accent); }
+	    .mini-video { width:96px; max-height:54px; border-radius:8px; background:#000; display:none; }
+	    .mini-player.has-video .mini-video { display:block; }
+	    .mini-status { font-size:11px; color:var(--profile-muted); }
+	    @media (max-width: 640px) {
+	      body.has-mini-player { padding-bottom:118px; }
+	      .mini-player { left:8px; right:8px; bottom:8px; align-items:flex-start; }
+	      .mini-art { width:42px; height:42px; }
+	      .mini-controls { flex-wrap:wrap; }
+	      .mini-support { padding:7px 9px; }
+	      .mini-video { width:72px; max-height:42px; }
+	    }
+	    .empty-state {
       margin-top:12px;
       border:1px dashed var(--profile-card-border);
       border-radius:12px;
@@ -35244,8 +35311,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         document.body.classList.add("iframe-embedded");
       }
     })();
-    (function () {
-      function armVideo(el) {
+	    (function () {
+	      function armVideo(el) {
         if (!el) return;
         if (el.dataset.previewArmed === "1") return;
         const src = (el.getAttribute("data-preview-src") || "").trim();
@@ -35282,10 +35349,177 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", setupLazyVideos, { once: true });
       } else {
-        setupLazyVideos();
-      }
-    })();
-  </script>
+	        setupLazyVideos();
+	      }
+	    })();
+	    (function () {
+	      var dock = null;
+	      var media = null;
+	      var currentMode = "none";
+	      var previewLimitSeconds = null;
+	      function ensureDock() {
+	        if (dock) return dock;
+	        dock = document.createElement("div");
+	        dock.className = "mini-player";
+	        dock.setAttribute("role", "region");
+	        dock.setAttribute("aria-label", "Certifyd player");
+	        dock.innerHTML = ''
+	          + '<img class="mini-art" alt="" />'
+	          + '<video class="mini-video" playsinline></video>'
+	          + '<div class="mini-main">'
+	          + '  <div class="mini-title">Ready</div>'
+	          + '  <div class="mini-meta">Choose a work to play.</div>'
+	          + '  <div class="mini-controls">'
+	          + '    <button type="button" class="mini-btn" aria-label="Play or pause">▶</button>'
+	          + '    <input class="mini-progress" type="range" min="0" max="1000" value="0" aria-label="Playback progress" />'
+	          + '    <span class="mini-status">Idle</span>'
+	          + '    <a class="mini-support" href="#" target="_self">Support</a>'
+	          + '  </div>'
+	          + '</div>'
+	          + '<button type="button" class="mini-close" aria-label="Close player">×</button>';
+	        document.body.appendChild(dock);
+	        dock.querySelector(".mini-close").addEventListener("click", function () {
+	          if (media) {
+	            try { media.pause(); } catch (_) {}
+	          }
+	          dock.classList.remove("is-open", "has-video");
+	          document.body.classList.remove("has-mini-player");
+	        });
+	        dock.querySelector(".mini-btn").addEventListener("click", function () {
+	          if (!media || !media.getAttribute("src")) return;
+	          if (media.paused) {
+	            var p = media.play && media.play();
+	            if (p && typeof p.catch === "function") p.catch(function () { setStatus("Tap play to start."); });
+	          } else {
+	            media.pause();
+	          }
+	        });
+	        dock.querySelector(".mini-progress").addEventListener("input", function (event) {
+	          if (!media || !Number.isFinite(media.duration) || media.duration <= 0) return;
+	          var value = Number(event.target.value || 0) / 1000;
+	          try { media.currentTime = media.duration * value; } catch (_) {}
+	        });
+	        return dock;
+	      }
+	      function setStatus(text) {
+	        var el = ensureDock().querySelector(".mini-status");
+	        if (el) el.textContent = text || "";
+	      }
+	      function setPlayingState() {
+	        var btn = ensureDock().querySelector(".mini-btn");
+	        if (btn) btn.textContent = media && !media.paused ? "Ⅱ" : "▶";
+	      }
+	      function setProgress() {
+	        var input = ensureDock().querySelector(".mini-progress");
+	        if (!input || !media || !Number.isFinite(media.duration) || media.duration <= 0) {
+	          if (input) input.value = "0";
+	          return;
+	        }
+	        input.value = String(Math.max(0, Math.min(1000, Math.round((media.currentTime / media.duration) * 1000))));
+	      }
+	      function clearMedia() {
+	        if (!media) return;
+	        try { media.pause(); } catch (_) {}
+	        try { media.removeAttribute("src"); media.load(); } catch (_) {}
+	        media = null;
+	      }
+	      function mediaKind(offer, streamUrl) {
+	        var type = String(offer && offer.type || "").toLowerCase();
+	        var mime = String(offer && offer.primaryFileMime || "").toLowerCase();
+	        var src = String(streamUrl || "").toLowerCase();
+	        if (type === "video" || mime.indexOf("video/") === 0 || /\\.(mp4|webm|mov|m4v)(\\?|#|$)/.test(src)) return "video";
+	        return "audio";
+	      }
+	      function attachMedia(kind, streamUrl) {
+	        clearMedia();
+	        var d = ensureDock();
+	        d.classList.toggle("has-video", kind === "video");
+	        media = kind === "video" ? d.querySelector(".mini-video") : document.createElement("audio");
+	        media.preload = "metadata";
+	        media.src = streamUrl;
+	        media.addEventListener("play", function () {
+	          setPlayingState();
+	          setStatus(currentMode === "preview" ? "Preview playing" : "Playing");
+	        });
+	        media.addEventListener("pause", setPlayingState);
+	        media.addEventListener("loadedmetadata", setProgress);
+	        media.addEventListener("timeupdate", function () {
+	          setProgress();
+	          if (currentMode === "preview" && previewLimitSeconds && media.currentTime >= previewLimitSeconds) {
+	            try { media.pause(); } catch (_) {}
+	            setStatus("Preview ended. Support the creator for full access.");
+	          }
+	        });
+	        media.addEventListener("ended", function () {
+	          setPlayingState();
+	          setStatus(currentMode === "preview" ? "Preview ended. Support the creator for full access." : "Finished");
+	        });
+	        media.addEventListener("error", function () {
+	          setStatus("Playback unavailable.");
+	        });
+	      }
+	      function openDockFromOffer(link, offer) {
+	        var d = ensureDock();
+	        var playback = offer && offer.playback ? offer.playback : null;
+	        var title = String((offer && offer.title) || link.getAttribute("data-title") || "Untitled");
+	        var creator = String((offer && offer.creatorHandle) || link.getAttribute("data-creator") || "Creator");
+	        var artwork = String((offer && offer.coverUrl) || link.getAttribute("data-artwork") || "");
+	        var buyUrl = String((offer && offer.buyUrl) || link.getAttribute("data-buy-url") || link.href || "#");
+	        d.querySelector(".mini-title").textContent = title;
+	        d.querySelector(".mini-meta").textContent = creator;
+	        d.querySelector(".mini-support").setAttribute("href", buyUrl);
+	        d.querySelector(".mini-support").textContent = offer && Number(offer.priceSats || 0) > 0 ? "Buy" : "Support";
+	        var art = d.querySelector(".mini-art");
+	        if (art) {
+	          if (artwork) art.setAttribute("src", artwork);
+	          else art.removeAttribute("src");
+	        }
+	        d.classList.add("is-open");
+	        document.body.classList.add("has-mini-player");
+	        clearMedia();
+	        currentMode = playback && playback.mode ? String(playback.mode) : "none";
+	        previewLimitSeconds = playback && playback.previewLimitSeconds ? Number(playback.previewLimitSeconds) : null;
+	        if (!playback || playback.mode === "none" || !playback.streamUrl) {
+	          d.classList.remove("has-video");
+	          setStatus("Playback is not available for this item.");
+	          setPlayingState();
+	          setProgress();
+	          return;
+	        }
+	        attachMedia(mediaKind(offer, playback.streamUrl), playback.streamUrl);
+	        setStatus("Loading...");
+	        setPlayingState();
+	        setProgress();
+	        var p = media.play && media.play();
+	        if (p && typeof p.catch === "function") p.catch(function () { setStatus("Tap play to start."); });
+	      }
+	      document.addEventListener("click", function (event) {
+	        var link = event.target && event.target.closest ? event.target.closest('a[data-certifyd-play="1"]') : null;
+	        if (!link) return;
+	        event.preventDefault();
+	        var d = ensureDock();
+	        d.classList.add("is-open");
+	        document.body.classList.add("has-mini-player");
+	        setStatus("Loading...");
+	        fetch(link.getAttribute("data-offer-url") || link.href, { credentials: "same-origin" })
+	          .then(function (res) {
+	            if (!res.ok) throw new Error("Offer unavailable");
+	            return res.json();
+	          })
+	          .then(function (offer) { openDockFromOffer(link, offer); })
+	          .catch(function () {
+	            clearMedia();
+	            d.querySelector(".mini-title").textContent = link.getAttribute("data-title") || "Unable to play";
+	            d.querySelector(".mini-meta").textContent = link.getAttribute("data-creator") || "Certifyd";
+	            d.querySelector(".mini-support").setAttribute("href", link.getAttribute("data-buy-url") || link.href);
+	            d.querySelector(".mini-support").textContent = "Open";
+	            setStatus("Could not load playback. Open the support page.");
+	            setPlayingState();
+	            setProgress();
+	          });
+	      });
+	    })();
+	  </script>
   <div class="card">
     <h2 class="page-title">Certifyd Creator Profile</h2>
     <section class="profile-header-grid">
@@ -37513,31 +37747,162 @@ async function handleBuyPage(req: any, reply: any) {
     return { src: "", kind: "file" };
   }
 
-  function renderBasicOffer(offer){
-    const mime = String(offer.primaryFileMime || "");
-    const hasFullAccess = Boolean(offer?.hasFullAccess || offer?.isFree || offer?.owned);
+  function resolveAuthorizedPlayback(offer, opts){
+    const entitlement = opts?.entitlement || null;
+    const owned = Boolean(opts?.owned);
+    const token = opts?.token || null;
+    const canonical = offer?.playback || null;
+    const canonicalMode = String(canonical?.mode || "").trim();
+    const canonicalStreamUrl = String(canonical?.streamUrl || "").trim();
+    const tokenStreamSrc = token ? streamUrl(offer, token) : null;
+    const fallbackPreviewSrc = previewFallbackUrl(offer);
     const fullMediaSrc = String(offer?.fullMediaUrl || offer?.fullContentUrl || "").trim();
-    const preferredPreview = hasFullAccess ? null : previewFallbackUrl(offer);
     const primaryPreview = basicPrimaryUrl(offer);
-    const resolvedPreview = resolveRenderablePreview(
-      offer,
-      hasFullAccess ? (fullMediaSrc || primaryPreview) : preferredPreview,
-      hasFullAccess ? (primaryPreview || preferredPreview) : primaryPreview
+    const isPreviewEntitlement = entitlement?.status === "preview";
+    const canonicalCanPlayFull = Boolean(canonical?.canPlayFull);
+    const hasFullAccess = Boolean(
+      offer?.hasFullAccess ||
+      offer?.isFree ||
+      owned ||
+      entitlement?.status === "paid" ||
+      entitlement?.status === "bypassed"
     );
-    const mediaSrc = resolvedPreview.src || (hasFullAccess ? (fullMediaSrc || primaryPreview) : (preferredPreview || primaryPreview)) || "";
-    const previewKind = resolvedPreview.kind;
-    const isVideo = previewKind === "video";
-    const isAudio = previewKind === "audio";
-    const coverSrc = (offer.type === "song" || isAudio || isVideo) ? offerCoverUrl(offer) : null;
+    const canUseFull = canonicalMode === "full" ? canonicalCanPlayFull || hasFullAccess : hasFullAccess;
+    if (canonicalMode === "none") {
+      return {
+        src: "",
+        kind: "file",
+        mode: "none",
+        isVideo: false,
+        isAudio: false,
+        coverSrc: null,
+        controlsList: "",
+        deliveryMode: resolveBasicDeliveryMode(offer),
+        tokenStreamSrc
+      };
+    }
+    if (canonicalMode === "preview" && canonicalStreamUrl) {
+      const resolved = resolveRenderablePreview(offer, canonicalStreamUrl, fallbackPreviewSrc || primaryPreview || "");
+      const deliveryMode = resolveBasicDeliveryMode(offer);
+      const kind = resolved.kind;
+      const isVideo = kind === "video";
+      const isAudio = kind === "audio";
+      return {
+        src: resolved.src || canonicalStreamUrl,
+        kind,
+        mode: "preview",
+        isVideo,
+        isAudio,
+        coverSrc: (offer?.type === "song" || isAudio || isVideo) ? offerCoverUrl(offer) : null,
+        controlsList: deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "",
+        deliveryMode,
+        tokenStreamSrc
+      };
+    }
+    if (canonicalMode === "full" && canonicalStreamUrl && canUseFull) {
+      const resolved = resolveRenderablePreview(offer, tokenStreamSrc || canonicalStreamUrl, canonicalStreamUrl);
+      const deliveryMode = resolveBasicDeliveryMode(offer);
+      const kind = resolved.kind;
+      const isVideo = kind === "video";
+      const isAudio = kind === "audio";
+      return {
+        src: resolved.src || tokenStreamSrc || canonicalStreamUrl,
+        kind,
+        mode: "full",
+        isVideo,
+        isAudio,
+        coverSrc: (offer?.type === "song" || isAudio || isVideo) ? offerCoverUrl(offer) : null,
+        controlsList: deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "",
+        deliveryMode,
+        tokenStreamSrc
+      };
+    }
+    const preferredSrc = canUseFull
+      ? (tokenStreamSrc || canonicalStreamUrl || fullMediaSrc || primaryPreview || fallbackPreviewSrc)
+      : (isPreviewEntitlement
+          ? (fallbackPreviewSrc || tokenStreamSrc || primaryPreview)
+          : (tokenStreamSrc || fallbackPreviewSrc || primaryPreview));
+    const alternateSrc = canUseFull
+      ? (fullMediaSrc || canonicalStreamUrl || primaryPreview || fallbackPreviewSrc || tokenStreamSrc)
+      : (isPreviewEntitlement ? (tokenStreamSrc || fallbackPreviewSrc || primaryPreview) : (fallbackPreviewSrc || primaryPreview || tokenStreamSrc));
+    const resolved = resolveRenderablePreview(offer, preferredSrc, alternateSrc);
+    const src = resolved.src || preferredSrc || alternateSrc || "";
+    const kind = resolved.kind;
+    const deliveryMode = resolveBasicDeliveryMode(offer);
+    const isVideo = kind === "video";
+    const isAudio = kind === "audio";
+    return {
+      src,
+      kind,
+      mode: canUseFull ? "full" : "preview",
+      isVideo,
+      isAudio,
+      coverSrc: (offer?.type === "song" || isAudio || isVideo) ? offerCoverUrl(offer) : null,
+      controlsList: deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "",
+      deliveryMode,
+      tokenStreamSrc
+    };
+  }
+
+  function renderAuthorizedPlayback(playback, opts){
+    if (!playback?.src) return "";
+    const previewLabel = opts?.previewLabel || "";
+    const coverSrc = playback.coverSrc || "";
+    return '<div class="preview">' +
+      (previewLabel ? '<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">' + esc(previewLabel) + '</div>' : '') +
+      (playback.isVideo ? '<video id="player" controls' + playback.controlsList + ' preload="metadata"' + (coverSrc ? ' poster="' + coverSrc + '"' : '') + ' src="' + playback.src + '"></video>' : '') +
+      (playback.isAudio ? '<audio id="player" controls' + playback.controlsList + ' preload="metadata" src="' + playback.src + '"></audio>' : '') +
+      (!playback.isVideo && !playback.isAudio && playback.kind === "image" ? '<img id="player" src="' + playback.src + '" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />' : '') +
+      (!playback.isVideo && !playback.isAudio && playback.kind === "file" ? '<a class="muted" href="' + playback.src + '" target="_blank" rel="noreferrer">Open preview</a>' : '') +
+    '</div>';
+  }
+
+  function bindPreviewLimit(playback, isPaid){
+    if (!playback || playback.mode !== "preview" || !isPaid) return;
+    const status = document.getElementById("status");
+    if (status) status.textContent = "Preview playing...";
+    const player = document.getElementById("player");
+    const limitSec = Math.max(1, Number(currentOffer?.playback?.previewLimitSeconds || previewSeconds || 25));
+    if (!player) return;
+    let previewEnded = false;
+    const stop = () => {
+      if (previewEnded) return;
+      previewEnded = true;
+      if (typeof player.pause === "function") player.pause();
+      try { player.currentTime = 0; } catch {}
+      try { player.controls = false; } catch {}
+      const nextStatus = document.getElementById("status");
+      if (nextStatus) nextStatus.textContent = "Preview ended. Support the creator to unlock full access.";
+    };
+    const onTime = () => {
+      if (player.currentTime >= limitSec) stop();
+    };
+    player.addEventListener("timeupdate", onTime);
+    player.addEventListener("ended", stop, { once: true });
+    player.addEventListener("play", () => {
+      if (previewEnded) {
+        player.pause();
+        return;
+      }
+      window.setTimeout(() => {
+        if (player && !player.paused && player.currentTime >= limitSec - 0.2) stop();
+      }, limitSec * 1000);
+    });
+  }
+
+  function renderBasicOffer(offer){
+    const playback = resolveAuthorizedPlayback(offer, { entitlement: null, owned: Boolean(offer?.owned), token: null });
+    const mediaSrc = playback.src;
+    const isAudio = playback.isAudio;
+    const coverSrc = playback.coverSrc;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
-    const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator: " + sellerDisplayName + "</div>" : "";
     const basicTrustChips = [
       "<span class=\\"trust-chip trust-chip--teal\\">Creator verified</span>",
       "<span class=\\"trust-chip trust-chip--green\\">Free access</span>",
       (sellerLightningAddress ? "<span class=\\"trust-chip trust-chip--gold\\">Tips enabled</span>" : ""),
-      (!hasFullAccess && mediaSrc ? "<span class=\\"trust-chip trust-chip--violet\\">Public preview</span>" : "")
+      (playback.mode === "preview" && mediaSrc ? "<span class=\\"trust-chip trust-chip--violet\\">Public preview</span>" : "")
     ].filter(Boolean).join("");
     const tipBlock = sellerLightningAddress
       ? "<div class=\\"rail\\" style=\\"margin-top:10px;\\">" +
@@ -37569,14 +37934,7 @@ async function handleBuyPage(req: any, reply: any) {
               ? "<div class=\\"song-cover\\"><img src=\\"" + coverSrc + "\\" alt=\\"Album cover\\" loading=\\"lazy\\" onerror=\\"var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}\\" /></div>"
               : "<div class=\\"song-cover placeholder\\">No cover</div>")
           : "") +
-        (mediaSrc
-          ? "<div class=\\"preview\\">" +
-              (isVideo ? "<video id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\"" + (coverSrc ? " poster=\\"" + coverSrc + "\\"" : "") + " src=\\"" + mediaSrc + "\\"></video>" : "") +
-              (isAudio ? "<audio id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></audio>" : "") +
-              (!isVideo && !isAudio && previewKind === "image" ? "<img id=\\"player\\" src=\\"" + mediaSrc + "\\" alt=\\"Preview image\\" loading=\\"lazy\\" referrerpolicy=\\"no-referrer\\" />" : "") +
-              (!isVideo && !isAudio && previewKind === "file" ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
-            "</div>"
-          : "") +
+        renderAuthorizedPlayback(playback, {}) +
         "<div class=\\"section-title\\">Free access</div>" +
         "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Delivery: " +
           (deliveryMode === "stream_and_download" ? "Stream + Download" : (allowDownload ? "Download only" : "Streaming only")) +
@@ -37601,25 +37959,10 @@ async function handleBuyPage(req: any, reply: any) {
     const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
     const hasBuyer = Boolean(buyer && buyer.id);
     const token = entitlement?.token || receiptToken || null;
-    const tokenStreamSrc = token ? streamUrl(offer, token) : null;
-    const fallbackPreviewSrc = previewFallbackUrl(offer);
-    const isPreviewEntitlement = entitlement?.status === "preview";
-    const hasFullAccess = Boolean(offer?.hasFullAccess || offer?.isFree || already || entitlement?.status === "paid" || entitlement?.status === "bypassed");
-    const fullMediaSrc = String(offer?.fullMediaUrl || offer?.fullContentUrl || "").trim();
-    const preferredMediaSrc = hasFullAccess
-      ? (tokenStreamSrc || fullMediaSrc || fallbackPreviewSrc)
-      : (isPreviewEntitlement ? (fallbackPreviewSrc || tokenStreamSrc) : (tokenStreamSrc || fallbackPreviewSrc));
-    const alternateMediaSrc = hasFullAccess
-      ? (fullMediaSrc || fallbackPreviewSrc || tokenStreamSrc)
-      : (isPreviewEntitlement ? (tokenStreamSrc || fallbackPreviewSrc) : (fallbackPreviewSrc || tokenStreamSrc));
-    const resolvedPreview = resolveRenderablePreview(offer, preferredMediaSrc, alternateMediaSrc);
-    const mediaSrc = resolvedPreview.src || preferredMediaSrc || alternateMediaSrc || "";
-    const previewKind = resolvedPreview.kind;
-    const isVideo = previewKind === "video";
-    const isAudio = previewKind === "audio";
-    const coverSrc = (offer.type === "song" || isAudio || isVideo) ? offerCoverUrl(offer) : null;
-    const deliveryMode = resolveBasicDeliveryMode(offer);
-    const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
+    const playback = resolveAuthorizedPlayback(offer, { entitlement, owned: already, token });
+    const mediaSrc = playback.src;
+    const isAudio = playback.isAudio;
+    const coverSrc = playback.coverSrc;
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
     const hidePay = already || !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
     const receiptView = deriveReceiptViewState(entitlement, owned);
@@ -37664,15 +38007,9 @@ async function handleBuyPage(req: any, reply: any) {
         <div class="trust-strip">\${trustChips}</div>
         <section id="cb-attribution" style="display:none"></section>
         \${isAudio && (!receiptView.show || receiptView.showPlayer) ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
-        \${mediaSrc && canStream && (!receiptView.show || receiptView.showPlayer) ? \`
-          <div class="preview">
-            \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview the release</div>\` : ""}
-            \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata"\${coverSrc ? \` poster="\${coverSrc}"\` : ""} src="\${mediaSrc}"></video>\` : ""}
-            \${isAudio ? \`<audio id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
-            \${!isVideo && !isAudio && previewKind === "image" ? \`<img id="player" src="\${mediaSrc}" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />\` : ""}
-            \${!isVideo && !isAudio && previewKind === "file" ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
-          </div>
-        \` : \`\${isPaid && (!receiptView.show || receiptView.showPlayer) ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
+        \${mediaSrc && canStream && (!receiptView.show || receiptView.showPlayer)
+          ? renderAuthorizedPlayback(playback, { previewLabel: entitlement?.status === "preview" ? "Preview the release" : "" })
+          : \`\${isPaid && (!receiptView.show || receiptView.showPlayer) ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
         \${isPaid ? \`
           <div class="purchase-card\${hidePay ? " purchase-card--unlocked" : ""}">
             \${hidePay ? \`<div style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#93c5fd;">\${esc(receiptView.badge || "Unlocked")}</div>\` : \`<div class="purchase-kicker">Unlock this release</div>\`}
@@ -37761,36 +38098,7 @@ async function handleBuyPage(req: any, reply: any) {
         };
       }
     }
-    if (entitlement?.status === "preview" && isPaid) {
-      document.getElementById("status").textContent = "Preview playing...";
-      const player = document.getElementById("player");
-      const limitSec = Math.max(1, Number(previewSeconds || 25));
-      if (player) {
-        let previewEnded = false;
-        const stop = () => {
-          if (previewEnded) return;
-          previewEnded = true;
-          if (typeof player.pause === "function") player.pause();
-          try { player.currentTime = 0; } catch {}
-          try { player.controls = false; } catch {}
-          document.getElementById("status").textContent = "Preview ended. Pay to unlock.";
-        };
-        const onTime = () => {
-          if (player.currentTime >= limitSec) stop();
-        };
-        player.addEventListener("timeupdate", onTime);
-        player.addEventListener("ended", stop, { once: true });
-        player.addEventListener("play", () => {
-          if (previewEnded) {
-            player.pause();
-            return;
-          }
-          window.setTimeout(() => {
-            if (player && !player.paused && player.currentTime >= limitSec - 0.2) stop();
-          }, limitSec * 1000);
-        });
-      }
-    }
+    bindPreviewLimit(playback, isPaid);
     renderAttribution();
     if (token) {
       maybeUpgradeRenderedMediaToEdge(offer, token);
@@ -38512,7 +38820,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
                 '<h4 class="item-title">' + title + '</h4>' +
                 '<div class="creator">by ' + creator + '</div>' +
                 '<div class="meta-line">' + mediaLabel(contentType) + (granted ? " · Unlocked " + granted : "") + '</div>' +
-                '<div class="actions"><a class="action-primary" href="' + buyUrl + '">View</a></div>' +
+                '<div class="actions"><a class="action-primary" href="' + buyUrl + '">Play in Certifyd</a></div>' +
               '</div>' +
             '</article>';
           }).join("") +
@@ -39009,6 +39317,12 @@ async function handlePublicOffer(req: any, reply: any) {
     hasFullAccess: hasFull,
     hasPreviewAsset: Boolean(previewUrl)
   });
+  const playback = buildCanonicalPlayback({
+    hasFullAccess: hasFull,
+    fullStreamUrl: hasFull ? fullMediaUrl : null,
+    previewStreamUrl: showPreviewOnly ? previewUrl : null,
+    previewLimitSeconds: 25
+  });
 
   return reply.send({
     contentId: content.id,
@@ -39038,6 +39352,7 @@ async function handlePublicOffer(req: any, reply: any) {
     isFree: freeContent,
     isLocked: !hasFull,
     hasFullAccess: hasFull,
+    playback,
     previewUrl: showPreviewOnly ? previewUrl : null,
     fullMediaUrl: hasFull ? fullMediaUrl : null,
     fullContentUrl: hasFull ? fullMediaUrl : null,
