@@ -34163,12 +34163,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const buyUrl = itemRemoteOrigin
               ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
               : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
-            const offerUrl = itemRemoteOrigin
-              ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/content/${encodeURIComponent(item.id)}/offer`)
-              : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/content/${encodeURIComponent(item.id)}/offer`);
-            const playAttrs = ctaLabel === "Play in Certifyd"
-              ? ` data-certifyd-play="1" data-offer-url="${escHtml(offerUrl)}" data-buy-url="${escHtml(buyUrl)}" data-title="${safeTitle}" data-creator="${safeHandle}" data-artwork="${escHtml(coverUrl)}"`
-              : "";
+            const fanPlayUrl = ctaLabel === "Play in Certifyd"
+              ? buildDiscoveryUrl({
+                  discoveryOrigin: resolveDiscoveryAppOrigin(),
+                  contentId: item.id,
+                  publicOrigin: mediaOrigin
+                }) || buyUrl
+              : buyUrl;
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
@@ -34201,7 +34202,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">${supportLine}</div>
-                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}"${playAttrs}>${escHtml(ctaLabel)} &#8594;</a></div>
+                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(fanPlayUrl)}">${escHtml(ctaLabel)} &#8594;</a></div>
               </div>
             </article>`;
   };
@@ -34618,13 +34619,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               originBase: canonicalCommerceOrigin || currentPublicOrigin,
               title: asString(item.contentTitle || "").trim() || "Content"
             });
-            const playAttrs = buyUrl && cta === "Play in Certifyd"
-              ? ` data-certifyd-play="1" data-offer-url="${escHtml(
-                  buildPublicUrlFromOrigin(canonicalCommerceOrigin || currentPublicOrigin, `/buy/content/${encodeURIComponent(asString(item.contentId || "").trim())}/offer`)
-                )}" data-buy-url="${escHtml(buyUrl)}" data-title="${safeTitle}" data-creator="${safeRole}" data-artwork="${escHtml(
-                  buildPublicUrlFromOrigin(canonicalCommerceOrigin || currentPublicOrigin, `/public/content/${encodeURIComponent(asString(item.contentId || "").trim())}/cover`)
-                )}"`
-              : "";
+            const fanPlayUrl = buyUrl && cta === "Play in Certifyd"
+              ? buildDiscoveryUrl({
+                  discoveryOrigin: resolveDiscoveryAppOrigin(),
+                  contentId: asString(item.contentId || "").trim(),
+                  publicOrigin: canonicalCommerceOrigin || currentPublicOrigin
+                }) || buyUrl
+              : linkHref;
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
@@ -34635,8 +34636,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">Role: ${safeRole} - Share: ${safeShare}</div>
                 ${
-                  linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}"${playAttrs}>${escHtml(cta)} &#8599;</a></div>`
+                  fanPlayUrl && cta
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(fanPlayUrl)}">${escHtml(cta)} &#8599;</a></div>`
                     : ""
                 }
               </div>
@@ -34672,11 +34673,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               originBase: base,
               title: asString(item.contentTitle || "").trim() || "Content"
             });
-            const playAttrs = buyUrl && offerUrl && cta === "Play in Certifyd"
-              ? ` data-certifyd-play="1" data-offer-url="${escHtml(offerUrl)}" data-buy-url="${escHtml(buyUrl)}" data-title="${safeTitle}" data-creator="${safeRole}" data-artwork="${escHtml(
-                  item.contentId ? `${base}/public/content/${encodeURIComponent(item.contentId)}/cover` : ""
-                )}"`
-              : "";
+            const fanPlayUrl = buyUrl && offerUrl && cta === "Play in Certifyd"
+              ? buildDiscoveryUrl({
+                  discoveryOrigin: resolveDiscoveryAppOrigin(),
+                  contentId: asString(item.contentId || "").trim(),
+                  publicOrigin: base
+                }) || buyUrl
+              : linkHref;
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
@@ -34694,8 +34697,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                     : ""
                 }
                 ${
-                  linkHref && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}"${playAttrs}>${escHtml(cta)} &#8599;</a></div>`
+                  fanPlayUrl && cta
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(fanPlayUrl)}">${escHtml(cta)} &#8599;</a></div>`
                     : ""
                 }
               </div>
@@ -35054,56 +35057,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 	      font-size:12px;
 	      color:var(--profile-accent);
 	    }
-	    .mini-player {
-	      position:fixed;
-	      left:12px;
-	      right:12px;
-	      bottom:12px;
-	      z-index:40;
-	      display:none;
-	      align-items:center;
-	      gap:10px;
-	      max-width:920px;
-	      margin:0 auto;
-	      padding:10px;
-	      border:1px solid var(--profile-card-border);
-	      border-radius:14px;
-	      background:var(--profile-card-bg-strong);
-	      color:var(--profile-text);
-	      box-shadow:0 18px 55px rgba(0,0,0,0.46), 0 0 36px var(--profile-accent-soft);
-	      backdrop-filter:var(--profile-card-blur);
-	    }
-	    .mini-player.is-open { display:flex; }
-	    .mini-art { width:48px; height:48px; border-radius:10px; border:1px solid var(--profile-card-border); background:rgba(255,255,255,0.05); object-fit:cover; flex:none; }
-	    .mini-main { min-width:0; flex:1; display:flex; flex-direction:column; gap:5px; }
-	    .mini-title { font-size:13px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-	    .mini-meta { font-size:11px; color:var(--profile-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-	    .mini-controls { display:flex; align-items:center; gap:8px; }
-	    .mini-btn, .mini-support, .mini-close {
-	      border:1px solid var(--profile-button-border);
-	      border-radius:999px;
-	      background:var(--profile-button-bg);
-	      color:var(--theme-button-text);
-	      font-weight:700;
-	      cursor:pointer;
-	      text-decoration:none;
-	    }
-	    .mini-btn { width:34px; height:34px; display:inline-flex; align-items:center; justify-content:center; }
-	    .mini-close { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; background:rgba(255,255,255,0.045); color:var(--profile-text); }
-	    .mini-support { padding:8px 11px; font-size:12px; white-space:nowrap; }
-	    .mini-progress { flex:1; min-width:80px; accent-color:var(--profile-accent); }
-	    .mini-video { width:96px; max-height:54px; border-radius:8px; background:#000; display:none; }
-	    .mini-player.has-video .mini-video { display:block; }
-	    .mini-status { font-size:11px; color:var(--profile-muted); }
-	    @media (max-width: 640px) {
-	      body.has-mini-player { padding-bottom:118px; }
-	      .mini-player { left:8px; right:8px; bottom:8px; align-items:flex-start; }
-	      .mini-art { width:42px; height:42px; }
-	      .mini-controls { flex-wrap:wrap; }
-	      .mini-support { padding:7px 9px; }
-	      .mini-video { width:72px; max-height:42px; }
-	    }
-	    .empty-state {
+    .empty-state {
       margin-top:12px;
       border:1px dashed var(--profile-card-border);
       border-radius:12px;
@@ -35120,8 +35074,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         background:rgba(12,12,12,0.52);
       }
     }
-    body.iframe-embedded { padding:10px; }
-    body.iframe-embedded .card {
+	    body.iframe-embedded { padding:10px; }
+	        body.iframe-embedded .card {
       width:100%;
       max-width:1120px;
       margin:0 auto;
@@ -35286,8 +35240,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .featured-cta-row { padding-top:5px; }
     }
     @media (max-width: 640px) {
-      body.iframe-embedded .card { padding:12px; }
-      body.iframe-embedded .profile-header-grid {
+	      body.iframe-embedded .card { padding:12px; }
+	      body.iframe-embedded .profile-header-grid {
         --profile-brand-col: 36px;
         --profile-logo-size: 26px;
         --profile-avatar-size: 62px;
@@ -35351,173 +35305,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       } else {
 	        setupLazyVideos();
 	      }
-	    })();
-	    (function () {
-	      var dock = null;
-	      var media = null;
-	      var currentMode = "none";
-	      var previewLimitSeconds = null;
-	      function ensureDock() {
-	        if (dock) return dock;
-	        dock = document.createElement("div");
-	        dock.className = "mini-player";
-	        dock.setAttribute("role", "region");
-	        dock.setAttribute("aria-label", "Certifyd player");
-	        dock.innerHTML = ''
-	          + '<img class="mini-art" alt="" />'
-	          + '<video class="mini-video" playsinline></video>'
-	          + '<div class="mini-main">'
-	          + '  <div class="mini-title">Ready</div>'
-	          + '  <div class="mini-meta">Choose a work to play.</div>'
-	          + '  <div class="mini-controls">'
-	          + '    <button type="button" class="mini-btn" aria-label="Play or pause">▶</button>'
-	          + '    <input class="mini-progress" type="range" min="0" max="1000" value="0" aria-label="Playback progress" />'
-	          + '    <span class="mini-status">Idle</span>'
-	          + '    <a class="mini-support" href="#" target="_self">Support</a>'
-	          + '  </div>'
-	          + '</div>'
-	          + '<button type="button" class="mini-close" aria-label="Close player">×</button>';
-	        document.body.appendChild(dock);
-	        dock.querySelector(".mini-close").addEventListener("click", function () {
-	          if (media) {
-	            try { media.pause(); } catch (_) {}
-	          }
-	          dock.classList.remove("is-open", "has-video");
-	          document.body.classList.remove("has-mini-player");
-	        });
-	        dock.querySelector(".mini-btn").addEventListener("click", function () {
-	          if (!media || !media.getAttribute("src")) return;
-	          if (media.paused) {
-	            var p = media.play && media.play();
-	            if (p && typeof p.catch === "function") p.catch(function () { setStatus("Tap play to start."); });
-	          } else {
-	            media.pause();
-	          }
-	        });
-	        dock.querySelector(".mini-progress").addEventListener("input", function (event) {
-	          if (!media || !Number.isFinite(media.duration) || media.duration <= 0) return;
-	          var value = Number(event.target.value || 0) / 1000;
-	          try { media.currentTime = media.duration * value; } catch (_) {}
-	        });
-	        return dock;
-	      }
-	      function setStatus(text) {
-	        var el = ensureDock().querySelector(".mini-status");
-	        if (el) el.textContent = text || "";
-	      }
-	      function setPlayingState() {
-	        var btn = ensureDock().querySelector(".mini-btn");
-	        if (btn) btn.textContent = media && !media.paused ? "Ⅱ" : "▶";
-	      }
-	      function setProgress() {
-	        var input = ensureDock().querySelector(".mini-progress");
-	        if (!input || !media || !Number.isFinite(media.duration) || media.duration <= 0) {
-	          if (input) input.value = "0";
-	          return;
-	        }
-	        input.value = String(Math.max(0, Math.min(1000, Math.round((media.currentTime / media.duration) * 1000))));
-	      }
-	      function clearMedia() {
-	        if (!media) return;
-	        try { media.pause(); } catch (_) {}
-	        try { media.removeAttribute("src"); media.load(); } catch (_) {}
-	        media = null;
-	      }
-	      function mediaKind(offer, streamUrl) {
-	        var type = String(offer && offer.type || "").toLowerCase();
-	        var mime = String(offer && offer.primaryFileMime || "").toLowerCase();
-	        var src = String(streamUrl || "").toLowerCase();
-	        if (type === "video" || mime.indexOf("video/") === 0 || /\\.(mp4|webm|mov|m4v)(\\?|#|$)/.test(src)) return "video";
-	        return "audio";
-	      }
-	      function attachMedia(kind, streamUrl) {
-	        clearMedia();
-	        var d = ensureDock();
-	        d.classList.toggle("has-video", kind === "video");
-	        media = kind === "video" ? d.querySelector(".mini-video") : document.createElement("audio");
-	        media.preload = "metadata";
-	        media.src = streamUrl;
-	        media.addEventListener("play", function () {
-	          setPlayingState();
-	          setStatus(currentMode === "preview" ? "Preview playing" : "Playing");
-	        });
-	        media.addEventListener("pause", setPlayingState);
-	        media.addEventListener("loadedmetadata", setProgress);
-	        media.addEventListener("timeupdate", function () {
-	          setProgress();
-	          if (currentMode === "preview" && previewLimitSeconds && media.currentTime >= previewLimitSeconds) {
-	            try { media.pause(); } catch (_) {}
-	            setStatus("Preview ended. Support the creator for full access.");
-	          }
-	        });
-	        media.addEventListener("ended", function () {
-	          setPlayingState();
-	          setStatus(currentMode === "preview" ? "Preview ended. Support the creator for full access." : "Finished");
-	        });
-	        media.addEventListener("error", function () {
-	          setStatus("Playback unavailable.");
-	        });
-	      }
-	      function openDockFromOffer(link, offer) {
-	        var d = ensureDock();
-	        var playback = offer && offer.playback ? offer.playback : null;
-	        var title = String((offer && offer.title) || link.getAttribute("data-title") || "Untitled");
-	        var creator = String((offer && offer.creatorHandle) || link.getAttribute("data-creator") || "Creator");
-	        var artwork = String((offer && offer.coverUrl) || link.getAttribute("data-artwork") || "");
-	        var buyUrl = String((offer && offer.buyUrl) || link.getAttribute("data-buy-url") || link.href || "#");
-	        d.querySelector(".mini-title").textContent = title;
-	        d.querySelector(".mini-meta").textContent = creator;
-	        d.querySelector(".mini-support").setAttribute("href", buyUrl);
-	        d.querySelector(".mini-support").textContent = offer && Number(offer.priceSats || 0) > 0 ? "Buy" : "Support";
-	        var art = d.querySelector(".mini-art");
-	        if (art) {
-	          if (artwork) art.setAttribute("src", artwork);
-	          else art.removeAttribute("src");
-	        }
-	        d.classList.add("is-open");
-	        document.body.classList.add("has-mini-player");
-	        clearMedia();
-	        currentMode = playback && playback.mode ? String(playback.mode) : "none";
-	        previewLimitSeconds = playback && playback.previewLimitSeconds ? Number(playback.previewLimitSeconds) : null;
-	        if (!playback || playback.mode === "none" || !playback.streamUrl) {
-	          d.classList.remove("has-video");
-	          setStatus("Playback is not available for this item.");
-	          setPlayingState();
-	          setProgress();
-	          return;
-	        }
-	        attachMedia(mediaKind(offer, playback.streamUrl), playback.streamUrl);
-	        setStatus("Loading...");
-	        setPlayingState();
-	        setProgress();
-	        var p = media.play && media.play();
-	        if (p && typeof p.catch === "function") p.catch(function () { setStatus("Tap play to start."); });
-	      }
-	      document.addEventListener("click", function (event) {
-	        var link = event.target && event.target.closest ? event.target.closest('a[data-certifyd-play="1"]') : null;
-	        if (!link) return;
-	        event.preventDefault();
-	        var d = ensureDock();
-	        d.classList.add("is-open");
-	        document.body.classList.add("has-mini-player");
-	        setStatus("Loading...");
-	        fetch(link.getAttribute("data-offer-url") || link.href, { credentials: "same-origin" })
-	          .then(function (res) {
-	            if (!res.ok) throw new Error("Offer unavailable");
-	            return res.json();
-	          })
-	          .then(function (offer) { openDockFromOffer(link, offer); })
-	          .catch(function () {
-	            clearMedia();
-	            d.querySelector(".mini-title").textContent = link.getAttribute("data-title") || "Unable to play";
-	            d.querySelector(".mini-meta").textContent = link.getAttribute("data-creator") || "Certifyd";
-	            d.querySelector(".mini-support").setAttribute("href", link.getAttribute("data-buy-url") || link.href);
-	            d.querySelector(".mini-support").textContent = "Open";
-	            setStatus("Could not load playback. Open the support page.");
-	            setPlayingState();
-	            setProgress();
-	          });
-	      });
 	    })();
 	  </script>
   <div class="card">
