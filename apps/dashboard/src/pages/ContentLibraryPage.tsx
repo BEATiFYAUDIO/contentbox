@@ -363,7 +363,7 @@ async function uploadToRepo(contentId: string, file: File, idempotencyKey: strin
 
   if (!res.ok) {
     const code = json?.code ? ` (${json.code})` : "";
-    const msg = `${json?.error || json?.message || text || `Upload failed (${res.status})`}${code}`;
+    const msg = `${json?.error || json?.message || text || `Media could not be saved. Try again. (${res.status})`}${code}`;
     throw new Error(msg);
   }
   console.info("content.upload.response", { contentId, status: res.status, body: json });
@@ -405,7 +405,7 @@ async function uploadSongCover(contentId: string, file: File) {
 
   if (!res.ok) {
     const code = json?.code ? ` (${json.code})` : "";
-    const msg = `${json?.error || json?.message || text || `Cover upload failed (${res.status})`}${code}`;
+    const msg = `${json?.error || json?.message || text || `Media could not be saved. Try again. (${res.status})`}${code}`;
     throw new Error(msg);
   }
   return json;
@@ -2313,7 +2313,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           setExpanded((m) => ({ ...m, [contentId]: true }));
           const [filesResult] = await Promise.allSettled([loadFiles(contentId), loadLatestSplit(contentId), loadPreview(contentId)]);
           if (filesResult.status !== "fulfilled") {
-            throw new Error("Upload saved, but file list refresh failed. Refresh the page and check the work.");
+            throw new Error("Media saved, but it is not showing yet. Refresh the page and check again.");
           }
           const visibleFiles = Array.isArray(filesResult.value) ? filesResult.value : [];
           const visible = visibleFiles.some(
@@ -2323,14 +2323,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           );
           console.info("content.upload.refetch", { contentId, uploaded, files: visibleFiles });
           if (!visible) {
-            throw new Error("Upload saved, but the uploaded file did not appear in the file list.");
+            throw new Error("Media saved, but it is not showing yet. Refresh the page and check again.");
           }
           setUpload({ status: "done", kind: "content", contentId, filename: file.name });
         } catch (err: any) {
-          const raw = String(err?.message || "Upload failed");
+          const raw = String(err?.message || "Media could not be saved. Try again.");
           const message = raw.includes("PUBLISHED_IMMUTABLE")
             ? "This published release is immutable. Create a new version to upload updated media."
-            : raw;
+            : raw.startsWith("Media saved, but")
+              ? raw
+              : "Media could not be saved. Try again.";
           setUpload({ status: "error", kind: "content", contentId, message });
         }
       },
@@ -2367,13 +2369,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
         >
           {upload.status === "preparing" && upload.kind === "content" && upload.contentId === contentId
-            ? "Preparing upload…"
+            ? "Preparing your media…"
             : busy
-              ? "Uploading…"
+              ? "Preparing your media…"
               : label}
         </button>
         {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
-        {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
+        {err ? <span className="text-xs text-red-300 ml-2">Media could not be saved. Try again.</span> : null}
       </div>
     );
   }
@@ -2419,8 +2421,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           const manifestSha = String(uploaded?.manifestSha256 || "").trim();
           setCoverCacheBustByContent((m) => ({ ...m, [contentId]: manifestSha || String(Date.now()) }));
           await load();
-        } catch (err: any) {
-          setUpload({ status: "error", kind: "cover", contentId, message: err?.message || "Cover upload failed" });
+        } catch {
+          setUpload({ status: "error", kind: "cover", contentId, message: "Media could not be saved. Try again." });
         }
       },
       [contentId]
@@ -2456,7 +2458,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
           title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
         >
-          {busy ? "Uploading…" : label}
+          {busy ? "Saving image…" : label}
         </button>
       </div>
     );
@@ -2584,15 +2586,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       {(upload.status === "preparing" || upload.status === "uploading") && (
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/30 text-neutral-200 px-3 py-2 text-sm">
           {upload.status === "preparing"
-            ? `Preparing upload… ${upload.filename}`
-            : `Uploading… ${upload.filename}`}
+            ? `${upload.kind === "cover" ? "Saving image" : "Preparing your media"}… ${upload.filename}`
+            : `${upload.kind === "cover" ? "Saving image" : "Preparing your media"}… ${upload.filename}`}
         </div>
       )}
 
       {upload.status === "error" && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 text-red-200 px-3 py-2 text-sm">
           <div className="flex items-center justify-between gap-2">
-            <span>Upload failed: {upload.message}</span>
+            <span>{upload.message || "Media could not be saved. Try again."}</span>
             <button
               type="button"
               onClick={() => setUpload({ status: "idle" })}
@@ -2607,7 +2609,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       {upload.status === "done" && (
         <div className="rounded-lg border border-emerald-900 bg-emerald-950/30 text-emerald-200 px-3 py-2 text-sm">
           <div className="flex items-center justify-between gap-2">
-            <span>Uploaded + committed: {upload.filename}</span>
+            <span>Media saved and ready.</span>
             <button
               type="button"
               onClick={() => setUpload({ status: "idle" })}
@@ -3505,7 +3507,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   disabled={Boolean(publishBusy[it.id])}
                                   title="Publish this Proven Legacy Work to Library"
                                 >
-                                  {publishBusy[it.id] ? "Publishing…" : "Publish"}
+                                  {publishBusy[it.id] ? "Publishing your content…" : "Publish"}
                                 </button>
                               ) : null}
 
@@ -3547,7 +3549,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   {!allowPublish
                                     ? "Published"
                                     : publishBusy[it.id]
-                                      ? "Publishing…"
+                                      ? "Publishing your content…"
                                       : "Publish"}
                                 </button>
                               ) : null}
