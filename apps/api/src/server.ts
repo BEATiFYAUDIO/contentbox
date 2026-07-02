@@ -34077,11 +34077,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               type === "video" ? "Video" :
               type === "song" ? "Song" :
               type === "audio" ? "Audio" :
-              type === "article" || type === "writing" || type === "book" ? "Article" :
+              type === "article" || type === "writing" || type === "book" || type === "document" || type === "pdf" ? "Article" :
               "Other";
             const safeType = escHtml(typeLabel);
             const ctaLabel =
-              typeLabel === "Video" || typeLabel === "Song" || typeLabel === "Audio" ? "Play in Certifyd" :
+              typeLabel === "Video" ? "Watch" :
+              typeLabel === "Song" || typeLabel === "Audio" ? "Listen" :
               typeLabel === "Article" ? "Read" :
               "View";
             if (isLegacyPublication) {
@@ -34163,13 +34164,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const buyUrl = itemRemoteOrigin
               ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
               : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
-            const fanPlayUrl = ctaLabel === "Play in Certifyd"
-              ? buildDiscoveryUrl({
-                  discoveryOrigin: resolveDiscoveryAppOrigin(),
-                  contentId: item.id,
-                  publicOrigin: mediaOrigin
-                }) || buyUrl
-              : buyUrl;
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
@@ -34202,7 +34196,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">${supportLine}</div>
-                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(fanPlayUrl)}">${escHtml(ctaLabel)} &#8594;</a></div>
+                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} &#8594;</a></div>
               </div>
             </article>`;
   };
@@ -34556,8 +34550,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   );
   const participationCtaLabel = (typeRaw: unknown): string => {
     const t = asString(typeRaw || "").trim().toLowerCase();
-    if (t === "video" || t === "song" || t === "audio") return "Play in Certifyd";
-    if (t === "book") return "Read";
+    if (t === "video" || t === "movie" || t === "clip") return "Watch";
+    if (t === "song" || t === "audio" || t === "music") return "Listen";
+    if (t === "book" || t === "article" || t === "writing" || t === "document" || t === "pdf") return "Read";
     return "View";
   };
   const participationMediaHtml = (params: {
@@ -34619,13 +34614,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               originBase: canonicalCommerceOrigin || currentPublicOrigin,
               title: asString(item.contentTitle || "").trim() || "Content"
             });
-            const fanPlayUrl = buyUrl && cta === "Play in Certifyd"
-              ? buildDiscoveryUrl({
-                  discoveryOrigin: resolveDiscoveryAppOrigin(),
-                  contentId: asString(item.contentId || "").trim(),
-                  publicOrigin: canonicalCommerceOrigin || currentPublicOrigin
-                }) || buyUrl
-              : linkHref;
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
@@ -34636,8 +34624,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">Role: ${safeRole} - Share: ${safeShare}</div>
                 ${
-                  fanPlayUrl && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(fanPlayUrl)}">${escHtml(cta)} &#8599;</a></div>`
+                  linkHref && cta
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &#8599;</a></div>`
                     : ""
                 }
               </div>
@@ -34655,7 +34643,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const safeShare = escHtml(shareLabel);
             const base = normalizeOrigin(item.remoteOrigin || "") || "";
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
-            const offerUrl = item.contentId ? `${base}/buy/content/${encodeURIComponent(item.contentId)}/offer` : "";
             const attributionUrl = item.contentId ? `${base}/public/content/${encodeURIComponent(item.contentId)}/attribution` : "";
             const originalWorkUrl = (item as any).parentContentId
               ? `${base}/buy/${encodeURIComponent(String((item as any).parentContentId))}`
@@ -34673,13 +34660,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               originBase: base,
               title: asString(item.contentTitle || "").trim() || "Content"
             });
-            const fanPlayUrl = buyUrl && offerUrl && cta === "Play in Certifyd"
-              ? buildDiscoveryUrl({
-                  discoveryOrigin: resolveDiscoveryAppOrigin(),
-                  contentId: asString(item.contentId || "").trim(),
-                  publicOrigin: base
-                }) || buyUrl
-              : linkHref;
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
@@ -34697,8 +34677,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                     : ""
                 }
                 ${
-                  fanPlayUrl && cta
-                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(fanPlayUrl)}">${escHtml(cta)} &#8599;</a></div>`
+                  linkHref && cta
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} &#8599;</a></div>`
                     : ""
                 }
               </div>
@@ -38587,6 +38567,13 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
       if (!t) return "Media";
       return t.charAt(0).toUpperCase() + t.slice(1);
     }
+    function contentActionLabel(type){
+      const t = String(type || "").toLowerCase();
+      if (t === "video" || t === "movie" || t === "clip") return "Watch";
+      if (t === "audio" || t === "song" || t === "music") return "Listen";
+      if (t === "book" || t === "article" || t === "writing" || t === "document" || t === "pdf") return "Read";
+      return "View";
+    }
     const listHtml = list.length
       ? '<div class="grid">' +
           list.map((e) => {
@@ -38607,7 +38594,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
                 '<h4 class="item-title">' + title + '</h4>' +
                 '<div class="creator">by ' + creator + '</div>' +
                 '<div class="meta-line">' + mediaLabel(contentType) + (granted ? " · Unlocked " + granted : "") + '</div>' +
-                '<div class="actions"><a class="action-primary" href="' + buyUrl + '">Play in Certifyd</a></div>' +
+                '<div class="actions"><a class="action-primary" href="' + buyUrl + '">' + contentActionLabel(contentType) + '</a></div>' +
               '</div>' +
             '</article>';
           }).join("") +
