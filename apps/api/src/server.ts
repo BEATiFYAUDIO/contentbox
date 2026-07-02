@@ -34873,12 +34873,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-chip {
       display:inline-flex;
       align-items:center;
-      border:1px solid var(--profile-card-border);
+      border:1px solid var(--profile-button-border);
       border-radius:999px;
       padding:2px 8px;
       font-size:11px;
-      color:var(--profile-text);
-      background:var(--profile-button-bg);
+      color:var(--theme-button-text);
+      background:linear-gradient(135deg, var(--profile-accent) 0%, var(--theme-button) 100%);
+      box-shadow:0 0 16px var(--profile-accent-soft);
       line-height:1.25;
     }
     .meta-grid { display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px; }
@@ -35004,12 +35005,35 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-audio { width:100%; }
     .featured-fallback { font-size:10px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
     .featured-topline { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
-    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:var(--theme-button-text); background:var(--profile-button-bg); border:1px solid var(--profile-card-border); border-radius:999px; padding:2px 7px; }
-    .featured-verified { font-size:10px; color:var(--theme-button-text); background:var(--profile-button-bg); border:1px solid var(--profile-button-border); border-radius:999px; padding:2px 7px; }
+    .featured-type-badge {
+      font-size:10px;
+      letter-spacing:0.02em;
+      color:var(--theme-button-text);
+      background:linear-gradient(135deg, var(--profile-accent) 0%, var(--theme-button) 100%);
+      border:1px solid var(--profile-button-border);
+      border-radius:999px;
+      padding:2px 7px;
+      box-shadow:0 0 16px var(--profile-accent-soft);
+    }
+    .featured-verified {
+      font-size:10px;
+      color:var(--profile-accent);
+      background:rgba(255,255,255,0.075);
+      border:1px solid var(--profile-button-border);
+      border-radius:999px;
+      padding:2px 7px;
+      box-shadow:0 0 14px var(--profile-accent-soft);
+    }
     .posture-pill { font-size:10px; border-radius:999px; padding:2px 9px; border:1px solid transparent; letter-spacing:0.01em; white-space:nowrap; }
     .posture-pill--basic,
     .posture-pill--creator,
-    .posture-pill--node { color:var(--profile-text); background:var(--profile-button-bg); border-color:var(--profile-button-border); box-shadow:0 0 18px var(--profile-accent-soft); }
+    .posture-pill--node {
+      color:var(--theme-button-text);
+      background:linear-gradient(135deg, var(--profile-accent) 0%, var(--theme-button) 100%);
+      border-color:var(--profile-button-border);
+      box-shadow:0 0 18px var(--profile-accent-soft);
+      font-weight:700;
+    }
     .featured-title {
       font-weight:650;
       font-size:15px;
