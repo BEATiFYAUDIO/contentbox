@@ -34062,6 +34062,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     asString((item as any)?.storefrontStatus || "").trim().toUpperCase() !== "DISABLED" ||
     Boolean((item as any)?.featureOnProfile)
   );
+  const profileBadgeToneClass = (raw: unknown): string => {
+    const value = asString(raw || "").trim().toLowerCase();
+    if (value === "video") return "featured-badge--video";
+    if (value === "song" || value === "audio" || value === "music") return "featured-badge--audio";
+    if (value === "article" || value === "book" || value === "document" || value === "pdf" || value === "writing") return "featured-badge--read";
+    if (value.includes("legacy") || value.includes("proven")) return "featured-badge--legacy";
+    if (value.includes("publication") || value.includes("hash")) return "featured-badge--hash";
+    if (value.includes("source") || value.includes("verified")) return "featured-badge--source";
+    if (value.includes("spotify")) return "featured-badge--spotify";
+    if (value.includes("youtube")) return "featured-badge--youtube";
+    if (value.includes("certifyd")) return "featured-badge--certifyd";
+    if (value.includes("participation")) return "featured-badge--participation";
+    return "featured-badge--other";
+  };
   const renderFeaturedContentCard = (item: any, supportText?: string): string => {
             const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
             const type = asString(item.type || "").trim().toLowerCase();
@@ -34108,10 +34122,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 <div class="featured-media">${mediaHtml}</div>
                 <div class="featured-meta">
                   <div class="featured-topline">
-                    <span class="featured-type-badge">Proven Legacy Work</span>
-                    <span class="featured-verified">${escHtml(publicationBadge)}</span>
-                    ${verifiedSource ? `<span class="featured-verified">${escHtml(sourceVerifiedLabel)}</span>` : ""}
-                    ${provider ? `<span class="featured-type-badge">${escHtml(provider)}</span>` : ""}
+                    <span class="featured-type-badge ${profileBadgeToneClass("Proven Legacy Work")}">Proven Legacy Work</span>
+                    <span class="featured-verified ${profileBadgeToneClass(publicationBadge)}">${escHtml(publicationBadge)}</span>
+                    ${verifiedSource ? `<span class="featured-verified ${profileBadgeToneClass(sourceVerifiedLabel)}">${escHtml(sourceVerifiedLabel)}</span>` : ""}
+                    ${provider ? `<span class="featured-type-badge ${profileBadgeToneClass(provider)}">${escHtml(provider)}</span>` : ""}
                   </div>
                   <div class="featured-title">${safeTitle}</div>
                   <div class="featured-support">${legacySupport}</div>
@@ -34191,8 +34205,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
                 <div class="featured-topline">
-                  <span class="featured-type-badge">${safeType}</span>
-                  <span class="featured-verified">Certifyd</span>
+                  <span class="featured-type-badge ${profileBadgeToneClass(typeLabel)}">${safeType}</span>
+                  <span class="featured-verified ${profileBadgeToneClass("Certifyd")}">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">${supportLine}</div>
@@ -34618,8 +34632,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
                 <div class="featured-topline">
-                  <span class="featured-type-badge">${safeType || "Participation"}</span>
-                  <span class="featured-verified">Certifyd</span>
+                  <span class="featured-type-badge ${profileBadgeToneClass(item.contentType || "Participation")}">${safeType || "Participation"}</span>
+                  <span class="featured-verified ${profileBadgeToneClass("Certifyd")}">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">Role: ${safeRole} - Share: ${safeShare}</div>
@@ -34664,8 +34678,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta">
                 <div class="featured-topline">
-                  <span class="featured-type-badge">${safeType || "Participation"}</span>
-                  <span class="featured-verified">Certifyd</span>
+                  <span class="featured-type-badge ${profileBadgeToneClass(item.contentType || "Participation")}">${safeType || "Participation"}</span>
+                  <span class="featured-verified ${profileBadgeToneClass("Certifyd")}">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="featured-support">Role: ${safeRole} - Share: ${safeShare}</div>
@@ -35004,12 +35018,46 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-audio { width:100%; }
     .featured-fallback { font-size:10px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
     .featured-topline { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
-    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:var(--theme-button-text); background:var(--profile-button-bg); border:1px solid var(--profile-card-border); border-radius:999px; padding:2px 7px; }
-    .featured-verified { font-size:10px; color:var(--theme-button-text); background:var(--profile-button-bg); border:1px solid var(--profile-button-border); border-radius:999px; padding:2px 7px; }
+    .featured-type-badge,
+    .featured-verified {
+      --badge-color:var(--profile-accent);
+      --badge-bg:color-mix(in srgb, var(--badge-color) 18%, transparent);
+      --badge-border:color-mix(in srgb, var(--badge-color) 58%, transparent);
+      --badge-text:color-mix(in srgb, var(--badge-color) 74%, #fff);
+      font-size:10px;
+      letter-spacing:0.02em;
+      color:var(--badge-text);
+      background:var(--badge-bg);
+      border:1px solid var(--badge-border);
+      border-radius:999px;
+      padding:2px 7px;
+      box-shadow:0 0 14px color-mix(in srgb, var(--badge-color) 18%, transparent);
+      backdrop-filter:blur(8px) saturate(125%);
+    }
+    .featured-badge--video { --badge-color:#9f7aea; }
+    .featured-badge--audio { --badge-color:#34d399; }
+    .featured-badge--read { --badge-color:#fbbf24; }
+    .featured-badge--legacy { --badge-color:#f59e0b; }
+    .featured-badge--hash { --badge-color:#d4b26a; }
+    .featured-badge--source { --badge-color:#60a5fa; }
+    .featured-badge--spotify { --badge-color:#22c55e; }
+    .featured-badge--youtube { --badge-color:#f87171; }
+    .featured-badge--certifyd { --badge-color:#c084fc; }
+    .featured-badge--participation { --badge-color:#2dd4bf; }
+    .featured-badge--other { --badge-color:#e879f9; }
     .posture-pill { font-size:10px; border-radius:999px; padding:2px 9px; border:1px solid transparent; letter-spacing:0.01em; white-space:nowrap; }
     .posture-pill--basic,
     .posture-pill--creator,
-    .posture-pill--node { color:var(--profile-text); background:var(--profile-button-bg); border-color:var(--profile-button-border); box-shadow:0 0 18px var(--profile-accent-soft); }
+    .posture-pill--node {
+      color:color-mix(in srgb, var(--posture-color, var(--profile-accent)) 74%, #fff);
+      background:color-mix(in srgb, var(--posture-color, var(--profile-accent)) 16%, transparent);
+      border-color:color-mix(in srgb, var(--posture-color, var(--profile-accent)) 54%, transparent);
+      box-shadow:0 0 18px color-mix(in srgb, var(--posture-color, var(--profile-accent)) 16%, transparent);
+      backdrop-filter:blur(8px) saturate(125%);
+    }
+    .posture-pill--basic { --posture-color:#d4b26a; }
+    .posture-pill--creator { --posture-color:#c084fc; }
+    .posture-pill--node { --posture-color:#60a5fa; }
     .featured-title {
       font-weight:650;
       font-size:15px;
