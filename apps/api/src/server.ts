@@ -39044,11 +39044,27 @@ async function handlePublicOffer(req: any, reply: any) {
   const hasPrice = priceSats != null && priceSats > 0n;
   let buyerId: string | null = null;
   let entitled = Boolean(gated.entitled);
+  let receiptProofIntent: any | null = null;
+  let receiptProofToken: string | null = null;
   try {
     const buyerSession = await resolveBuyerSession(req, reply);
     buyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
   } catch {
     buyerId = null;
+  }
+  const receiptTokenQuery = asString((req.query || {})?.receiptToken || "").trim();
+  const receiptIdQuery = asString((req.query || {})?.receiptId || "").trim();
+  if (receiptTokenQuery || receiptIdQuery) {
+    const receiptContext = await resolveReceiptContextForRequest({
+      receiptToken: receiptTokenQuery || null,
+      receiptId: receiptIdQuery || null
+    }).catch(() => null);
+    const intent = receiptContext?.intent as any;
+    if (intent && intent.contentId === contentId && String(intent.status || "").toLowerCase() === "paid") {
+      receiptProofIntent = intent;
+      receiptProofToken = asString(intent.receiptToken || receiptTokenQuery || "").trim() || null;
+      entitled = true;
+    }
   }
   if (buyerId) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
@@ -39099,12 +39115,16 @@ async function handlePublicOffer(req: any, reply: any) {
     contentId,
     paymentState: hasPrice ? (hasFull ? "owned" : "payment_required") : tipsEnabled ? "tip" : "free",
     entitlementState: hasPrice ? (hasFull ? "entitled" : "locked") : "entitled",
-    paymentReceiptId: latestEntitlement?.payment ? asString(latestEntitlement.payment.id || "").trim() || null : null,
+    paymentReceiptId: receiptProofIntent
+      ? asString(receiptProofIntent.receiptId || receiptProofIntent.id || "").trim() || null
+      : latestEntitlement?.payment ? asString(latestEntitlement.payment.id || "").trim() || null : null,
     paidAt:
-      latestEntitlement?.payment?.paidAt && !Number.isNaN(new Date(latestEntitlement.payment.paidAt).getTime())
+      receiptProofIntent?.paidAt && !Number.isNaN(new Date(receiptProofIntent.paidAt).getTime())
+        ? new Date(receiptProofIntent.paidAt).toISOString()
+        : latestEntitlement?.payment?.paidAt && !Number.isNaN(new Date(latestEntitlement.payment.paidAt).getTime())
         ? new Date(latestEntitlement.payment.paidAt).toISOString()
         : null,
-    paymentMethod: resolvePaymentMethodFromIntent(latestEntitlement?.payment || null),
+    paymentMethod: resolvePaymentMethodFromIntent(receiptProofIntent || latestEntitlement?.payment || null),
     invoiceProviderNodeId
   };
   const accessMode = resolvePublicAccessMode({
@@ -39132,7 +39152,7 @@ async function handlePublicOffer(req: any, reply: any) {
     : null;
   const fullMediaUrl = `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/preview-file${
     primaryFileId ? `?objectKey=${encodeURIComponent(primaryFileId)}` : ""
-  }`;
+  }${receiptProofToken ? `${primaryFileId ? "&" : "?"}receiptToken=${encodeURIComponent(receiptProofToken)}` : ""}`;
   const showPreviewOnly = shouldShowPreview({
     isFree: freeContent,
     priceSats: rawPriceSats,
