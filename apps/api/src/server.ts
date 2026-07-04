@@ -3426,7 +3426,13 @@ async function resolveParticipantPayoutReadinessForAllocation(
   );
   if (registry) {
     const destinationSummary = normalized.destinationSummary;
-    if (!registry.isVerified) {
+    const transientPayableDestination =
+      !registry.isVerified &&
+      String(registry.destinationType || "").trim().toLowerCase() === "lightning_address" &&
+      normalized.ready &&
+      normalized.payableMode === "lightning_address" &&
+      isTransientParticipantDestinationVerificationError(registry.verificationError);
+    if (!registry.isVerified && !transientPayableDestination) {
       return {
         status: "pending",
         readinessReason: normalized.reason || (registry.verificationError ? "DESTINATION_UNVERIFIED" : "DESTINATION_VERIFICATION_PENDING"),
@@ -3961,12 +3967,12 @@ async function resolveParticipantIdentityGate(input: {
           participantUserId: true,
           acceptedAt: true,
           verifiedAt: true,
-          invitation: { select: { status: true } },
+          invitation: { select: { status: true, acceptedIdentityRef: true } },
           invitations: {
             where: {
               OR: [{ status: "accepted" as any }, { acceptedAt: { not: null } }]
             },
-            select: { id: true, status: true },
+            select: { id: true, status: true, acceptedIdentityRef: true },
             take: 1
           }
         }
@@ -3979,6 +3985,20 @@ async function resolveParticipantIdentityGate(input: {
         (splitParticipant.invitations?.length || 0) > 0
       : true;
   const effectiveUserId = String(splitParticipant?.participantUserId || userId || "").trim();
+  const acceptedIdentityRef = String(
+    splitParticipant?.invitation?.acceptedIdentityRef ||
+      splitParticipant?.invitations?.[0]?.acceptedIdentityRef ||
+      ""
+  ).trim();
+  const remoteAcceptedAndVerified =
+    Boolean(splitParticipant) &&
+    !effectiveUserId &&
+    signedAccepted &&
+    Boolean(splitParticipant?.verifiedAt) &&
+    acceptedIdentityRef.startsWith("remote:");
+  if (remoteAcceptedAndVerified) {
+    return { active: true, readinessReason: null };
+  }
   const localWitnessVerified = effectiveUserId ? await hasVerifiedParticipantKey(effectiveUserId) : false;
   return evaluateParticipantIdentityGate({
     userId,
