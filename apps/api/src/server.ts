@@ -2832,6 +2832,20 @@ async function verifyParticipantDestination(
   };
 }
 
+function isTransientParticipantDestinationVerificationError(error: string | null | undefined): boolean {
+  const message = String(error || "").trim().toUpperCase();
+  if (!message) return false;
+  return (
+    /^LNURLP_HTTP_5\d\d$/.test(message) ||
+    message.includes("LIGHTNING_ADDRESS_LOOKUP_FAILED") ||
+    message.includes("FETCH") ||
+    message.includes("TIMEOUT") ||
+    message.includes("ECONNRESET") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("ENOTFOUND")
+  );
+}
+
 async function setPrimaryParticipantDestinationForUser(userId: string, destinationId: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.participantPayoutDestination.updateMany({
@@ -3287,6 +3301,21 @@ function normalizeParticipantDestinationForPayout(
     };
   }
   if (!resolved.isVerified) {
+    if (
+      destinationType === "lightning_address" &&
+      isTransientParticipantDestinationVerificationError(resolved.verificationError)
+    ) {
+      const normalizedSummary = canonicalizeLightningAddress(destinationSummary);
+      return {
+        source: resolved.destinationSource,
+        destinationType,
+        destinationValue,
+        destinationSummary: normalizedSummary,
+        payableMode: "lightning_address",
+        ready: normalizedSummary.includes("@"),
+        reason: normalizedSummary.includes("@") ? null : "LIGHTNING_ADDRESS_INVALID"
+      };
+    }
     return {
       source: resolved.destinationSource,
       destinationType,
