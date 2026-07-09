@@ -17906,6 +17906,7 @@ app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
       ...(contentId ? { contentId } : {})
     },
     include: {
+      payment: true,
       content: {
         select: {
           id: true,
@@ -17926,12 +17927,16 @@ app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
   });
 
   return reply.send(
-    entitlements.map((e) => ({
-      id: e.id,
-      contentId: e.contentId,
-      manifestSha256: e.manifestSha256,
-      grantedAt: e.grantedAt.toISOString(),
-      content: e.content
+	    entitlements.map((e) => ({
+	      id: e.id,
+	      contentId: e.contentId,
+	      manifestSha256: e.manifestSha256,
+	      grantedAt: e.grantedAt.toISOString(),
+	      paymentIntentId: e.paymentIntentId || null,
+	      receiptId: String((e.payment as any)?.receiptId || "").trim() || null,
+	      receiptToken: String((e.payment as any)?.receiptToken || "").trim() || null,
+	      paidAt: e.payment?.paidAt && !Number.isNaN(new Date(e.payment.paidAt).getTime()) ? new Date(e.payment.paidAt).toISOString() : null,
+	      content: e.content
         ? (() => {
             const coverUrl = `${APP_BASE_URL}/public/content/${encodeURIComponent(e.content.id)}/cover`;
             let primaryFile: { path: string; mime?: string; sizeBytes?: number; sha256?: string } | null = null;
@@ -37549,14 +37554,34 @@ async function handleBuyPage(req: any, reply: any) {
 
   async function fetchOwnedEntitlement(){
     alreadyOwned = false;
-    if (!buyer || !buyer.id) return;
+    if (!buyer || !buyer.id) return false;
     try {
       const res = await fetchJson("/api/buyer/entitlements?contentId=" + qs(contentId));
       const list = Array.isArray(res) ? res : [];
       alreadyOwned = list.length > 0;
+      if (alreadyOwned) {
+        const row = list[0] || {};
+        latestReceiptStatus = {
+          contentId,
+          receiptId: String(row.receiptId || "").trim() || null,
+          receiptToken: String(row.receiptToken || "").trim() || null,
+          paymentIntentId: String(row.paymentIntentId || "").trim() || null,
+          paidAt: row.paidAt || null,
+          access: "unlocked",
+          status: "paid",
+          paymentStatus: "paid",
+          canFulfill: true,
+          entitlement: { purchased: true, entitled: true }
+        };
+        if (latestReceiptStatus.receiptId) activeReceiptId = latestReceiptStatus.receiptId;
+        if (latestReceiptStatus.receiptToken) receiptToken = latestReceiptStatus.receiptToken;
+        if (latestReceiptStatus.paymentIntentId) activePaymentIntentId = latestReceiptStatus.paymentIntentId;
+        return maybeReturnToFan(latestReceiptStatus);
+      }
     } catch {
       alreadyOwned = false;
     }
+    return false;
   }
 
   function setBuyerStatus(text){
@@ -38440,9 +38465,10 @@ async function handleBuyPage(req: any, reply: any) {
         renderBasicOffer(offer);
         return;
       }
-      if (!alreadyOwned) {
-        await fetchOwnedEntitlement().catch(()=>{});
-      }
+	      if (!alreadyOwned) {
+	        const returnedToFan = await fetchOwnedEntitlement().catch(()=>false);
+	        if (returnedToFan) return;
+	      }
       const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
       const durableEnt = (activeReceiptId && latestReceiptStatus?.paymentStatus === "paid" && latestReceiptStatus?.receiptToken && offer?.manifestSha256)
         ? setEntitlement(offer.manifestSha256, latestReceiptStatus.receiptToken, "paid")
@@ -39285,12 +39311,12 @@ async function handlePublicOffer(req: any, reply: any) {
     hasFullAccess: hasFull,
     hasPreviewAsset: Boolean(previewUrl)
   });
-  const playback = buildCanonicalPlayback({
-    hasFullAccess: hasFull,
-    fullStreamUrl: hasFull ? fullMediaUrl : null,
-    previewStreamUrl: showPreviewOnly ? previewUrl : null,
-    previewLimitSeconds: 25
-  });
+	  const playback = buildCanonicalPlayback({
+	    hasFullAccess: hasFull,
+	    fullStreamUrl: hasFull ? fullMediaUrl : null,
+	    previewStreamUrl: showPreviewOnly ? previewUrl : null,
+	    previewLimitSeconds: 20
+	  });
 
   return reply.send({
     contentId: content.id,
