@@ -1594,6 +1594,16 @@ const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
   .filter(Boolean);
+const fanReadCredentialedOrigins = new Set(
+  [
+    "https://fan.certifyd.me",
+    "http://localhost:5174",
+    ...allowedOrigins,
+    resolveDiscoveryAppOrigin()
+  ]
+    .map((origin) => normalizePublicOriginBase(origin))
+    .filter(Boolean)
+);
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
@@ -11129,7 +11139,9 @@ app.register(cors, {
     if (process.env.NODE_ENV !== "production") {
       const devAllowed = [
         "http://localhost:5173",
+        "http://localhost:5174",
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "http://192.168.100.109:5173"
       ];
       if (devAllowed.includes(origin)) return cb(null, true);
@@ -29840,7 +29852,7 @@ app.post("/public/interactions", handlePublicAudienceInteraction);
 
 // Public storefront content metadata (no auth)
 async function handlePublicContent(req: any, reply: any) {
-  applyFanReadCors(reply);
+  applyFanReadCors(req, reply);
   const contentId = asString((req.params as any).id);
   const gated = await getPublicOfferGate(contentId, req, reply);
   if (!gated.content) {
@@ -30397,7 +30409,7 @@ async function resolvePublicContentContextUpstream(input: {
 }
 
 async function handlePublicContentContext(req: any, reply: any) {
-  applyFanReadCors(reply);
+  applyFanReadCors(req, reply);
   const contentId = asString((req.params as any).id).trim();
   const gated = await getPublicOfferGate(contentId, req, reply);
   if (!gated.content) {
@@ -30718,8 +30730,15 @@ function resolveCreatorHandleForDiscoverable(owner: { displayName?: string | nul
   return email || null;
 }
 
-function applyFanReadCors(reply: any) {
-  reply.header("Access-Control-Allow-Origin", "*");
+function applyFanReadCors(req: any, reply: any) {
+  const requestOrigin = normalizePublicOriginBase(req?.headers?.origin || "");
+  if (requestOrigin && fanReadCredentialedOrigins.has(requestOrigin)) {
+    reply.header("Access-Control-Allow-Origin", requestOrigin);
+    reply.header("Access-Control-Allow-Credentials", "true");
+    reply.header("Vary", "Origin");
+  } else {
+    reply.header("Access-Control-Allow-Origin", "*");
+  }
   reply.header("Access-Control-Allow-Methods", "GET, OPTIONS");
   reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
@@ -30859,7 +30878,7 @@ function discoveryPublicWorkFromContent(input: {
 }
 
 async function handlePublicDiscoverySignals(req: any, reply: any) {
-  applyFanReadCors(reply);
+  applyFanReadCors(req, reply);
   const query = (req.query ?? {}) as { window?: string; limit?: string | number };
   const requestedLimit = Number(query.limit ?? 80);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 10), 120) : 80;
@@ -31416,7 +31435,7 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
 }
 
 async function handlePublicDiscoverableContent(req: any, reply: any) {
-  applyFanReadCors(reply);
+  applyFanReadCors(req, reply);
   const query = (req.query ?? {}) as { topic?: string; limit?: string | number; cursor?: string };
   const topic = normalizePrimaryTopic(query.topic);
   if (query.topic != null && !topic) {
@@ -33427,7 +33446,7 @@ async function handlePublicCredits(req: any, reply: any) {
 app.get("/public/content/:id/credits", handlePublicCredits);
 
 async function handlePublicNodeProfilePage(req: any, reply: any) {
-  applyFanReadCors(reply);
+  applyFanReadCors(req, reply);
   const matchedHandle = asString((req.params as any).handle || "").trim();
   const requested = normalizePublicProfileHandle(matchedHandle);
   if (!requested) return notFound(reply, "Not found");
@@ -39018,7 +39037,7 @@ function resolvePaymentMethodFromIntent(intent: any): string | null {
 }
 
 async function handlePublicOffer(req: any, reply: any) {
-  applyFanReadCors(reply);
+  applyFanReadCors(req, reply);
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
@@ -40505,6 +40524,7 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
 });
 
 async function handlePublicReceiptStatus(req: any, reply: any) {
+  applyFanReadCors(req, reply);
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
   const context = await resolveReceiptContextForRequest({ receiptToken });
@@ -40584,6 +40604,7 @@ app.get("/public/receipts/:receiptToken/status", handlePublicReceiptStatus);
 app.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
 
 async function handlePublicDurableReceiptStatus(req: any, reply: any) {
+  applyFanReadCors(req, reply);
   const receiptId = asString((req.params as any).receiptId || "").trim();
   if (!receiptId) return badRequest(reply, "receiptId required");
   const context = await resolveReceiptContextForRequest({ receiptId });
