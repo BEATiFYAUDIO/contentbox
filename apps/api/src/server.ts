@@ -1436,6 +1436,7 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
 }
 
 const BUYER_SESSION_COOKIE = "cb_buyer_session";
+const BUYER_ACCESS_COOKIE = "cb_buyer_access_session";
 const BUYER_SESSION_DAYS = 30;
 const AUDIENCE_SESSION_COOKIE = "cb_audience_session";
 const AUDIENCE_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
@@ -1483,18 +1484,53 @@ function buildBuyerSessionCookie(sessionId: string, req: any, maxAgeSeconds: num
   return parts.join("; ");
 }
 
-function buildBuyerClearCookie(req: any): string {
+function buildBuyerAccessCookie(sessionId: string, req: any, maxAgeSeconds: number): string {
+  const maxAge = Math.max(1, Math.floor(maxAgeSeconds));
+  const expMs = Date.now() + maxAge * 1000;
+  const token = createBuyerSessionToken(sessionId, JWT_SECRET, expMs);
   const secure = isSecureRequest(req) || String(process.env.NODE_ENV || "").trim() === "production";
   const parts = [
-    `${BUYER_SESSION_COOKIE}=`,
+    `${BUYER_ACCESS_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    secure ? "SameSite=None" : "SameSite=Lax",
+    `Max-Age=${maxAge}`
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+function buildBuyerClearCookie(req: any, name = BUYER_SESSION_COOKIE): string {
+  const secure = isSecureRequest(req) || String(process.env.NODE_ENV || "").trim() === "production";
+  const parts = [
+    `${name}=`,
+    "Path=/",
+    "HttpOnly",
+    name === BUYER_ACCESS_COOKIE && secure ? "SameSite=None" : "SameSite=Lax",
     "Max-Age=0",
     "Expires=Thu, 01 Jan 1970 00:00:00 GMT"
   ];
   if (secure) parts.push("Secure");
   return parts.join("; ");
+}
+
+function setBuyerSessionCookies(reply: any, req: any, sessionId: string) {
+  const maxAge = BUYER_SESSION_DAYS * 24 * 60 * 60;
+  reply.header("Set-Cookie", [
+    buildBuyerSessionCookie(sessionId, req, maxAge),
+    buildBuyerAccessCookie(sessionId, req, maxAge)
+  ]);
+}
+
+function setBuyerAccessCookie(reply: any, req: any, sessionId: string) {
+  reply.header("Set-Cookie", buildBuyerAccessCookie(sessionId, req, BUYER_SESSION_DAYS * 24 * 60 * 60));
+}
+
+function clearBuyerCookies(reply: any, req: any) {
+  reply.header("Set-Cookie", [
+    buildBuyerClearCookie(req, BUYER_SESSION_COOKIE),
+    buildBuyerClearCookie(req, BUYER_ACCESS_COOKIE)
+  ]);
 }
 
 function buildAudienceSessionCookie(sessionId: string, req: any, maxAgeSeconds: number): string {
@@ -13026,6 +13062,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
+  appPublic.get("/buy/content/:contentId/access-status", handlePublicContentAccessStatus);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
   appPublic.get("/buy/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/content/:id", handlePublicContent);
@@ -13034,6 +13071,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/discovery/signals", handlePublicDiscoverySignals);
   appPublic.get("/public/content/:id/attribution", handlePublicAttribution);
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
+  appPublic.get("/public/content/:contentId/access-status", handlePublicContentAccessStatus);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
   appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
@@ -13050,6 +13088,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/api/buyer/me", async (req: any, reply: any) => {
     const session = await resolveBuyerSession(req, reply);
     if (!session) return reply.send({ buyer: null });
+    setBuyerAccessCookie(reply, req, session.id);
     return reply.send({ buyer: { id: session.buyer.id } });
   });
   appPublic.post("/api/buyer/logout", async (req: any, reply: any) => {
@@ -13058,7 +13097,7 @@ function registerPublicRoutes(appPublic: any) {
     if (sessionId) {
       await prisma.buyerSession.delete({ where: { id: sessionId } }).catch(() => {});
     }
-    reply.header("Set-Cookie", buildBuyerClearCookie(req));
+    clearBuyerCookies(reply, req);
     return reply.send({ ok: true });
   });
   appPublic.get("/api/buyer/entitlements", async (req: any, reply: any) => {
@@ -17247,6 +17286,28 @@ async function resolveBuyerSession(req: any, reply: any): Promise<{ id: string; 
   return session as any;
 }
 
+async function resolveBuyerReadSession(req: any, reply: any): Promise<{ id: string; buyer: { id: string; email: string } } | null> {
+  const rawToken = getCookie(req, BUYER_SESSION_COOKIE) || getCookie(req, BUYER_ACCESS_COOKIE);
+  if (!rawToken) return null;
+  const verified = verifyBuyerSessionToken(rawToken, JWT_SECRET);
+  if (!verified) {
+    reply.header("Set-Cookie", buildBuyerClearCookie(req, BUYER_ACCESS_COOKIE));
+    return null;
+  }
+  const session = await prisma.buyerSession.findUnique({
+    where: { id: verified.sid },
+    include: { buyer: true }
+  });
+  if (!session || session.expiresAt.getTime() < Date.now()) {
+    if (session?.id) {
+      await prisma.buyerSession.delete({ where: { id: session.id } }).catch(() => {});
+    }
+    reply.header("Set-Cookie", buildBuyerClearCookie(req, BUYER_ACCESS_COOKIE));
+    return null;
+  }
+  return session as any;
+}
+
 async function getOrCreateBuyerSession(req: any, reply: any) {
   const existing = await resolveBuyerSession(req, reply);
   if (existing) {
@@ -17272,7 +17333,7 @@ async function getOrCreateBuyerSession(req: any, reply: any) {
     },
     include: { buyer: true }
   });
-  reply.header("Set-Cookie", buildBuyerSessionCookie(session.id, req, BUYER_SESSION_DAYS * 24 * 60 * 60));
+  setBuyerSessionCookies(reply, req, session.id);
   return session;
 }
 
@@ -17295,6 +17356,7 @@ app.post("/api/buyer/verify", async (req: any, reply: any) => {
 app.get("/api/buyer/me", async (req: any, reply: any) => {
   const session = await resolveBuyerSession(req, reply);
   if (!session) return reply.send({ buyer: null });
+  setBuyerAccessCookie(reply, req, session.id);
   return reply.send({ buyer: { id: session.buyer.id } });
 });
 
@@ -17304,7 +17366,7 @@ app.post("/api/buyer/logout", async (req: any, reply: any) => {
   if (sessionId) {
     await prisma.buyerSession.delete({ where: { id: sessionId } }).catch(() => {});
   }
-  reply.header("Set-Cookie", buildBuyerClearCookie(req));
+  clearBuyerCookies(reply, req);
   return reply.send({ ok: true });
 });
 
@@ -39370,12 +39432,56 @@ async function handlePublicOffer(req: any, reply: any) {
     seller: { hostOrigin: baseUrl },
     sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
     fulfillment: { mode: "receiptToken", ttlSeconds }
+	  });
+	}
+
+async function handlePublicContentAccessStatus(req: any, reply: any) {
+  applyFanReadCors(req, reply);
+  const contentId = asString((req.params as any).contentId || "").trim();
+  if (!contentId) return badRequest(reply, "contentId required");
+
+  const session = await resolveBuyerReadSession(req, reply);
+  const buyerId = asString(session?.buyer?.id || "").trim() || null;
+  if (buyerId) {
+    await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
+  }
+
+  const entitlement = buyerId
+    ? await prisma.entitlement.findFirst({
+        where: { buyerId, contentId },
+        orderBy: { grantedAt: "desc" },
+        include: { payment: true }
+      })
+    : null;
+  const payment = entitlement?.payment || null;
+  const entitled = Boolean(entitlement);
+  const paidAt = payment?.paidAt && !Number.isNaN(new Date(payment.paidAt).getTime())
+    ? new Date(payment.paidAt).toISOString()
+    : null;
+  const paymentStatus = asString(payment?.status || "").trim().toLowerCase() || (entitled ? "paid" : "unpaid");
+
+  return reply.send({
+    contentId,
+    access: entitled ? "unlocked" : "locked",
+    entitled,
+    owned: entitled,
+    hasFullAccess: entitled,
+    canFulfill: entitled,
+    status: paymentStatus,
+    paymentStatus,
+    paymentIntentId: entitlement?.paymentIntentId || payment?.id || null,
+    receiptId: String((payment as any)?.receiptId || "").trim() || null,
+    paidAt,
+    paymentMethod: resolvePaymentMethodFromIntent(payment),
+    source: buyerId ? "buyer_session" : "anonymous"
   });
 }
 
 app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, handlePublicOffer);
 app.get("/public/content/:contentId/offer", handlePublicOffer);
 app.get("/buy/content/:contentId/offer", handlePublicOffer);
+app.get("/public/content/:contentId/access-status", handlePublicContentAccessStatus);
+app.get("/buy/content/:contentId/access-status", handlePublicContentAccessStatus);
 
 async function handlePublicPaymentsIntents(req: any, reply: any) {
   const body = (req.body ?? {}) as {
