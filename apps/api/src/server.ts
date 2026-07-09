@@ -37591,7 +37591,7 @@ async function handleBuyPage(req: any, reply: any) {
 	        if (latestReceiptStatus.receiptId) activeReceiptId = latestReceiptStatus.receiptId;
 	        if (latestReceiptStatus.receiptToken) receiptToken = latestReceiptStatus.receiptToken;
 	        if (latestReceiptStatus.paymentIntentId) activePaymentIntentId = latestReceiptStatus.paymentIntentId;
-	        return Boolean(proofReceiptId || proofReceiptToken) && maybeReturnToFan(latestReceiptStatus);
+	        return false;
 	      }
     } catch {
       alreadyOwned = false;
