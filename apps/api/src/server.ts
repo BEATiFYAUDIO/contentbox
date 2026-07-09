@@ -1604,6 +1604,19 @@ const fanReadCredentialedOrigins = new Set(
     .map((origin) => normalizePublicOriginBase(origin))
     .filter(Boolean)
 );
+const fanReturnUrlOrigins = new Set(
+  [
+    "https://fan.certifyd.me",
+    "http://localhost:5174",
+    resolveDiscoveryAppOrigin(),
+    ...(process.env.CONTENTBOX_FAN_RETURN_ORIGINS || "")
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+  ]
+    .map((origin) => normalizePublicOriginBase(origin))
+    .filter(Boolean)
+);
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
@@ -30743,6 +30756,21 @@ function applyFanReadCors(req: any, reply: any) {
   reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
+function resolveFanReturnUrl(raw: unknown): string | null {
+  const value = asString(raw || "").trim();
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+    const origin = normalizePublicOriginBase(parsed.origin);
+    if (!fanReturnUrlOrigins.has(origin)) return null;
+    if (!parsed.pathname.startsWith("/watch/")) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 type PublicDiscoverySignalWork = {
   contentId: string;
   title: string;
@@ -36285,6 +36313,7 @@ async function handleTabIcon(req: any, reply: any) {
 async function handleBuyPage(req: any, reply: any) {
   let contentId = asString((req.params as any).contentId || "").trim();
   const initialReceiptId = asString((req.query || {})?.receiptId || "").trim();
+  const fanReturnUrl = resolveFanReturnUrl((req.query || {})?.returnUrl);
   if (!contentId && initialReceiptId) {
     const context = await resolveReceiptContextForRequest({ receiptId: initialReceiptId });
     contentId = asString((context as any)?.intent?.contentId || "").trim();
@@ -36811,6 +36840,7 @@ async function handleBuyPage(req: any, reply: any) {
   const sellerDisplayName = ${JSON.stringify(sellerDisplayName)};
   const edgeDeliveryEnabled = ${JSON.stringify(EDGE_DELIVERY_ENABLED)};
   const priceSats = ${content.priceSats != null ? Number(content.priceSats) : "null"};
+  const fanReturnUrl = ${JSON.stringify(fanReturnUrl)};
   const app = document.getElementById("app");
   const apiBase = location.origin;
   let receiptToken = null;
@@ -36825,6 +36855,7 @@ async function handleBuyPage(req: any, reply: any) {
   let livePaymentProof = null;
   let activePaymentIntentId = null;
   let lastPaymentIntentPayload = null;
+  let fanReturnRedirected = false;
   const edgeUrlCache = new Map();
   let attributionData = null;
   const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -36840,6 +36871,32 @@ async function handleBuyPage(req: any, reply: any) {
   function durableReceiptStatusPath(receiptId){
     const id = String(receiptId || "").trim();
     return id ? ("/buy/receipts/r/" + encodeURIComponent(id) + "/status") : "";
+  }
+  function fanReturnUrlWithReceipt(status){
+    if (!fanReturnUrl || fanReturnRedirected) return null;
+    const receiptId = String(status?.receiptId || activeReceiptId || "").trim();
+    if (!receiptId) return null;
+    try {
+      const target = new URL(fanReturnUrl);
+      target.searchParams.set("origin", location.origin);
+      target.searchParams.set("receiptId", receiptId);
+      const token = String(status?.receiptToken || receiptToken || "").trim();
+      if (token) target.searchParams.set("receiptToken", token);
+      const paymentIntentId = String(status?.paymentIntentId || activePaymentIntentId || "").trim();
+      if (paymentIntentId) target.searchParams.set("paymentIntentId", paymentIntentId);
+      return target.toString();
+    } catch {
+      return null;
+    }
+  }
+  function maybeReturnToFan(status){
+    const target = fanReturnUrlWithReceipt(status);
+    if (!target) return false;
+    fanReturnRedirected = true;
+    const statusEl = document.getElementById("status");
+    if (statusEl) statusEl.textContent = "Payment confirmed. Returning to player...";
+    window.location.assign(target);
+    return true;
   }
   function deriveReceiptViewState(entitlement, owned){
     const hasReceiptContext = Boolean(activeReceiptId || initialReceiptId);
@@ -38220,6 +38277,7 @@ async function handleBuyPage(req: any, reply: any) {
     if (paid) {
       clearManualIntent();
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      if (maybeReturnToFan(status)) return;
       if (receiptToken) {
         try {
           const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
