@@ -39446,6 +39446,47 @@ async function handlePublicContentAccessStatus(req: any, reply: any) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
   }
 
+  const receiptTokenQuery = asString((req.query || {})?.receiptToken || "").trim();
+  const receiptIdQuery = asString((req.query || {})?.receiptId || "").trim();
+  let receiptProofIntent: any | null = null;
+  if (receiptTokenQuery || receiptIdQuery) {
+    const receiptContext = await resolveReceiptContextForRequest({
+      receiptToken: receiptTokenQuery || null,
+      receiptId: receiptIdQuery || null
+    }).catch(() => null);
+    const intent = receiptContext?.intent as any;
+    if (intent && String(intent.status || "").toLowerCase() === "paid") {
+      const intentContentId = asString(intent.contentId || "").trim();
+      const intentManifestSha = asString(intent.manifestSha256 || "").trim();
+      let matchesContent = intentContentId === contentId;
+      if (!matchesContent && intentManifestSha) {
+        const manifest = await prisma.manifest.findUnique({
+          where: { contentId },
+          select: { sha256: true }
+        }).catch(() => null);
+        matchesContent = asString(manifest?.sha256 || "").trim() === intentManifestSha;
+      }
+      if (matchesContent) receiptProofIntent = intent;
+    }
+  }
+
+  if (receiptProofIntent && buyerId) {
+    await prisma.entitlement.upsert({
+      where: { buyerId_contentId: { buyerId, contentId } },
+      update: {
+        paymentIntentId: receiptProofIntent.id,
+        manifestSha256: receiptProofIntent.manifestSha256 || ""
+      },
+      create: {
+        buyerId,
+        buyerUserId: null,
+        contentId,
+        manifestSha256: receiptProofIntent.manifestSha256 || "",
+        paymentIntentId: receiptProofIntent.id
+      }
+    }).catch(() => {});
+  }
+
   const entitlement = buyerId
     ? await prisma.entitlement.findFirst({
         where: { buyerId, contentId },
@@ -39453,8 +39494,8 @@ async function handlePublicContentAccessStatus(req: any, reply: any) {
         include: { payment: true }
       })
     : null;
-  const payment = entitlement?.payment || null;
-  const entitled = Boolean(entitlement);
+  const payment = receiptProofIntent || entitlement?.payment || null;
+  const entitled = Boolean(receiptProofIntent || entitlement);
   const paidAt = payment?.paidAt && !Number.isNaN(new Date(payment.paidAt).getTime())
     ? new Date(payment.paidAt).toISOString()
     : null;
@@ -39471,9 +39512,10 @@ async function handlePublicContentAccessStatus(req: any, reply: any) {
     paymentStatus,
     paymentIntentId: entitlement?.paymentIntentId || payment?.id || null,
     receiptId: String((payment as any)?.receiptId || "").trim() || null,
+    receiptToken: String((payment as any)?.receiptToken || "").trim() || null,
     paidAt,
     paymentMethod: resolvePaymentMethodFromIntent(payment),
-    source: buyerId ? "buyer_session" : "anonymous"
+    source: receiptProofIntent ? "receipt_proof" : buyerId ? "buyer_session" : "anonymous"
   });
 }
 
