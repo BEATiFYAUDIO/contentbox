@@ -13065,9 +13065,18 @@ function registerPublicRoutes(appPublic: any) {
     const session = await resolveBuyerSession(req, reply);
     const buyerId = session?.buyer?.id || null;
     if (!buyerId) return reply.send([]);
+    const contentId = asString((req.query as any)?.contentId || "").trim();
+    await reconcileBuyerEntitlementsFromPurchaseHistory({
+      buyerId,
+      contentId: contentId || undefined
+    }).catch(() => {});
     const entitlements = await prisma.entitlement.findMany({
-      where: { buyerId },
+      where: {
+        buyerId,
+        ...(contentId ? { contentId } : {})
+      },
       include: {
+        payment: true,
         content: {
           select: {
             id: true,
@@ -13081,14 +13090,18 @@ function registerPublicRoutes(appPublic: any) {
     });
     return reply.send(
       entitlements.map((e) => ({
-        id: e.id,
-        contentId: e.contentId,
-        manifestSha256: e.manifestSha256,
-        grantedAt: e.grantedAt,
-        title: e.content?.title || null,
-        type: e.content?.type || null,
-        currentManifestSha256: e.content?.manifest?.sha256 || null
-      }))
+	        id: e.id,
+	        contentId: e.contentId,
+	        manifestSha256: e.manifestSha256,
+	        grantedAt: e.grantedAt,
+	        paymentIntentId: e.paymentIntentId || null,
+	        receiptId: String((e.payment as any)?.receiptId || "").trim() || null,
+	        receiptToken: String((e.payment as any)?.receiptToken || "").trim() || null,
+	        paidAt: e.payment?.paidAt && !Number.isNaN(new Date(e.payment.paidAt).getTime()) ? new Date(e.payment.paidAt).toISOString() : null,
+	        title: e.content?.title || null,
+	        type: e.content?.type || null,
+	        currentManifestSha256: e.content?.manifest?.sha256 || null
+	      }))
     );
   });
   appPublic.post("/api/buyer/buys", handleBuyerBuys);
@@ -37557,27 +37570,29 @@ async function handleBuyPage(req: any, reply: any) {
     if (!buyer || !buyer.id) return false;
     try {
       const res = await fetchJson("/api/buyer/entitlements?contentId=" + qs(contentId));
-      const list = Array.isArray(res) ? res : [];
-      alreadyOwned = list.length > 0;
-      if (alreadyOwned) {
-        const row = list[0] || {};
-        latestReceiptStatus = {
-          contentId,
-          receiptId: String(row.receiptId || "").trim() || null,
-          receiptToken: String(row.receiptToken || "").trim() || null,
-          paymentIntentId: String(row.paymentIntentId || "").trim() || null,
-          paidAt: row.paidAt || null,
-          access: "unlocked",
-          status: "paid",
-          paymentStatus: "paid",
-          canFulfill: true,
-          entitlement: { purchased: true, entitled: true }
-        };
-        if (latestReceiptStatus.receiptId) activeReceiptId = latestReceiptStatus.receiptId;
-        if (latestReceiptStatus.receiptToken) receiptToken = latestReceiptStatus.receiptToken;
-        if (latestReceiptStatus.paymentIntentId) activePaymentIntentId = latestReceiptStatus.paymentIntentId;
-        return maybeReturnToFan(latestReceiptStatus);
-      }
+	      const list = Array.isArray(res) ? res : [];
+	      alreadyOwned = list.length > 0;
+	      if (alreadyOwned) {
+	        const row = list[0] || {};
+	        const proofReceiptId = String(row.receiptId || "").trim();
+	        const proofReceiptToken = String(row.receiptToken || "").trim();
+	        latestReceiptStatus = {
+	          contentId,
+	          receiptId: proofReceiptId || null,
+	          receiptToken: proofReceiptToken || null,
+	          paymentIntentId: String(row.paymentIntentId || "").trim() || null,
+	          paidAt: row.paidAt || null,
+	          access: "unlocked",
+	          status: "paid",
+	          paymentStatus: "paid",
+	          canFulfill: true,
+	          entitlement: { purchased: true, entitled: true }
+	        };
+	        if (latestReceiptStatus.receiptId) activeReceiptId = latestReceiptStatus.receiptId;
+	        if (latestReceiptStatus.receiptToken) receiptToken = latestReceiptStatus.receiptToken;
+	        if (latestReceiptStatus.paymentIntentId) activePaymentIntentId = latestReceiptStatus.paymentIntentId;
+	        return Boolean(proofReceiptId || proofReceiptToken) && maybeReturnToFan(latestReceiptStatus);
+	      }
     } catch {
       alreadyOwned = false;
     }
