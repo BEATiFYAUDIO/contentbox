@@ -3804,13 +3804,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         return (
                           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                             <div className="flex items-center justify-between gap-3">
-                              <div className="text-xs text-neutral-300 font-medium">Preview</div>
+                              <div className="text-xs text-neutral-300 font-medium">Playback</div>
                               <button
                                 type="button"
                                 className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                                 onClick={() => loadPreview(it.id)}
                               >
-                                {previewLoadingByContent[it.id] ? "Loading…" : "Refresh preview"}
+                                {previewLoadingByContent[it.id] ? "Loading…" : "Refresh playback"}
                               </button>
                             </div>
                             <div className="mt-2 space-y-2">
@@ -3850,11 +3850,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               {previewUrl && isAudio ? <audio className="w-full" controls src={previewUrl} /> : null}
                               {previewUrl && !isAudio && !isVideo ? (
                                 <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                  Open preview
+                                  Open playback
                                 </a>
                               ) : null}
                               {!previewLoadingByContent[it.id] && !previewUrl && !preview?.error ? (
-                                <div className="text-xs text-neutral-500">No preview available yet.</div>
+                                <div className="text-xs text-neutral-500">No playback available yet.</div>
                               ) : null}
                               {preview?.error ? <div className="text-xs text-amber-300">{String(preview.error)}</div> : null}
                             </div>

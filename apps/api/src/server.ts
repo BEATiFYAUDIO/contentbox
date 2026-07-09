@@ -42217,13 +42217,14 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   const manifestJson = (manifest?.json || {}) as any;
   const rawPreviewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview.trim()) || "";
   const previewFromManifest = rawPreviewFromManifest && isStablePreviewObjectKey(contentId, rawPreviewFromManifest) ? rawPreviewFromManifest : "";
+  const isOwnerPreview = access.reason === "owner";
   const primaryFileId =
     (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
     (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
     files[0]?.objectKey ||
     "";
-  let primaryObjectKey = previewFromManifest || primaryFileId || null;
-  let selectedPreviewSource: "generated" | "original" = previewFromManifest ? "generated" : "original";
+  let primaryObjectKey = isOwnerPreview ? primaryFileId || previewFromManifest || null : previewFromManifest || primaryFileId || null;
+  let selectedPreviewSource: "generated" | "original" = !isOwnerPreview && previewFromManifest ? "generated" : "original";
   let ffmpegAttempted = false;
   let ffmpegResult: "skipped" | "generated" | "failed" = "skipped";
 
@@ -42232,7 +42233,7 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   const contentType = asString(content?.type || "").trim().toLowerCase();
   const isVideoLike = contentType === "video" || contentType === "movie" || contentType === "clip" || selectedMime.startsWith("video/");
   const isAudioLike = contentType === "audio" || contentType === "song" || selectedMime.startsWith("audio/");
-  if (!previewFromManifest && (isVideoLike || isAudioLike)) {
+  if (!isOwnerPreview && !previewFromManifest && (isVideoLike || isAudioLike)) {
     ffmpegAttempted = true;
     const generatedPreview = await withSoftTimeout(ensurePreviewFileOnce(content, files), 12000, null);
     if (generatedPreview) {
