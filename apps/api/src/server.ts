@@ -4070,6 +4070,37 @@ async function resolveParticipantIdentityGate(input: {
   });
 }
 
+const SELLER_LIGHTNING_ADDRESS_CACHE_TTL_MS = 60_000;
+const sellerLightningAddressCache = new Map<string, { expiresAt: number; value: string | null; promise?: Promise<string | null> }>();
+
+async function resolveSellerLightningAddress(userId: string | null | undefined): Promise<string | null> {
+  const uid = asString(userId || "").trim();
+  if (!uid) return null;
+  const now = Date.now();
+  const cached = sellerLightningAddressCache.get(uid);
+  if (cached && cached.expiresAt > now) {
+    if (cached.promise) return cached.promise;
+    return cached.value;
+  }
+  const promise = (async () => {
+    try {
+      const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+      if (!payoutMethod?.id) return null;
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId: uid },
+        orderBy: { createdAt: "desc" }
+      });
+      return asString(identity?.value || "").trim() || null;
+    } catch {
+      return null;
+    }
+  })();
+  sellerLightningAddressCache.set(uid, { expiresAt: now + SELLER_LIGHTNING_ADDRESS_CACHE_TTL_MS, value: null, promise });
+  const value = await promise;
+  sellerLightningAddressCache.set(uid, { expiresAt: Date.now() + SELLER_LIGHTNING_ADDRESS_CACHE_TTL_MS, value });
+  return value;
+}
+
 function parsePayoutDestinationType(value: unknown): CreatorPayoutDestinationType {
   const type = String(value || "").trim().toLowerCase();
   if (type === "lightning_address" || type === "local_lnd" || type === "onchain_address") return type;
@@ -18261,11 +18292,11 @@ async function getLocalSovereignReadiness(): Promise<LocalSovereignReadiness> {
 
 const LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS = Math.max(
   1000,
-  Number(process.env.LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS || "10000")
+  Number(process.env.LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS || "30000")
 );
 const LOCAL_SOVEREIGN_READINESS_STALE_TTL_MS = Math.max(
   LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS,
-  Number(process.env.LOCAL_SOVEREIGN_READINESS_STALE_TTL_MS || "45000")
+  Number(process.env.LOCAL_SOVEREIGN_READINESS_STALE_TTL_MS || "300000")
 );
 let localSovereignReadinessCache:
   | {
@@ -32814,7 +32845,7 @@ async function getPublicOfferGate(
 ): Promise<{ content: any | null; allowDraftPreview: boolean; tombstoned: boolean; entitled: boolean }> {
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    include: { owner: { select: { displayName: true } } }
+    include: { owner: { select: { displayName: true, email: true, avatarUrl: true } } }
   });
   if (!content) return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
 
@@ -36482,20 +36513,7 @@ async function handleBuyPage(req: any, reply: any) {
   // client-side interaction fetch is skipped/interrupted.
   void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   const sellerDisplayName = content.owner?.displayName || content.owner?.email || null;
-  let sellerLightningAddress: string | null = null;
-  try {
-    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
-    const identity = payoutMethod
-      ? await prisma.identity.findFirst({
-          where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
-          orderBy: { createdAt: "desc" }
-        })
-      : null;
-    const v = asString(identity?.value || "").trim();
-    if (v) sellerLightningAddress = v;
-  } catch {
-    sellerLightningAddress = null;
-  }
+  const sellerLightningAddress = await resolveSellerLightningAddress(content.ownerUserId);
   const ownerAppearance = buildPublicAppearanceThemeCss(content.owner || null);
   const sellerHandle = normalizePublicProfileHandle(content.owner?.displayName || "") || normalizedEmailLocalPart(content.owner?.email || "") || null;
   const sellerProfileUrl = sellerHandle ? `/u/${encodeURIComponent(sellerHandle)}` : null;
@@ -39081,6 +39099,9 @@ type ContentPublishProof = {
   providerNodeId: string | null;
 };
 
+const CONTENT_PUBLISH_PROOF_CACHE_TTL_MS = 60_000;
+const contentPublishProofCache = new Map<string, { expiresAt: number; indexMtimeMs: number; value: ContentPublishProof | null }>();
+
 function readContentPublishProofPayload(payload: unknown): {
   contentId: string | null;
   manifestHash: string | null;
@@ -39102,6 +39123,17 @@ function readContentPublishProofPayload(payload: unknown): {
 }
 
 function findLatestContentPublishProofForContent(contentId: string, manifestHash: string | null): ContentPublishProof | null {
+  const cacheKey = `${contentId}:${manifestHash || ""}`;
+  let indexMtimeMs = 0;
+  try {
+    indexMtimeMs = fsSync.statSync(path.join(RECEIPTS_DIR, "index.json")).mtimeMs;
+  } catch {
+    indexMtimeMs = 0;
+  }
+  const cached = contentPublishProofCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() && cached.indexMtimeMs === indexMtimeMs) {
+    return cached.value;
+  }
   const receipts = listLifecycleReceipts(RECEIPTS_DIR, 500);
   for (const receipt of receipts) {
     if (!receipt || receipt.type !== "content_publish") continue;
@@ -39110,14 +39142,25 @@ function findLatestContentPublishProofForContent(contentId: string, manifestHash
     const objectContentId = asString(receipt.objectId || "").trim() || null;
     if (payloadContentId !== contentId && objectContentId !== contentId) continue;
     const resolvedManifestHash = payload.manifestHash || manifestHash;
-    return {
+    const proof = {
       publishedAt: payload.publishedAt || asString(receipt.createdAt || "").trim() || null,
       manifestHash: resolvedManifestHash || null,
       receiptId: receipt.id,
       creatorNodeId: payload.creatorNodeId || asString(receipt.subjectNodeId || "").trim() || null,
       providerNodeId: payload.providerNodeId || asString(receipt.providerNodeId || "").trim() || null
     };
+    contentPublishProofCache.set(cacheKey, {
+      expiresAt: Date.now() + CONTENT_PUBLISH_PROOF_CACHE_TTL_MS,
+      indexMtimeMs,
+      value: proof
+    });
+    return proof;
   }
+  contentPublishProofCache.set(cacheKey, {
+    expiresAt: Date.now() + CONTENT_PUBLISH_PROOF_CACHE_TTL_MS,
+    indexMtimeMs,
+    value: null
+  });
   return null;
 }
 
@@ -39355,18 +39398,7 @@ async function handlePublicOffer(req: any, reply: any) {
 
   let tipsEnabled = false;
   if (!hasPrice) {
-    try {
-      const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
-      if (payoutMethod?.id) {
-        const identity = await prisma.identity.findFirst({
-          where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
-          orderBy: { createdAt: "desc" }
-        });
-        tipsEnabled = Boolean(asString(identity?.value || "").trim());
-      }
-    } catch {
-      tipsEnabled = false;
-    }
+    tipsEnabled = Boolean(await resolveSellerLightningAddress(content.ownerUserId));
   }
 
   const providerCfg = getNetworkProviderConfig();
@@ -39414,10 +39446,7 @@ async function handlePublicOffer(req: any, reply: any) {
     });
   }
 
-  const owner = await prisma.user.findUnique({
-    where: { id: content.ownerUserId },
-    select: { displayName: true, email: true, avatarUrl: true }
-  });
+  const owner = content.owner || null;
   const canonicalOrigin = resolveCanonicalPublicOrigin(req);
 
   const previewUrl = previewObjectKey
