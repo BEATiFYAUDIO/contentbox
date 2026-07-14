@@ -31108,7 +31108,8 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     prisma.sale.groupBy({
       by: ["contentId"],
       where: { contentId: { in: contentIds }, recognizedAt: { gte: windowStart } },
-      _count: { _all: true }
+      _count: { _all: true },
+      _max: { recognizedAt: true }
     } as any).catch(() => [] as any[]),
     prisma.paymentIntent.groupBy({
       by: ["contentId"],
@@ -31118,7 +31119,8 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
         purpose: "CONTENT_PURCHASE" as any,
         paidAt: { gte: windowStart }
       },
-      _count: { _all: true }
+      _count: { _all: true },
+      _max: { paidAt: true }
     } as any).catch(() => [] as any[]),
     prisma.paymentIntent.groupBy({
       by: ["contentId"],
@@ -31128,7 +31130,8 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
         purpose: "TIP" as any,
         paidAt: { gte: windowStart }
       },
-      _count: { _all: true }
+      _count: { _all: true },
+      _max: { paidAt: true }
     } as any).catch(() => [] as any[]),
     prisma.audienceEvent.groupBy({
       by: ["contentId"],
@@ -31137,7 +31140,8 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
         eventType: "view" as any,
         createdAt: { gte: windowStart }
       },
-      _count: { _all: true }
+      _count: { _all: true },
+      _max: { createdAt: true }
     } as any).catch(() => [] as any[]),
     prisma.contentLink.findMany({
       where: {
@@ -31165,10 +31169,26 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     }
     return m;
   };
+  const maxDateByContent = (groups: any[], field: string) => {
+    const m = new Map<string, Date>();
+    for (const group of groups || []) {
+      const contentId = asString(group?.contentId || "").trim();
+      if (!contentId) continue;
+      const date = group?._max?.[field] ? new Date(group._max[field]) : null;
+      if (!date || !Number.isFinite(date.getTime())) continue;
+      const existing = m.get(contentId);
+      if (!existing || date.getTime() > existing.getTime()) m.set(contentId, date);
+    }
+    return m;
+  };
   const salesByContent = countByContent(salesGroups as any[]);
   const purchasesByContent = countByContent(purchaseGroups as any[]);
   const tipsByContent = countByContent(tipGroups as any[]);
   const viewsByContent = countByContent(viewGroups as any[]);
+  const latestSaleByContent = maxDateByContent(salesGroups as any[], "recognizedAt");
+  const latestPurchaseByContent = maxDateByContent(purchaseGroups as any[], "paidAt");
+  const latestTipByContent = maxDateByContent(tipGroups as any[], "paidAt");
+  const latestViewByContent = maxDateByContent(viewGroups as any[], "createdAt");
 
   const publicIdSet = new Set(contentIds);
   const connectedByContent = new Map<string, number>();
@@ -31334,11 +31354,26 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     const viewCount = viewsByContent.get(row.id) || 0;
     const supportCount = saleCount + purchaseCount + tipCount;
     const unlockCount = saleCount + purchaseCount;
+    const latestActivityAt = [
+      latestSaleByContent.get(row.id),
+      latestPurchaseByContent.get(row.id),
+      latestTipByContent.get(row.id),
+      latestViewByContent.get(row.id),
+      row.updatedAt ? new Date(row.updatedAt) : null,
+      row.createdAt ? new Date(row.createdAt) : null
+    ]
+      .filter((date): date is Date => Boolean(date && Number.isFinite(date.getTime())))
+      .sort((a, b) => b.getTime() - a.getTime())[0] || null;
     scoreByContent.set(row.id, {
       topConnectedScore: clampScore(logScaledScore(collaboratorCount, 8) * 0.55 + logScaledScore(connectedWorkCount, 8) * 0.45),
       supportMomentumScore: logScaledScore(supportCount, 20),
       unlockMomentumScore: logScaledScore(unlockCount, 20),
-      fastestMovingScore: clampScore(logScaledScore(viewCount, 50) * 0.45 + logScaledScore(supportCount, 20) * 0.35 + recencyScore(row.createdAt, windowStart, now) * 0.2),
+      fastestMovingScore: clampScore(
+        logScaledScore(viewCount, 50) * 0.3 +
+        logScaledScore(supportCount, 20) * 0.28 +
+        recencyScore(latestActivityAt, windowStart, now) * 0.32 +
+        recencyScore(row.createdAt, windowStart, now) * 0.1
+      ),
       collaboratorCount,
       connectedWorkCount
     });
@@ -31499,7 +31534,16 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
     .slice(0, 10);
   const fastestMoving = rankedWorks
     .filter((work) => work.scores.fastestMovingScore > 0)
-    .sort((a, b) => b.scores.fastestMovingScore - a.scores.fastestMovingScore)
+    .sort((a, b) => {
+      const scoreDelta = b.scores.fastestMovingScore - a.scores.fastestMovingScore;
+      if (scoreDelta !== 0) return scoreDelta;
+      const aTime = Date.parse(asString(a.updatedAt || a.publishedAt || a.createdAt || ""));
+      const bTime = Date.parse(asString(b.updatedAt || b.publishedAt || b.createdAt || ""));
+      const aSafe = Number.isFinite(aTime) ? aTime : 0;
+      const bSafe = Number.isFinite(bTime) ? bTime : 0;
+      if (aSafe !== bSafe) return bSafe - aSafe;
+      return asString(b.contentId || "").localeCompare(asString(a.contentId || ""));
+    })
     .slice(0, 10);
   const collaborativeReleases = rankedWorks
     .filter((work) => work.signals.collaborators > 1 || work.signals.connectedWorks > 0)
