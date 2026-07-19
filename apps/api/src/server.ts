@@ -37808,10 +37808,11 @@ async function handleBuyPage(req: any, reply: any) {
   function offerCoverUrl(offer){
     const direct = String(offer?.coverUrl || "").trim();
     if (direct) return direct;
+    const shareQ = shareToken ? "?share=" + qs(shareToken) : "";
     const coverObjectKey = String(offer?.coverObjectKey || "").trim();
-    if (!coverObjectKey) return null;
-    const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(coverObjectKey) + shareQ;
+    if (!coverObjectKey) return apiBase + "/public/content/" + contentId + "/cover" + shareQ;
+    const objectShareQ = shareToken ? "&share=" + qs(shareToken) : "";
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(coverObjectKey) + objectShareQ;
   }
 
   function resolveBasicDeliveryMode(offer){
