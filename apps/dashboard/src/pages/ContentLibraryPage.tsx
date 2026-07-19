@@ -3485,7 +3485,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   : !isOwner && participationInfo?.kind === "remote"
                                     ? "Open release"
                                     : isOwner && !isLegacyAsset
-                                      ? "Show files"
+                                      ? "Show Details"
                                       : "Details"}
                               </button>
 
