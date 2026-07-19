@@ -39348,7 +39348,7 @@ async function handlePublicOffer(req: any, reply: any) {
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
   const baseUrl = host ? `${proto}://${host}` : null;
-  const coverUrl = coverObjectKey ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/cover` : null;
+  const coverUrl = `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/cover`;
   const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
 
   const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
