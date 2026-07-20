@@ -4,6 +4,23 @@ function isLocalHost(hostname: string) {
   return hostname === "localhost" || hostname === "127.0.0.1";
 }
 
+function isPrivateHost(hostname: string): boolean {
+  if (!hostname) return false;
+  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) return true;
+  const m = hostname.match(/^172\.(\d+)\./);
+  if (m) {
+    const n = Number(m[1]);
+    return n >= 16 && n <= 31;
+  }
+  return false;
+}
+
+function isInsecurePrivateApiFromSecurePage(apiUrl: URL): boolean {
+  if (typeof window === "undefined") return false;
+  return window.location.protocol === "https:" && apiUrl.protocol === "http:" && isPrivateHost(apiUrl.hostname);
+}
+
 function resolveApiBase(): string {
   const envBase =
     ((import.meta as any).env?.VITE_API_BASE_URL || (import.meta as any).env?.VITE_API_URL || "")
@@ -25,6 +42,9 @@ function resolveApiBase(): string {
     if (envBase) {
       try {
         const envUrl = new URL(envBase);
+        if (isInsecurePrivateApiFromSecurePage(envUrl)) {
+          return origin.replace(/\/$/, "");
+        }
         // Rewrite local alias to page host when both are loopback and same port.
         if (isLocalHost(hostname) && isLocalHost(envUrl.hostname)) {
           const envPort = envUrl.port || (envUrl.protocol === "https:" ? "443" : "80");
@@ -72,18 +92,6 @@ function clearStoredApiBase(): void {
   } catch {}
 }
 
-function isPrivateHost(hostname: string): boolean {
-  if (!hostname) return false;
-  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
-  if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) return true;
-  const m = hostname.match(/^172\.(\d+)\./);
-  if (m) {
-    const n = Number(m[1]);
-    return n >= 16 && n <= 31;
-  }
-  return false;
-}
-
 function shouldAutoFixApiBase(currentBase: string): boolean {
   if (typeof window === "undefined") return false;
   const uiHost = window.location.hostname || "";
@@ -94,6 +102,8 @@ function shouldAutoFixApiBase(currentBase: string): boolean {
     const parsedApi = new URL(currentBase);
     const apiHost = parsedApi.hostname;
     const apiPort = parsedApi.port || "";
+    // HTTPS public dashboard must never keep an insecure private/LAN API base.
+    if (isInsecurePrivateApiFromSecurePage(parsedApi)) return true;
     // Localhost alias mismatch causes CORS on same-machine setups
     // (e.g. UI on localhost hitting API on 127.0.0.1 or vice versa).
     if (isLocalHost(uiHost) && isLocalHost(apiHost) && uiHost !== apiHost && uiPort === apiPort) return true;
