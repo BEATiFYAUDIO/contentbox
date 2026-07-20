@@ -37,6 +37,10 @@ function toHex(bytes: Uint8Array): string {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function canUseWebCryptoEd25519(): boolean {
+  return globalThis.isSecureContext !== false && Boolean(globalThis.crypto?.subtle);
+}
+
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
@@ -75,6 +79,7 @@ async function writeLocalKey(record: LocalWitnessRecord): Promise<void> {
 }
 
 async function generateWithWebCrypto(): Promise<LocalWitnessRecord> {
+  if (!canUseWebCryptoEd25519()) throw new Error("WEBCRYPTO_UNAVAILABLE");
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("WEBCRYPTO_UNAVAILABLE");
 

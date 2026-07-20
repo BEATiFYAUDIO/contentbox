@@ -17,6 +17,7 @@ export default function CreatorIdentityCard({ witness }: Props) {
   const isLocalDev = isBrowser && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
   const is4000Surface = isLocalDev && window.location.port === "4000";
   const keyOpsBlockedOnThisSurface = isLocalDev && window.location.port === "5173";
+  const isInsecureRemoteHttp = isBrowser && !window.isSecureContext && !isLocalDev;
 
   const createdText = useMemo(() => {
     if (!identity?.createdAt) return null;
@@ -41,6 +42,11 @@ export default function CreatorIdentityCard({ witness }: Props) {
       {keyOpsBlockedOnThisSurface ? (
         <div className="mt-2 text-xs rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-amber-200">
           Key creation/registration is disabled on dev preview (`:5173`). Use the integrated app on `http://localhost:4000/profile`.
+        </div>
+      ) : null}
+      {isInsecureRemoteHttp ? (
+        <div className="mt-2 text-xs rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-amber-200">
+          HTTPS is recommended for creator keys. This browser is using the local fallback because WebCrypto is not available on insecure LAN HTTP.
         </div>
       ) : null}
 
