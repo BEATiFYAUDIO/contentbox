@@ -2393,14 +2393,12 @@ function normalizePublicLocationConfig(input: unknown): PublicLocationConfig | n
   const region = sanitizePublicLocationText(raw.region, 100);
   const city = sanitizePublicLocationText(raw.city, 100);
   const displayLocation = sanitizePublicLocationText(raw.displayLocation, 140);
-  const hasAllowedPrecisionValue =
-    precision === "country" ? Boolean(country) : precision === "region" ? Boolean(country || region) : Boolean(country || region || city);
-  if (!hasAllowedPrecisionValue && !displayLocation) return null;
+  if (!country && !region && !city && !displayLocation) return null;
 
   const normalized: PublicLocationConfig = { precision, source };
   if (country) normalized.country = country;
-  if (precision !== "country" && region) normalized.region = region;
-  if (precision === "city" && city) normalized.city = city;
+  if (region) normalized.region = region;
+  if (city) normalized.city = city;
   if (displayLocation) normalized.displayLocation = displayLocation;
   return normalized;
 }
@@ -2410,8 +2408,8 @@ function publicNetworkMapLocation(): NetworkMapNode["location"] | undefined {
   if (!location) return undefined;
   const result: NonNullable<NetworkMapNode["location"]> = {};
   if (location.country) result.country = location.country;
-  if (location.region) result.region = location.region;
-  if (location.city) result.city = location.city;
+  if (location.precision !== "country" && location.region) result.region = location.region;
+  if (location.precision === "city" && location.city) result.city = location.city;
   if (location.displayLocation) result.displayLocation = location.displayLocation;
   if (location.precision) result.precision = location.precision;
   if (location.source) result.source = location.source;
