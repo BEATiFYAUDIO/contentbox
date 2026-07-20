@@ -4791,7 +4791,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setPriceMsg((m) => ({ ...m, [it.id]: "" }));
-                                  await api(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
+                                  const res = await api<{ priceSats: string | null }>(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
+                                  const savedPrice = res.priceSats ?? "0";
+                                  setPriceDraft((m) => ({ ...m, [it.id]: savedPrice }));
+                                  setItems((prev) => prev.map((row) => (row.id === it.id ? { ...row, priceSats: savedPrice } : row)));
                                   await refreshCurrentView();
                                   setPriceMsg((m) => ({
                                     ...m,
@@ -4850,7 +4853,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "" }));
-                                  await api(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
+                                  const res = await api<{ deliveryMode: ContentItem["deliveryMode"] }>(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
+                                  const savedDelivery = res.deliveryMode || "";
+                                  setDeliveryDraft((m) => ({ ...m, [it.id]: savedDelivery }));
+                                  setItems((prev) => prev.map((row) => (row.id === it.id ? { ...row, deliveryMode: res.deliveryMode || null } : row)));
                                   await refreshCurrentView();
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
@@ -4905,7 +4911,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setPrimaryTopicMsg((m) => ({ ...m, [it.id]: "" }));
-                                  await api(`/content/${it.id}/primary-topic`, "PATCH", { primaryTopic: raw || null });
+                                  const res = await api<{ primaryTopic: string | null }>(`/content/${it.id}/primary-topic`, "PATCH", { primaryTopic: raw || null });
+                                  const savedTopic = res.primaryTopic || "";
+                                  setPrimaryTopicDraft((m) => ({ ...m, [it.id]: savedTopic }));
+                                  setItems((prev) => prev.map((row) => (row.id === it.id ? { ...row, primaryTopic: (res.primaryTopic || null) as any } : row)));
                                   await refreshCurrentView();
                                   setPrimaryTopicMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
