@@ -445,6 +445,13 @@ const DISCOVERY_ORIGIN_UPDATE_WINDOW_MS = 2 * 60 * 1000;
 const DISCOVERY_ORIGIN_UPDATE_MAX_PER_WINDOW = 6;
 const DISCOVERY_ORIGIN_UPDATE_MIN_INTERVAL_MS = 5000;
 const DISCOVERY_ORIGIN_UPDATE_THROTTLE_MS = 2 * 60 * 1000;
+const DEFAULT_MEDIA_FILE_SIZE_LIMIT_BYTES = 1024 * 1024 * 1024 * 1024; // 1TB practical ceiling
+
+function resolveMediaFileSizeLimitBytes() {
+  const raw = Number(process.env.CONTENTBOX_MEDIA_FILE_SIZE_LIMIT_BYTES || "");
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return DEFAULT_MEDIA_FILE_SIZE_LIMIT_BYTES;
+}
 
 function enforceDiscoveryStorefrontRateLimit(input: {
   userId: string;
@@ -11237,7 +11244,7 @@ app.register(jwt, { secret: JWT_SECRET });
 
 app.register(multipart, {
   limits: {
-    fileSize: 1024 * 1024 * 1024 // 1GB
+    fileSize: resolveMediaFileSizeLimitBytes()
   }
 });
 
@@ -27734,14 +27741,6 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth] }, async (r
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const body = (req.body ?? {}) as { storefrontStatus?: string };
-  const rateCheck = enforceDiscoveryStorefrontRateLimit({ userId, contentId });
-  if (!rateCheck.ok) {
-    return reply.code(429).send({
-      code: "DISCOVERY_UPDATE_RATE_LIMITED",
-      message: "Discovery updates are temporarily limited. Please wait and try again.",
-      retryAfterMs: rateCheck.retryAfterMs
-    });
-  }
 
   const status = asString(body.storefrontStatus || "").trim().toUpperCase();
   if (!["DISABLED", "UNLISTED", "LISTED"].includes(status)) {
@@ -27781,6 +27780,14 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth] }, async (r
     }
     if (!content.manifestId || content.status !== "published") {
       return reply.code(409).send({ code: "CONTENT_NOT_PUBLISHED", message: "Content must be published before listing." });
+    }
+    const rateCheck = enforceDiscoveryStorefrontRateLimit({ userId, contentId });
+    if (!rateCheck.ok) {
+      return reply.code(429).send({
+        code: "DISCOVERY_UPDATE_RATE_LIMITED",
+        message: "Discovery updates are temporarily limited. Please wait and try again.",
+        retryAfterMs: rateCheck.retryAfterMs
+      });
     }
     const links = await prisma.contentLink.findMany({
       where: {
@@ -41423,7 +41430,7 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       if (existing.status === "done" && existing.response) return reply.send(existing.response);
       const retryAfterMs = Math.max(250, existing.expiresAt - now);
       reply.header("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
-      return reply.code(409).send({ error: "Upload already in progress", code: "UPLOAD_IN_PROGRESS", retryAfterMs });
+      return reply.code(409).send({ error: "Media save already in progress", code: "UPLOAD_IN_PROGRESS", retryAfterMs });
     }
     uploadIdempotency.delete(idempotencyKey);
   }
@@ -41673,21 +41680,21 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
   } catch (e: any) {
     if (idempotencyKey) uploadIdempotency.delete(idempotencyKey);
     const code = Number(e?.statusCode || e?.status || 0);
-    const msg = String(e?.message || e || "Upload failed");
+    const msg = String(e?.message || e || "Media save failed");
     if (code === 413 || String(e?.code || "").includes("FST_REQ_FILE_TOO_LARGE") || msg.toLowerCase().includes("too large")) {
-      return reply.code(413).send({ error: "uploaded file too large" });
+      return reply.code(413).send({ error: "media file too large" });
     }
     if (code === 401 || code === 403) {
       return reply.code(code).send({ error: code === 401 ? "Unauthorized" : "Forbidden" });
     }
     if (code === 400 || msg === "file is required") {
-      return reply.code(400).send({ error: msg === "uploaded file is empty" ? "uploaded file is empty" : "file is required" });
+      return reply.code(400).send({ error: msg === "uploaded file is empty" ? "media file is empty" : "file is required" });
     }
     if (code === 415 || msg.toLowerCase().includes("multipart/form-data")) {
       return reply.code(415).send({ error: "multipart/form-data required" });
     }
     req.log.error({ err: e, contentId }, "upload failed");
-    return reply.code(500).send({ error: "Upload failed" });
+    return reply.code(500).send({ error: "Media save failed" });
   }
 });
 
@@ -41716,7 +41723,7 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
   if (!coverSupportedTypes.has(String(content.type || "").toLowerCase())) {
     return reply
       .code(400)
-      .send({ error: "Cover upload is only supported for song, video, book, file, remix, mashup, and derivative content." });
+      .send({ error: "Cover save is only supported for song, video, book, file, remix, mashup, and derivative content." });
   }
 
   const uploadReqCheck = validateUploadRequest({
@@ -41736,7 +41743,7 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
       if (existing.status === "done" && existing.response) return reply.send(existing.response);
       const retryAfterMs = Math.max(250, existing.expiresAt - now);
       reply.header("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
-      return reply.code(409).send({ error: "Cover upload already in progress", code: "UPLOAD_IN_PROGRESS", retryAfterMs });
+      return reply.code(409).send({ error: "Cover save already in progress", code: "UPLOAD_IN_PROGRESS", retryAfterMs });
     }
     uploadIdempotency.delete(idempotencyKey);
   }
@@ -41831,18 +41838,18 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
   } catch (e: any) {
     if (idempotencyKey) uploadIdempotency.delete(idempotencyKey);
     const code = Number(e?.statusCode || e?.status || 0);
-    const msg = String(e?.message || e || "Cover upload failed");
+    const msg = String(e?.message || e || "Cover save failed");
     if (code === 413 || msg.toLowerCase().includes("too large")) {
       return reply.code(413).send({ error: "Cover image exceeds 5MB limit" });
     }
     if (code === 409 || msg.includes("UPLOAD_IN_PROGRESS")) {
-      return reply.code(409).send({ error: "Cover upload already in progress", code: "UPLOAD_IN_PROGRESS" });
+      return reply.code(409).send({ error: "Cover save already in progress", code: "UPLOAD_IN_PROGRESS" });
     }
     if (code === 415 || msg.toLowerCase().includes("multipart/form-data")) {
       return reply.code(415).send({ error: "multipart/form-data required" });
     }
     req.log.error({ err: e, contentId }, "cover upload failed");
-    return reply.code(500).send({ error: "Cover upload failed" });
+    return reply.code(500).send({ error: "Cover save failed" });
   }
 });
 
@@ -42363,7 +42370,7 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   );
 
   if (!primaryObjectKey) {
-    return reply.code(400).send({ error: "Upload a master file to preview." });
+    return reply.code(400).send({ error: "Save a master file to preview." });
   }
 
   const previewUrl = primaryObjectKey

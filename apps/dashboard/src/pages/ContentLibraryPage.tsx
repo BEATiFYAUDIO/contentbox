@@ -339,6 +339,23 @@ function uploadIdempotencyKey(contentId: string, file: File) {
   return `upl-${contentId.slice(0, 8)}-${file.size}-${suffix}`;
 }
 
+function uploadErrorMessage(error: any) {
+  const raw = String(error?.message || "Media could not be saved. Try again.");
+  const lower = raw.toLowerCase();
+  if (raw.includes("PUBLISHED_IMMUTABLE")) {
+    return "This published release is immutable. Create a new version to save updated media.";
+  }
+  if (raw.startsWith("Media saved, but")) return raw;
+  if (lower.includes("too large") || raw.includes("413")) {
+    return "Media file is too large for this node. Use a smaller encoded file or raise CONTENTBOX_MEDIA_FILE_SIZE_LIMIT_BYTES.";
+  }
+  if (lower.includes("multipart/form-data") || raw.includes("415")) {
+    return "Media save failed because the browser did not send a valid file. Try selecting it again.";
+  }
+  if (lower.includes("empty")) return "Media save failed because the selected file is empty.";
+  return "Media could not be saved. Try again.";
+}
+
 async function uploadToRepo(contentId: string, file: File, idempotencyKey: string) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
@@ -479,6 +496,23 @@ function publicDiscoveryReadyLabel(item: Pick<ContentItem, "priceSats">, paidDis
   const price = Number(raw);
   if (!Number.isFinite(price)) return "Ready";
   return price > 0 ? "Ready (premium work)" : "Ready (free drop)";
+}
+
+function storefrontErrorMessage(error: any, fallback = "Failed to update network visibility") {
+  const raw = String(error?.message || error || "");
+  if (raw.includes("CONTENT_NOT_PUBLISHED")) {
+    return "Publish this content before making it visible on the network.";
+  }
+  if (raw.includes("DISCOVERY_UPDATE_RATE_LIMITED")) {
+    return "Discovery updates are temporarily limited. Wait about one minute, then try again.";
+  }
+  if (raw.includes("public_discovery_not_allowed")) {
+    return "Public discovery is not available in the current node posture.";
+  }
+  if (raw.includes("DISCOVERY_PAID_REQUIRES_COMMERCE")) {
+    return "Paid Discovery listing requires commerce-capable posture. Keep this content free (0 sats) to list in Discovery as Basic.";
+  }
+  return raw || fallback;
 }
 
 async function copyText(text: string) {
@@ -1986,9 +2020,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setError(discoveryPublishReasonResolved);
       return;
     }
+    const current = items.find((it) => it.id === contentId);
+    if (storefrontStatus !== "DISABLED" && String(current?.status || "").toLowerCase() !== "published") {
+      setError("Publish this content before making it visible on the network.");
+      return;
+    }
     setBusyAction((m) => ({ ...m, [contentId]: true }));
     const previousStatus = (() => {
-      const current = items.find((it) => it.id === contentId);
       return ((current?.storefrontStatus || "DISABLED") as "DISABLED" | "UNLISTED" | "LISTED");
     })();
     // Optimistic update avoids the visibility select snapping back to Hidden
@@ -2007,13 +2045,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setItems((prev) =>
         prev.map((it) => (it.id === contentId ? { ...it, storefrontStatus: previousStatus } : it))
       );
-      if (e?.message && String(e.message).includes("public_discovery_not_allowed")) {
-        setError(discoveryPublishReasonResolved);
-      } else if (e?.message && String(e.message).includes("DISCOVERY_PAID_REQUIRES_COMMERCE")) {
-        setError("Paid Discovery listing requires commerce-capable posture. Keep this content free (0 sats) to list in Discovery as Basic.");
-      } else {
-        setError(e?.message || "Failed to update network visibility");
-      }
+      const message = storefrontErrorMessage(e);
+      setError(message === "Public discovery is not available in the current node posture." ? discoveryPublishReasonResolved : message);
     } finally {
       setBusyAction((m) => ({ ...m, [contentId]: false }));
     }
@@ -2269,7 +2302,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   function UploadButton({
     contentId,
     disabled,
-    label = "Upload"
+    label = "Save media"
   }: {
     contentId: string;
     disabled?: boolean;
@@ -2327,13 +2360,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           }
           setUpload({ status: "done", kind: "content", contentId, filename: file.name });
         } catch (err: any) {
-          const raw = String(err?.message || "Media could not be saved. Try again.");
-          const message = raw.includes("PUBLISHED_IMMUTABLE")
-            ? "This published release is immutable. Create a new version to upload updated media."
-            : raw.startsWith("Media saved, but")
-              ? raw
-              : "Media could not be saved. Try again.";
-          setUpload({ status: "error", kind: "content", contentId, message });
+          setUpload({ status: "error", kind: "content", contentId, message: uploadErrorMessage(err) });
         }
       },
       [authReady, busy, contentId]
@@ -2355,7 +2382,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         />
         <button
           type="button"
-          aria-label="Upload file"
+          aria-label="Save media file"
           disabled={triggerDisabled}
           onClick={() => {
             if (triggerDisabled) return;
@@ -2366,7 +2393,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
           }`}
           style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
-          title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
+          title={triggerDisabled ? "Save unavailable" : "Save media into this content repo and commit"}
         >
           {upload.status === "preparing" && upload.kind === "content" && upload.contentId === contentId
             ? "Preparing your media…"
@@ -2374,7 +2401,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               ? "Preparing your media…"
               : label}
         </button>
-        {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
+        {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to save media</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Media could not be saved. Try again.</span> : null}
       </div>
     );
@@ -2383,7 +2410,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   function CoverUploadButton({
     contentId,
     disabled,
-    label = "Upload cover"
+    label = "Save cover"
   }: {
     contentId: string;
     disabled?: boolean;
@@ -2445,7 +2472,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         />
         <button
           type="button"
-          aria-label="Upload content cover"
+          aria-label="Save content cover"
           disabled={triggerDisabled}
           onClick={() => {
             if (triggerDisabled) return;
@@ -2456,7 +2483,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
           }`}
           style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
-          title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
+          title={triggerDisabled ? "Cover save unavailable" : "Save album cover (jpg, png, webp)"}
         >
           {busy ? "Saving image…" : label}
         </button>
@@ -2575,7 +2602,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             ? "Access: everything you can open (owned, purchased, preview)."
             : contentScope === "local"
               ? "Local: items stored on this node."
-              : "Authored: your creator catalog only."}
+            : "Authored: your creator catalog only."}
         </div>
       </div>
 
@@ -2670,7 +2697,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             <button className="rounded-lg bg-white text-black font-medium px-4 py-2 disabled:opacity-60" disabled={creating}>
               {creating ? "Creating…" : "Create"}
             </button>
-            <div className="text-xs text-neutral-500">Upload sets the master file and updates manifest.json.primaryFile automatically.</div>
+            <div className="text-xs text-neutral-500">Saving media sets the master file and updates manifest.json.primaryFile automatically.</div>
           </div>
         </form>
 
@@ -3512,13 +3539,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ) : null}
 
                               {!isLegacyAsset && isOwner && allowUpload ? (
-                                <UploadButton contentId={it.id} disabled={busy} label="Upload" />
+                                <UploadButton contentId={it.id} disabled={busy} label="Save media" />
                               ) : null}
                               {!isLegacyAsset && isOwner && allowCoverUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
                                 <CoverUploadButton
                                   contentId={it.id}
                                   disabled={busy}
-                                  label={uiState === "published" ? "Update cover" : "Upload cover"}
+                                  label={uiState === "published" ? "Update cover" : "Save cover"}
                                 />
                               ) : null}
                               {!isLegacyAsset && splitsAllowed && isOwner ? (
@@ -3919,7 +3946,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         {isFilesLoading ? (
                           <div className="mt-2 text-sm text-neutral-400">Loading files…</div>
                         ) : files.length === 0 ? (
-                          <div className="mt-2 text-sm text-neutral-400">No files yet. Click Upload.</div>
+                          <div className="mt-2 text-sm text-neutral-400">No files yet. Save media to continue.</div>
                         ) : (
                           <div className="mt-2 space-y-2">
                             <div className="text-[11px] text-neutral-400 flex items-center gap-2">
@@ -4238,7 +4265,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ) : null}
                               {filesCount === 0 ? (
                                 <div className="mt-2 text-[11px] text-amber-300 flex items-center gap-2">
-                                  <span>No files uploaded yet. Upload your remix to enable preview and clearance.</span>
+                                  <span>No files saved yet. Save your remix to enable preview and clearance.</span>
                                   <UploadButton contentId={it.id} disabled={busy} />
                                 </div>
                               ) : null}
@@ -4795,7 +4822,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   const savedPrice = res.priceSats ?? "0";
                                   setPriceDraft((m) => ({ ...m, [it.id]: savedPrice }));
                                   setItems((prev) => prev.map((row) => (row.id === it.id ? { ...row, priceSats: savedPrice } : row)));
-                                  await refreshCurrentView();
                                   setPriceMsg((m) => ({
                                     ...m,
                                     [it.id]:
@@ -4857,7 +4883,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   const savedDelivery = res.deliveryMode || "";
                                   setDeliveryDraft((m) => ({ ...m, [it.id]: savedDelivery }));
                                   setItems((prev) => prev.map((row) => (row.id === it.id ? { ...row, deliveryMode: res.deliveryMode || null } : row)));
-                                  await refreshCurrentView();
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save delivery mode." }));
@@ -4915,7 +4940,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   const savedTopic = res.primaryTopic || "";
                                   setPrimaryTopicDraft((m) => ({ ...m, [it.id]: savedTopic }));
                                   setItems((prev) => prev.map((row) => (row.id === it.id ? { ...row, primaryTopic: (res.primaryTopic || null) as any } : row)));
-                                  await refreshCurrentView();
                                   setPrimaryTopicMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
                                   setPrimaryTopicMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save primary topic." }));
