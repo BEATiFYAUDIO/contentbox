@@ -2384,6 +2384,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           type="button"
           aria-label="Save media file"
           disabled={triggerDisabled}
+          onPointerDown={() => {
+            if (inputRef.current) inputRef.current.value = "";
+          }}
           onClick={() => {
             if (triggerDisabled) return;
             if (inputRef.current) inputRef.current.value = "";
@@ -2474,6 +2477,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           type="button"
           aria-label="Save content cover"
           disabled={triggerDisabled}
+          onPointerDown={() => {
+            if (inputRef.current) inputRef.current.value = "";
+          }}
           onClick={() => {
             if (triggerDisabled) return;
             if (inputRef.current) inputRef.current.value = "";
@@ -3821,9 +3827,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         const preview = previewByContent[it.id] || null;
                         const previewUrl = localPreviewUrlByContent[it.id] || preview?.previewUrl || null;
                         const previewFile = previewFileFor(previewUrl, preview?.files || files);
-                        const previewMime = String(previewFile?.mime || "");
-                        const isVideo = String(it.type || "").toLowerCase() === "video" || previewMime.startsWith("video/");
-                        const isAudio = String(it.type || "").toLowerCase() === "song" || previewMime.startsWith("audio/");
+                        const previewMime = String(previewFile?.mime || "").toLowerCase();
+                        const contentType = String(it.type || "").toLowerCase();
+                        const hasResolvedPreviewMime = Boolean(previewMime);
+                        const isVideo = previewMime.startsWith("video/") || (!hasResolvedPreviewMime && contentType === "video");
+                        const isAudio = previewMime.startsWith("audio/") || (!hasResolvedPreviewMime && (contentType === "song" || contentType === "audio"));
                         const coverVersion = String(coverCacheBustByContent[it.id] || it.manifest?.sha256 || "").trim();
                         const coverUrl = localCoverUrlByContent[it.id] || `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
                           coverVersion ? `?v=${encodeURIComponent(coverVersion)}` : ""
@@ -4636,8 +4644,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const pf = previewFileFor(previewUrl, derivativePreviewByChild[d.childContentId]?.files || []);
                                     const mime = String(pf?.mime || "").toLowerCase();
                                     const type = String(derivativePreviewByChild[d.childContentId]?.content?.type || "").toLowerCase();
-                                    const isVideo = mime.startsWith("video/") || type === "video";
-                                    const isAudio = mime.startsWith("audio/") || type === "song";
+                                    const hasMime = Boolean(mime);
+                                    const isVideo = mime.startsWith("video/") || (!hasMime && type === "video");
+                                    const isAudio = mime.startsWith("audio/") || (!hasMime && (type === "song" || type === "audio"));
                                     if (previewUrl && isVideo) {
                                       return (
                                         <div className="mt-2">
