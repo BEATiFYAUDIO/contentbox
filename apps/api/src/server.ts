@@ -12535,18 +12535,39 @@ async function ensureCoverImage(content: any, files: any[]) {
   }
 }
 
-async function buildManifestWithDerivedAssets(content: any, files: any[], opts?: { coverObjectKey?: string | null }) {
+async function buildManifestWithDerivedAssets(
+  content: any,
+  files: any[],
+  opts?: { coverObjectKey?: string | null; primaryObjectKey?: string | null }
+) {
   // Cover is a manifest attachment on the same content item (never a separate content record).
+  const explicitPrimary = String(opts?.primaryObjectKey || "").trim();
+  const explicitCover = String(opts?.coverObjectKey || "").trim();
+  let existingPrimary = "";
+  try {
+    if (content?.repoPath) {
+      existingPrimary = getPrimaryObjectKey(await readManifest(content.repoPath)) || "";
+    }
+  } catch {}
+
   const previewObjectKey = await ensurePreviewFile(content, files);
   if (previewObjectKey) {
     files = await prisma.contentFile.findMany({ where: { contentId: content.id }, orderBy: { createdAt: "asc" } }).catch(() => files);
   }
   const manifestJson = await buildManifestJson(content, files);
+  const hasExplicitPrimary = explicitPrimary && files.some((f: any) => String(f?.objectKey || "") === explicitPrimary);
+  const hasExistingPrimary = existingPrimary && files.some((f: any) => String(f?.objectKey || "") === existingPrimary);
+  if (hasExplicitPrimary) {
+    (manifestJson as any).primaryFile = explicitPrimary;
+  } else if (hasExistingPrimary) {
+    (manifestJson as any).primaryFile = existingPrimary;
+  } else if (explicitCover && (manifestJson as any).primaryFile === explicitCover) {
+    (manifestJson as any).primaryFile = null;
+  }
   if (previewObjectKey) {
     (manifestJson as any).preview = previewObjectKey;
   }
 
-  const explicitCover = String(opts?.coverObjectKey || "").trim();
   if (explicitCover) {
     (manifestJson as any).cover = explicitCover;
     return manifestJson;
@@ -41560,7 +41581,7 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
 
     // Rebuild manifest with derived assets (preview + cover thumbnail) on upload.
     const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
-    const manifestJson = await buildManifestWithDerivedAssets(content, files);
+    const manifestJson = await buildManifestWithDerivedAssets(content, files, { primaryObjectKey: fileEntry.path });
     const manifestHash = hashManifestJson(manifestJson);
     const existingManifest = await prisma.manifest.findUnique({ where: { contentId } });
     const manifestRecord = await prisma.manifest.upsert({
