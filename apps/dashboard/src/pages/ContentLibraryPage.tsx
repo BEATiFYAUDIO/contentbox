@@ -356,6 +356,22 @@ function uploadErrorMessage(error: any) {
   return "Media could not be saved. Try again.";
 }
 
+function mediaTypeMismatchNotice(contentType: string, mime: string): string | null {
+  const normalizedType = String(contentType || "").trim().toLowerCase();
+  const normalizedMime = String(mime || "").trim().toLowerCase();
+  if (!normalizedType || !normalizedMime) return null;
+  if ((normalizedType === "song" || normalizedType === "audio") && !normalizedMime.startsWith("audio/")) {
+    return "This work is marked as audio, but the saved media is not an audio file.";
+  }
+  if ((normalizedType === "video" || normalizedType === "movie" || normalizedType === "clip") && !normalizedMime.startsWith("video/")) {
+    return "This work is marked as video, but the saved media is not a video file.";
+  }
+  if ((normalizedType === "book" || normalizedType === "document") && (normalizedMime.startsWith("audio/") || normalizedMime.startsWith("video/"))) {
+    return "This work is marked as a document, but the saved media is audio or video.";
+  }
+  return null;
+}
+
 async function uploadToRepo(contentId: string, file: File, idempotencyKey: string) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
@@ -3832,6 +3848,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         const hasResolvedPreviewMime = Boolean(previewMime);
                         const isVideo = previewMime.startsWith("video/") || (!hasResolvedPreviewMime && contentType === "video");
                         const isAudio = previewMime.startsWith("audio/") || (!hasResolvedPreviewMime && (contentType === "song" || contentType === "audio"));
+                        const mismatchNotice = mediaTypeMismatchNotice(contentType, previewMime);
                         const coverVersion = String(coverCacheBustByContent[it.id] || it.manifest?.sha256 || "").trim();
                         const coverUrl = localCoverUrlByContent[it.id] || `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
                           coverVersion ? `?v=${encodeURIComponent(coverVersion)}` : ""
@@ -3849,6 +3866,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               </button>
                             </div>
                             <div className="mt-2 space-y-2">
+                              {mismatchNotice ? (
+                                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                                  {mismatchNotice} You can keep it, change the work type, or save a different media file.
+                                </div>
+                              ) : null}
                               {isAudio ? (
                                 <div>
                                   <div className="w-32 h-32 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900">
@@ -4647,9 +4669,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const hasMime = Boolean(mime);
                                     const isVideo = mime.startsWith("video/") || (!hasMime && type === "video");
                                     const isAudio = mime.startsWith("audio/") || (!hasMime && (type === "song" || type === "audio"));
+                                    const mismatchNotice = mediaTypeMismatchNotice(type, mime);
                                     if (previewUrl && isVideo) {
                                       return (
                                         <div className="mt-2">
+                                          {mismatchNotice ? (
+                                            <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                                              {mismatchNotice}
+                                            </div>
+                                          ) : null}
                                           <video className="w-full rounded-md" controls src={previewUrl} />
                                         </div>
                                       );
@@ -4657,15 +4685,27 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     if (previewUrl && isAudio) {
                                       return (
                                         <div className="mt-2">
+                                          {mismatchNotice ? (
+                                            <div className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                                              {mismatchNotice}
+                                            </div>
+                                          ) : null}
                                           <audio className="w-full" controls src={previewUrl} />
                                         </div>
                                       );
                                     }
                                     if (previewUrl) {
                                       return (
-                                        <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                          Open preview
-                                        </a>
+                                        <div className="mt-2 space-y-2">
+                                          {mismatchNotice ? (
+                                            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                                              {mismatchNotice}
+                                            </div>
+                                          ) : null}
+                                          <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
+                                            Open preview
+                                          </a>
+                                        </div>
                                       );
                                     }
                                     return <div className="text-neutral-400">No preview available.</div>;
