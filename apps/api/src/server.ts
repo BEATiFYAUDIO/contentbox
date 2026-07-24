@@ -110,6 +110,13 @@ import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import {
+  evaluatePublicMediaDelivery,
+  normalizeDeliveryObjectKey,
+  redactSensitiveUrl,
+  resolveDeliveryPath,
+  validatePublicDeliveryTokenClaims
+} from "./lib/deliverySecurity.js";
+import {
   filterCommerceEligibleParticipants,
   isCommerceEligibleLockedParticipant,
   pickDerivativeParentSplitSnapshotForAuthority,
@@ -756,11 +763,22 @@ function base64UrlDecode(input: string): Buffer {
 type PermitClaims = {
   manifestHash: string;
   fileId: string;
+  objectKey?: string | null;
   buyerId: string;
   scopes: string[];
+  buyerSessionId?: string | null;
   iat: number;
   exp: number;
   nonce: string;
+};
+
+type PublicDeliveryTokenClaims = {
+  sub?: string;
+  contentId: string;
+  objectKey: string;
+  scope: "public_delivery";
+  access: "preview" | "full";
+  buyerSessionId?: string | null;
 };
 
 function signPermit(claims: PermitClaims): string {
@@ -794,6 +812,7 @@ function verifyPermit(token: string): { ok: boolean; expired?: boolean; claims?:
     return { ok: false };
   }
 }
+
 
 function readPemMaybeFile(value?: string | null): string | null {
   if (!value) return null;
@@ -1330,6 +1349,72 @@ function createPreviewToken(app: any, userId: string, contentId: string, objectK
   );
 }
 
+const PUBLIC_DELIVERY_TOKEN_TTL_SECONDS = Math.max(
+  30,
+  Math.min(10 * 60, Math.floor(Number(process.env.PUBLIC_DELIVERY_TOKEN_TTL_SECONDS || "120")))
+);
+
+function createPublicDeliveryToken(input: {
+  contentId: string;
+  objectKey: string;
+  access: "preview" | "full";
+  buyerSessionId?: string | null;
+}) {
+  const objectKeyCheck = normalizeDeliveryObjectKey(input.objectKey);
+  if (!objectKeyCheck.ok) throw new Error(`invalid delivery object key: ${objectKeyCheck.reason}`);
+  return app.jwt.sign(
+    {
+      contentId: input.contentId,
+      objectKey: objectKeyCheck.objectKey,
+      scope: "public_delivery",
+      access: input.access,
+      ...(input.buyerSessionId ? { buyerSessionId: input.buyerSessionId } : {})
+    } satisfies PublicDeliveryTokenClaims,
+    { expiresIn: `${PUBLIC_DELIVERY_TOKEN_TTL_SECONDS}s` }
+  );
+}
+
+async function verifyPublicDeliveryToken(
+  token: string,
+  input: { contentId: string; objectKey: string; paidContent: boolean; req: any; reply: any }
+): Promise<{ ok: boolean; access: "preview" | "full" | null }> {
+  if (!token) return { ok: false, access: null };
+  try {
+    const decoded = (await app.jwt.verify(token)) as PublicDeliveryTokenClaims;
+    const session = input.paidContent ? await resolveBuyerSession(input.req, input.reply) : null;
+    const requestBuyerSessionId = session?.id || null;
+    const checked = validatePublicDeliveryTokenClaims(decoded, {
+      contentId: input.contentId,
+      objectKey: input.objectKey,
+      paidContent: input.paidContent,
+      requestBuyerSessionId
+    });
+    if (!checked.ok) return { ok: false, access: null };
+    return { ok: true, access: checked.access };
+  } catch {
+    return { ok: false, access: null };
+  }
+}
+
+function getPrimaryFileObjectKeyFromManifest(manifestJson: any): string | null {
+  const primary = manifestJson?.primaryFile;
+  const primaryKey =
+    typeof primary === "string"
+      ? primary
+      : primary && typeof primary === "object"
+        ? primary.path || primary.filename || primary.objectKey
+        : null;
+  if (primaryKey) return String(primaryKey).trim() || null;
+  const first = Array.isArray(manifestJson?.files) ? manifestJson.files[0] : null;
+  return String(first?.objectKey || first?.path || first?.filename || "").trim() || null;
+}
+
+function appendPublicDeliveryToken(url: string | null, token: string | null): string | null {
+  if (!url || !token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}t=${encodeURIComponent(token)}`;
+}
+
 function badRequest(reply: any, msg: string) {
   return reply.code(400).send({ error: msg });
 }
@@ -1566,7 +1651,21 @@ function getOrCreateAudienceSessionId(req: any, reply: any): string {
 
 /** ---------- app init ---------- */
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: {
+    serializers: {
+      req(req) {
+        return {
+          method: req.method,
+          url: redactSensitiveUrl(req.url),
+          host: req.hostname,
+          remoteAddress: req.ip,
+          remotePort: req.socket?.remotePort
+        };
+      }
+    }
+  }
+});
 
 // Allow empty JSON bodies (treat as {})
 const jsonParser = (_req: any, body: string, done: (err: Error | null, value?: any) => void) => {
@@ -1586,6 +1685,7 @@ app.addHook("onRequest", async (req, reply) => {
   const id = existing || crypto.randomUUID();
   (req as any).requestId = id;
   reply.header("x-request-id", id);
+  reply.header("Referrer-Policy", "no-referrer");
 });
 
 app.setErrorHandler((error, req, reply) => {
@@ -12319,13 +12419,17 @@ async function ensurePreviewFile(content: any, files: any[]) {
     if (!previewObjectKey) return null;
     const previewName = path.basename(previewObjectKey);
 
+    const previewResolved = resolveDeliveryPath(content.repoPath, previewObjectKey);
+    if (!previewResolved.ok) return null;
+    const previewAbs = previewResolved.absPath;
     const repoRoot = path.resolve(content.repoPath);
-    const previewAbs = path.resolve(repoRoot, previewObjectKey);
-    if (!previewAbs.startsWith(repoRoot)) return null;
 
     const manifestRecord = await prisma.manifest.findUnique({ where: { contentId: content.id } }).catch(() => null);
     const manifestPreview = asString((manifestRecord?.json as any)?.preview || "").trim();
-    if (manifestPreview && isStablePreviewObjectKey(content.id, manifestPreview) && fsSync.existsSync(path.resolve(repoRoot, manifestPreview))) {
+    const manifestPreviewResolved = manifestPreview && isStablePreviewObjectKey(content.id, manifestPreview)
+      ? resolveDeliveryPath(content.repoPath, manifestPreview)
+      : null;
+    if (manifestPreviewResolved && manifestPreviewResolved.ok && fsSync.existsSync(manifestPreviewResolved.absPath)) {
       await prisma.contentFile
         .deleteMany({
           where: {
@@ -12369,8 +12473,9 @@ async function ensurePreviewFile(content: any, files: any[]) {
       return previewObjectKey;
     }
 
-    const inputAbs = path.resolve(repoRoot, source.objectKey || "");
-    if (!inputAbs.startsWith(repoRoot)) return null;
+    const inputResolved = resolveDeliveryPath(content.repoPath, source.objectKey || "");
+    if (!inputResolved.ok) return null;
+    const inputAbs = inputResolved.absPath;
     if (!fsSync.existsSync(inputAbs)) return null;
 
     const tmpOut = path.join(os.tmpdir(), `contentbox-preview-${content.id}.${previewExt}`);
@@ -12466,12 +12571,14 @@ async function ensureCoverImage(content: any, files: any[]) {
     const coverName = `${content.id}-cover.jpg`;
     const coverObjectKey = `${coverDir}/${coverName}`;
 
-    const repoRoot = path.resolve(content.repoPath);
-    const coverAbs = path.resolve(repoRoot, coverObjectKey);
+    const coverResolved = resolveDeliveryPath(content.repoPath, coverObjectKey);
+    if (!coverResolved.ok) return null;
+    const coverAbs = coverResolved.absPath;
     if (fsSync.existsSync(coverAbs)) return coverObjectKey;
 
-    const inputAbs = path.resolve(repoRoot, primary.objectKey || "");
-    if (!inputAbs.startsWith(repoRoot)) return null;
+    const inputResolved = resolveDeliveryPath(content.repoPath, primary.objectKey || "");
+    if (!inputResolved.ok) return null;
+    const inputAbs = inputResolved.absPath;
     if (!fsSync.existsSync(inputAbs)) return null;
 
     const tmpOut = path.join(os.tmpdir(), `contentbox-cover-${content.id}.jpg`);
@@ -18138,7 +18245,6 @@ app.get("/api/buyer/content/:id/cover", async (req: any, reply: any) => {
     return reply.redirect(`/card/${encodeURIComponent(contentId)}`);
   }
 
-  const repoRoot = path.resolve(content.repoPath);
   const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
 
   let coverKey: string | null = null;
@@ -18158,8 +18264,10 @@ app.get("/api/buyer/content/:id/cover", async (req: any, reply: any) => {
     return reply.redirect(`/card/${encodeURIComponent(contentId)}`);
   }
 
-  const absPath = path.resolve(repoRoot, coverKey);
-  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  const resolvedPath = resolveDeliveryPath(content.repoPath, coverKey);
+  if (!resolvedPath.ok) return forbidden(reply);
+  coverKey = resolvedPath.objectKey;
+  const absPath = resolvedPath.absPath;
   if (!fsSync.existsSync(absPath)) return notFound(reply, "Not found");
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey: coverKey } });
@@ -30062,7 +30170,27 @@ async function handlePublicContent(req: any, reply: any) {
     hasFullAccess: hasFull,
     hasPreviewAsset: Boolean(previewCandidate)
   });
-  const fullMediaUrl = baseUrl ? `${baseUrl}/public/content/${contentId}/preview-file` : null;
+  const manifestJson = (manifest.json || {}) as any;
+  const primaryObjectKey = getPrimaryFileObjectKeyFromManifest(manifestJson);
+  let buyerSessionId: string | null = null;
+  try {
+    const buyerSession = await resolveBuyerSession(req, reply);
+    buyerSessionId = asString(buyerSession?.id || "").trim() || null;
+  } catch {
+    buyerSessionId = null;
+  }
+  const fullMediaUrl =
+    baseUrl && hasFull && primaryObjectKey && (freeContent || buyerSessionId)
+      ? appendPublicDeliveryToken(
+          `${baseUrl}/public/content/${contentId}/preview-file?objectKey=${encodeURIComponent(primaryObjectKey)}`,
+          createPublicDeliveryToken({
+            contentId,
+            objectKey: primaryObjectKey,
+            access: "full",
+            buyerSessionId: freeContent ? null : buyerSessionId
+          })
+        )
+      : null;
 
   return reply.send({
     contentId: content.id,
@@ -30080,7 +30208,7 @@ async function handlePublicContent(req: any, reply: any) {
     hasFullAccess: hasFull,
     manifestSha256: manifest.sha256,
     priceSats: commerceAuthority.authority && content.priceSats != null ? content.priceSats.toString() : null,
-    cover: normalizePreview((manifest.json as any)?.cover || null),
+    cover: normalizePreview(manifestJson?.cover || null),
     preview: shouldPreview ? previewCandidate : null,
     previewUrl: shouldPreview ? previewCandidate : null,
     fullMediaUrl: hasFull ? fullMediaUrl : null,
@@ -33423,6 +33551,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const objectKeyRaw = asString((req.query || {})?.objectKey || "").trim();
   const shareToken = asString((req.query || {})?.share || "").trim();
+  const deliveryToken = asString((req.query || {})?.t || (req.query || {})?.token || "").trim();
 
   const gated = await getPublicOfferGate(contentId, req, reply);
   if (!gated.content) {
@@ -33519,10 +33648,32 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   }
 
   if (!content.repoPath) return notFound(reply, "Content not found");
-  const repoRoot = path.resolve(content.repoPath);
-  const absPath = path.resolve(repoRoot, objectKey);
-  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  const resolvedPath = resolveDeliveryPath(content.repoPath, objectKey);
+  if (!resolvedPath.ok) return forbidden(reply);
+  objectKey = resolvedPath.objectKey;
+  const absPath = resolvedPath.absPath;
   if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
+
+  const manifestForAccess = await prisma.manifest.findUnique({ where: { contentId } });
+  const manifestJsonForAccess = (manifestForAccess?.json || {}) as any;
+  const previewObjectKey = asString(manifestJsonForAccess?.preview || "").trim();
+  const coverObjectKey = asString(getCoverAssetFromManifest(manifestJsonForAccess)?.path || manifestJsonForAccess?.cover || "").trim();
+  const freeContent = isFreeContent({ priceSats: content.priceSats });
+  const paidContent = !freeContent && content.priceSats != null && content.priceSats > 0n;
+  const isPublicPreviewAsset = Boolean(previewObjectKey && objectKey === previewObjectKey);
+  const isPublicCoverAsset = Boolean(coverObjectKey && objectKey === coverObjectKey);
+  let deliveryAccess: "preview" | "full" | null = null;
+  if (deliveryToken) {
+    const verified = await verifyPublicDeliveryToken(deliveryToken, {
+      contentId,
+      objectKey,
+      paidContent,
+      req,
+      reply
+    });
+    if (!verified.ok) return reply.code(401).send({ error: "Unauthorized" });
+    deliveryAccess = verified.access;
+  }
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
   const derivedPreviewMime = !file && isStablePreviewObjectKey(contentId, objectKey)
@@ -33532,36 +33683,44 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     : null;
   const mime = file?.mime || derivedPreviewMime || "application/octet-stream";
 
-  const stat = fsSync.statSync(absPath);
-  const range = req.headers.range;
-  if (range) {
-    const m = /bytes=(\d*)-(\d*)/.exec(range);
-    if (m) {
-      const startRaw = m[1] || "";
-      const endRaw = m[2] || "";
-      let start = startRaw ? Number(startRaw) : 0;
-      let end = endRaw ? Number(endRaw) : stat.size - 1;
-      if (!startRaw && endRaw) {
-        const suffixLength = Number(endRaw);
-        if (!Number.isFinite(suffixLength) || suffixLength <= 0) return reply.code(416).send();
-        start = Math.max(stat.size - suffixLength, 0);
-        end = stat.size - 1;
-      }
-      if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return reply.code(416).send();
-      end = Math.min(end, stat.size - 1);
-      if (start >= stat.size) return reply.code(416).send();
-      reply.code(206);
-      reply.header("Content-Range", `bytes ${start}-${end}/${stat.size}`);
-      reply.header("Accept-Ranges", "bytes");
-      reply.header("Content-Length", end - start + 1);
-      reply.type(mime);
-      return reply.send(fsSync.createReadStream(absPath, { start, end }));
-    }
+  const accessPolicy = evaluatePublicMediaDelivery({
+    paidContent,
+    freeContent,
+    deliveryAccess,
+    isPublicPreviewAsset,
+    isPublicCoverAsset
+  });
+  if (!accessPolicy.ok) {
+    const message = accessPolicy.status === 402
+      ? "Payment required"
+      : accessPolicy.code === "PREVIEW_ASSET_REQUIRED"
+        ? "Preview asset not available"
+        : "Access denied";
+    return reply.code(accessPolicy.status).send({ error: message, code: accessPolicy.code });
   }
+  const accessMode = accessPolicy.mode;
+  const stat = fsSync.statSync(absPath);
+  const effectiveSize = stat.size;
+  const range = req.headers.range;
 
   reply.header("Accept-Ranges", "bytes");
-  reply.header("Content-Length", stat.size);
+  reply.header("X-ContentBox-Access", accessMode);
+
   reply.type(mime);
+  const parsed = parseRangeHeader(typeof range === "string" ? range : undefined, effectiveSize);
+  if (parsed.kind === "invalid") {
+    reply.code(416);
+    reply.header("Content-Range", `bytes */${effectiveSize}`);
+    return reply.send();
+  }
+  if (parsed.kind === "ok") {
+    reply.code(206);
+    reply.header("Content-Range", `bytes ${parsed.start}-${parsed.end}/${effectiveSize}`);
+    reply.header("Content-Length", String(parsed.end - parsed.start + 1));
+    return reply.send(fsSync.createReadStream(absPath, { start: parsed.start, end: parsed.end }));
+  }
+
+  reply.header("Content-Length", String(effectiveSize));
   return reply.send(fsSync.createReadStream(absPath));
 }
 
@@ -33597,12 +33756,13 @@ async function handlePublicCoverFile(req: any, reply: any) {
   }
   if (!cover?.path) return notFound(reply, "Not found");
 
-  const repoRoot = path.resolve(content.repoPath);
-  const absPath = path.resolve(repoRoot, cover.path);
-  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  const resolvedPath = resolveDeliveryPath(content.repoPath, cover.path);
+  if (!resolvedPath.ok) return forbidden(reply);
+  const coverPath = resolvedPath.objectKey;
+  const absPath = resolvedPath.absPath;
   if (!fsSync.existsSync(absPath)) return notFound(reply, "Not found");
 
-  const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey: cover.path } });
+  const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey: coverPath } });
   reply.type(file?.mime || cover.mime || "image/jpeg");
   reply.header("Cache-Control", "public, max-age=3600");
   return reply.send(fsSync.createReadStream(absPath));
@@ -36087,28 +36247,29 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
   }
   if (!objectKey) return notFound(reply, "Preview not available");
 
-  const repoRoot = path.resolve(child.repoPath);
-  const absPath = path.resolve(repoRoot, objectKey);
-  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  const resolvedPath = resolveDeliveryPath(child.repoPath, objectKey);
+  if (!resolvedPath.ok) return forbidden(reply);
+  objectKey = resolvedPath.objectKey;
+  const absPath = resolvedPath.absPath;
   if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
 
   const file = await prisma.contentFile.findFirst({ where: { contentId: child.id, objectKey } });
   const mime = file?.mime || "application/octet-stream";
   const stat = fsSync.statSync(absPath);
   const range = req.headers.range;
-  if (range) {
-    const m = /bytes=(\d+)-(\d+)?/.exec(range);
-    if (m) {
-      const start = Number(m[1]);
-      const end = m[2] ? Number(m[2]) : stat.size - 1;
-      if (start >= stat.size) return reply.code(416).send();
-      reply.code(206);
-      reply.header("Content-Range", `bytes ${start}-${end}/${stat.size}`);
-      reply.header("Accept-Ranges", "bytes");
-      reply.header("Content-Length", end - start + 1);
-      reply.type(mime);
-      return reply.send(fsSync.createReadStream(absPath, { start, end }));
-    }
+  const parsed = parseRangeHeader(typeof range === "string" ? range : undefined, stat.size);
+  if (parsed.kind === "invalid") {
+    reply.code(416);
+    reply.header("Content-Range", `bytes */${stat.size}`);
+    return reply.send();
+  }
+  if (parsed.kind === "ok") {
+    reply.code(206);
+    reply.header("Content-Range", `bytes ${parsed.start}-${parsed.end}/${stat.size}`);
+    reply.header("Accept-Ranges", "bytes");
+    reply.header("Content-Length", String(parsed.end - parsed.start + 1));
+    reply.type(mime);
+    return reply.send(fsSync.createReadStream(absPath, { start: parsed.start, end: parsed.end }));
   }
 
   reply.header("Content-Length", stat.size);
@@ -39386,13 +39547,16 @@ async function handlePublicOffer(req: any, reply: any) {
   const priceSats = hasStoredPrice && paidCommerceActive ? rawPriceSats : null;
   const hasPrice = priceSats != null && priceSats > 0n;
   let buyerId: string | null = null;
+  let buyerSessionId: string | null = null;
   let entitled = Boolean(gated.entitled);
   let receiptProofIntent: any | null = null;
   let receiptProofToken: string | null = null;
   try {
     const buyerSession = await resolveBuyerSession(req, reply);
+    buyerSessionId = asString(buyerSession?.id || "").trim() || null;
     buyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
   } catch {
+    buyerSessionId = null;
     buyerId = null;
   }
   const receiptTokenQuery = asString((req.query || {})?.receiptToken || "").trim();
@@ -39479,9 +39643,18 @@ async function handlePublicOffer(req: any, reply: any) {
   const previewUrl = previewObjectKey
     ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`
     : null;
-  const fullMediaUrl = `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/preview-file${
-    primaryFileId ? `?objectKey=${encodeURIComponent(primaryFileId)}` : ""
-  }${receiptProofToken ? `${primaryFileId ? "&" : "?"}receiptToken=${encodeURIComponent(receiptProofToken)}` : ""}`;
+  const fullMediaUrl =
+    baseUrl && hasFull && primaryFileId && (freeContent || buyerSessionId)
+      ? appendPublicDeliveryToken(
+          `${baseUrl}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(primaryFileId)}`,
+          createPublicDeliveryToken({
+            contentId: content.id,
+            objectKey: primaryFileId,
+            access: "full",
+            buyerSessionId: freeContent ? null : buyerSessionId
+          })
+        )
+      : null;
   const showPreviewOnly = shouldShowPreview({
     isFree: freeContent,
     priceSats: rawPriceSats,
@@ -40411,9 +40584,20 @@ async function handlePublicPermits(req: any, reply: any) {
   if (!manifest) return notFound(reply, "Manifest not found");
   const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
   if (!content) return notFound(reply, "Content not found");
+  const rawPermitObjectKey =
+    resolveObjectKeyFromManifest(manifest.json as any, fileId)
+    || (await prisma.contentFile.findFirst({
+      where: { contentId: content.id, OR: [{ objectKey: fileId }, { sha256: fileId }] },
+      select: { objectKey: true }
+    }))?.objectKey
+    || null;
+  if (!rawPermitObjectKey) return notFound(reply, "File not found");
+  const permitObjectKey = normalizeDeliveryObjectKey(rawPermitObjectKey);
+  if (!permitObjectKey.ok) return forbidden(reply);
 
   const buyerSession = await resolveBuyerSession(req, reply);
   const sessionBuyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
+  const buyerSessionId = asString(buyerSession?.id || "").trim() || null;
   if (sessionBuyerId) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId: sessionBuyerId, contentId: content.id }).catch(() => {});
   }
@@ -40429,13 +40613,18 @@ async function handlePublicPermits(req: any, reply: any) {
   });
   const buyerId = sessionBuyerId || requestedBuyerId || "guest";
   const scopes = accessMode === "stream" ? ["stream"] : ["preview"];
+  if (accessMode === "stream" && paidContent && !buyerSessionId) {
+    return reply.code(401).send({ error: "Buyer session required", code: "BUYER_SESSION_REQUIRED" });
+  }
   const now = Date.now();
-  const ttlMs = accessMode === "stream" ? 24 * 60 * 60 * 1000 : 30 * 60 * 1000;
+  const ttlMs = accessMode === "stream" ? PUBLIC_DELIVERY_TOKEN_TTL_SECONDS * 1000 : 30 * 60 * 1000;
   const claims: PermitClaims = {
     manifestHash,
-    fileId: fileId || "*",
+    fileId,
+    objectKey: permitObjectKey.objectKey,
     buyerId,
     scopes,
+    ...(buyerSessionId ? { buyerSessionId } : {}),
     iat: now,
     exp: now + ttlMs,
     nonce: crypto.randomBytes(8).toString("hex")
@@ -40807,16 +40996,20 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
   const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
   if (!content || content.deletedAt || !content.repoPath) return notFound(reply, "Not found");
 
-  const objectKey = resolveObjectKeyFromManifest(manifest.json as any, fileId)
+  const rawObjectKey = resolveObjectKeyFromManifest(manifest.json as any, fileId)
     || (await prisma.contentFile.findFirst({
       where: { contentId: content.id, OR: [{ objectKey: fileId }, { sha256: fileId }] },
       select: { objectKey: true }
     }))?.objectKey
     || null;
-  if (!objectKey) return notFound(reply, "Not found");
+  if (!rawObjectKey) return notFound(reply, "Not found");
+  const objectKeyCheck = normalizeDeliveryObjectKey(rawObjectKey);
+  if (!objectKeyCheck.ok) return forbidden(reply);
+  const objectKey = objectKeyCheck.objectKey;
 
   const buyerSession = await resolveBuyerSession(req, reply);
   const cookieBuyerId = buyerSession?.buyer?.id || null;
+  const buyerSessionId = asString(buyerSession?.id || "").trim() || null;
   if (cookieBuyerId) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId: cookieBuyerId, contentId: content.id }).catch(() => {});
   }
@@ -40852,14 +41045,19 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
   }
 
   if (!entitled) return notFound(reply, "Not found");
+  if (priceSats > 0n && !buyerSessionId) {
+    return reply.code(401).send({ error: "Buyer session required", code: "BUYER_SESSION_REQUIRED" });
+  }
 
   const exp = Math.floor(Date.now() / 1000) + EDGE_TICKET_TTL_SECONDS;
   const token = mintEdgeTicketToken(
     {
       mh: manifestHash,
       fid: fileId,
+      ok: objectKey,
       exp,
-      ...(bindBuyerId ? { b: bindBuyerId } : {})
+      ...(bindBuyerId ? { b: bindBuyerId } : {}),
+      ...(buyerSessionId ? { sid: buyerSessionId } : {})
     },
     EDGE_TICKET_SECRET
   );
@@ -41221,9 +41419,12 @@ app.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
 
 async function handlePublicReceiptFile(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
-  const objectKey = asString((req.query || {})?.objectKey || "").trim();
+  let objectKey = asString((req.query || {})?.objectKey || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
   if (!objectKey) return badRequest(reply, "objectKey required");
+  const objectKeyCheck = normalizeDeliveryObjectKey(objectKey);
+  if (!objectKeyCheck.ok) return forbidden(reply);
+  objectKey = objectKeyCheck.objectKey;
   const context = await resolveReceiptContextForRequest({ receiptToken });
   if (!context) return notFound(reply, "Receipt not found");
   const latestIntent = context.intent as any;
@@ -41308,9 +41509,9 @@ async function handlePublicReceiptFile(req: any, reply: any) {
   if (!file) return notFound(reply, "File not found");
   if (manifestFiles.length > 0 && !inManifest) return forbidden(reply);
 
-  const repoRoot = path.resolve(content.repoPath);
-  const absPath = path.resolve(repoRoot, objectKey);
-  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  const resolvedPath = resolveDeliveryPath(content.repoPath, objectKey);
+  if (!resolvedPath.ok) return forbidden(reply);
+  const absPath = resolvedPath.absPath;
   if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
 
   const safeName = path.basename(file.originalName || "download").replace(/"/g, "");
@@ -42428,9 +42629,12 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
 
 app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: any, reply: any) => {
   const contentId = asString((req.params as any).id);
-  const objectKey = asString((req.query || {})?.objectKey || "");
+  let objectKey = asString((req.query || {})?.objectKey || "");
   const token = asString((req.query || {})?.token || "");
   if (!objectKey) return badRequest(reply, "objectKey required");
+  const objectKeyCheck = normalizeDeliveryObjectKey(objectKey);
+  if (!objectKeyCheck.ok) return forbidden(reply);
+  objectKey = objectKeyCheck.objectKey;
 
   let userId: string | null = null;
   let accessContent: any = null;
@@ -42472,9 +42676,9 @@ app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: a
     }
   }
 
-  const repoRoot = path.resolve(content.repoPath);
-  const absPath = path.resolve(repoRoot, objectKey);
-  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  const resolvedPath = resolveDeliveryPath(content.repoPath, objectKey);
+  if (!resolvedPath.ok) return forbidden(reply);
+  const absPath = resolvedPath.absPath;
   if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
 
   const safeName = path.basename(file?.originalName || objectKey || "preview").replace(/\"/g, "");
@@ -42486,21 +42690,17 @@ app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: a
   reply.header("Accept-Ranges", "bytes");
   reply.type(file?.mime || derivedPreviewMime || "application/octet-stream");
 
-  if (range) {
-    const m = range.match(/bytes=(\d*)-(\d*)/);
-    if (m) {
-      const start = m[1] ? Number(m[1]) : 0;
-      const end = m[2] ? Number(m[2]) : Math.max(0, fileSize - 1);
-      if (start >= fileSize || end >= fileSize) {
-        reply.code(416);
-        reply.header("Content-Range", `bytes */${fileSize}`);
-        return reply.send();
-      }
-      reply.code(206);
-      reply.header("Content-Range", `bytes ${start}-${end}/${fileSize}`);
-      reply.header("Content-Length", String(end - start + 1));
-      return reply.send(fsSync.createReadStream(absPath, { start, end }));
-    }
+  const parsed = parseRangeHeader(range, fileSize);
+  if (parsed.kind === "invalid") {
+    reply.code(416);
+    reply.header("Content-Range", `bytes */${fileSize}`);
+    return reply.send();
+  }
+  if (parsed.kind === "ok") {
+    reply.code(206);
+    reply.header("Content-Range", `bytes ${parsed.start}-${parsed.end}/${fileSize}`);
+    reply.header("Content-Length", String(parsed.end - parsed.start + 1));
+    return reply.send(fsSync.createReadStream(absPath, { start: parsed.start, end: parsed.end }));
   }
 
   reply.code(200);
@@ -42571,11 +42771,19 @@ async function handlePublicContentFile(req: any, reply: any) {
   }
 
   if (!objectKey || !content.repoPath) return notFound(reply, "File not found");
+  const objectKeyCheck = normalizeDeliveryObjectKey(objectKey);
+  if (!objectKeyCheck.ok) return forbidden(reply);
+  objectKey = objectKeyCheck.objectKey;
+  const manifestPreviewObjectKey = asString(manifestJson?.preview || "").trim();
+  const isManifestPreviewAsset = Boolean(
+    manifestPreviewObjectKey
+    && objectKey === manifestPreviewObjectKey
+    && isStablePreviewObjectKey(content.id, objectKey)
+  );
 
   const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
   const freeContent = isFreeContent({ priceSats: content.priceSats });
   let accessMode: "preview" | "stream" = "stream";
-  let preview: { maxBytes: number } | null = null;
   const previewEnabled = String(process.env.PREVIEW_ENABLED || "1") !== "0";
   const buyerSession = await resolveBuyerSession(req, reply);
   const buyerId = buyerSession?.buyer?.id || null;
@@ -42590,30 +42798,34 @@ async function handlePublicContentFile(req: any, reply: any) {
         const res = verifyPermit(token);
         if (res.ok && res.claims) {
           const scopes = Array.isArray(res.claims.scopes) ? res.claims.scopes : [];
-          const fileOk = res.claims.fileId === "*" || res.claims.fileId === fileId;
+          const fileOk = res.claims.fileId === fileId;
+          const objectKeyOk = asString(res.claims.objectKey || "").trim() === objectKey;
           const manifestOk = res.claims.manifestHash === manifestHash;
-          if (manifestOk && fileOk) {
+          if (manifestOk && fileOk && objectKeyOk) {
             if (scopes.includes("stream")) {
-              accessMode = "stream";
-              entitlementOk = true;
-            } else if (scopes.includes("preview")) {
+              const permitSessionId = asString(res.claims.buyerSessionId || "").trim();
+              const sessionOk = Boolean(permitSessionId && buyerSession?.id === permitSessionId);
+              if (sessionOk) {
+                accessMode = "stream";
+                entitlementOk = true;
+              }
+            } else if (scopes.includes("preview") && isManifestPreviewAsset) {
               accessMode = "preview";
-              preview = { maxBytes: previewMaxBytesFor(mime, content.type) };
             }
           }
         }
       } else if (isPreviewToken(token)) {
         const meta = previewTokens.get(token);
-        if (meta && meta.expiresAt >= Date.now() && meta.manifestHash === manifestHash && meta.fileId === fileId) {
+        if (meta && meta.expiresAt >= Date.now() && meta.manifestHash === manifestHash && meta.fileId === fileId && isManifestPreviewAsset) {
           accessMode = "preview";
-          preview = { maxBytes: meta.maxBytes };
         }
       } else {
         const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken: token } });
         if (intent && intent.contentId === content.id) {
           const accessBuyer = await resolveAccessBuyerId(intent, buyerId);
           const targetBuyerId = accessBuyer.buyerId;
-          if (intent.status === "paid" && targetBuyerId) {
+          const receiptSessionOk = Boolean(targetBuyerId && buyerId && targetBuyerId === buyerId);
+          if (intent.status === "paid" && receiptSessionOk && targetBuyerId) {
             await prisma.entitlement.upsert({
               where: { buyerId_contentId: { buyerId: targetBuyerId, contentId: content.id } },
               update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
@@ -42626,19 +42838,18 @@ async function handlePublicContentFile(req: any, reply: any) {
               }
             }).catch(() => {});
           }
-          entitlementOk = intent.status === "paid" || (targetBuyerId ? await hasAccess(targetBuyerId, content.id) : false);
+          entitlementOk = receiptSessionOk && (intent.status === "paid" || (targetBuyerId ? await hasAccess(targetBuyerId, content.id) : false));
         }
       }
     }
 
     if (!entitlementOk) {
-      if (previewEnabled) {
+      if (previewEnabled && isManifestPreviewAsset) {
         accessMode = "preview";
-        if (!preview) preview = { maxBytes: previewMaxBytesFor(mime, content.type) };
       } else {
         if (token) {
           reply.code(403);
-          return reply.send({ error: "Access denied", code: "ACCESS_NOT_ENTITLED" });
+          return reply.send({ error: "Access denied", code: "ACCESS_NOT_ENTITLED_OR_PREVIEW_UNAVAILABLE" });
         }
         reply.code(402);
         return reply.send({ error: "Payment required", code: "PAYMENT_REQUIRED" });
@@ -42646,9 +42857,9 @@ async function handlePublicContentFile(req: any, reply: any) {
     }
   }
 
-  const repoRoot = path.resolve(content.repoPath);
-  const absPath = path.resolve(repoRoot, objectKey);
-  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  const resolvedPath = resolveDeliveryPath(content.repoPath, objectKey);
+  if (!resolvedPath.ok) return forbidden(reply);
+  const absPath = resolvedPath.absPath;
   if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
 
   const stat = await fs.stat(absPath);
@@ -42659,9 +42870,7 @@ async function handlePublicContentFile(req: any, reply: any) {
   reply.type(mime || "application/octet-stream");
   reply.header("X-ContentBox-Access", accessMode);
 
-  const maxBytes = previewMaxBytesFor(mime, content.type);
-  const effectiveSize = accessMode === "preview" ? Math.min(fileSize, preview?.maxBytes || maxBytes || fileSize) : fileSize;
-  if (accessMode === "preview") reply.header("X-ContentBox-Preview-Max-Bytes", String(effectiveSize));
+  const effectiveSize = fileSize;
 
   if (req.method === "HEAD") {
     reply.code(200);
@@ -42684,9 +42893,6 @@ async function handlePublicContentFile(req: any, reply: any) {
 
   reply.code(200);
   reply.header("Content-Length", String(effectiveSize));
-  if (accessMode === "preview" && effectiveSize < fileSize) {
-    return reply.send(fsSync.createReadStream(absPath, { start: 0, end: Math.max(0, effectiveSize - 1) }));
-  }
   return reply.send(fsSync.createReadStream(absPath));
 }
 

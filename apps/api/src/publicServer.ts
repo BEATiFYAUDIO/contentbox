@@ -40,6 +40,7 @@ export async function startPublicServer(registerPublicRoutes: RegisterFn, host: 
     reply.header("access-control-allow-methods", "GET,POST,OPTIONS");
     reply.header("access-control-allow-headers", "Content-Type, Authorization, Range");
     reply.header("access-control-expose-headers", "Content-Length, Content-Range, Accept-Ranges, Content-Type");
+    reply.header("referrer-policy", "no-referrer");
     return payload;
   });
 
