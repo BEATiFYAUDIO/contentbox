@@ -13671,6 +13671,7 @@ function registerPublicRoutes(appPublic: any) {
     }
     if (current.status === "paid") {
       current = await ensureProviderPaymentSettlement(current);
+      await restoreProviderBuyerSessionForPaidIntent(current, req, reply).catch(() => null);
       if (current.payoutExecutionMode === "participant" && current.providerRemitMode === "auto_forward") {
         try {
           await executeParticipantPayoutRowsForIntent(current, "provider_status_participant_reconcile");
@@ -18095,6 +18096,7 @@ app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: 
   }
   if (current.status === "paid") {
     current = await ensureProviderPaymentSettlement(current);
+    await restoreProviderBuyerSessionForPaidIntent(current, req, reply).catch(() => null);
     if (current.payoutExecutionMode === "participant" && current.providerRemitMode === "auto_forward") {
       try {
         await executeParticipantPayoutRowsForIntent(current, "provider_status_participant_reconcile");
@@ -40038,8 +40040,11 @@ async function handlePublicContentAccessStatus(req: any, reply: any) {
 
   const session = await resolveBuyerReadSession(req, reply);
   const buyerId = asString(session?.buyer?.id || "").trim() || null;
+  const buyerSessionId = asString((session as any)?.id || "").trim() || null;
+  let providerBackedAccess: Awaited<ReturnType<typeof reconcileProviderBackedAccessForBuyer>> | null = null;
   if (buyerId) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
+    providerBackedAccess = await reconcileProviderBackedAccessForBuyer({ buyerId, buyerSessionId, contentId }).catch(() => null);
   }
 
   const receiptTokenQuery = asString((req.query || {})?.receiptToken || "").trim();
@@ -40091,11 +40096,12 @@ async function handlePublicContentAccessStatus(req: any, reply: any) {
       })
     : null;
   const payment = receiptProofIntent || entitlement?.payment || null;
-  const entitled = Boolean(receiptProofIntent || entitlement);
+  const entitled = Boolean(receiptProofIntent || entitlement || providerBackedAccess?.entitled);
   const paidAt = payment?.paidAt && !Number.isNaN(new Date(payment.paidAt).getTime())
     ? new Date(payment.paidAt).toISOString()
-    : null;
-  const paymentStatus = asString(payment?.status || "").trim().toLowerCase() || (entitled ? "paid" : "unpaid");
+    : providerBackedAccess?.paidAt || null;
+  const paymentStatus =
+    asString(payment?.status || providerBackedAccess?.status || "").trim().toLowerCase() || (entitled ? "paid" : "unpaid");
 
   return reply.send({
     contentId,
@@ -40106,7 +40112,7 @@ async function handlePublicContentAccessStatus(req: any, reply: any) {
     canFulfill: entitled,
     status: paymentStatus,
     paymentStatus,
-    paymentIntentId: entitlement?.paymentIntentId || payment?.id || null,
+    paymentIntentId: entitlement?.paymentIntentId || payment?.id || providerBackedAccess?.paymentIntentId || null,
     receiptId: String((payment as any)?.receiptId || "").trim() || null,
     receiptToken: String((payment as any)?.receiptToken || "").trim() || null,
     paidAt,
@@ -40921,11 +40927,17 @@ async function handlePublicPermits(req: any, reply: any) {
   const buyerSession = await resolveBuyerSession(req, reply);
   const sessionBuyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
   const buyerSessionId = asString(buyerSession?.id || "").trim() || null;
+  let providerBackedAccess: Awaited<ReturnType<typeof reconcileProviderBackedAccessForBuyer>> | null = null;
   if (sessionBuyerId) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId: sessionBuyerId, contentId: content.id }).catch(() => {});
+    providerBackedAccess = await reconcileProviderBackedAccessForBuyer({
+      buyerId: sessionBuyerId,
+      buyerSessionId,
+      contentId: content.id
+    }).catch(() => null);
   }
 
-  const hasPaidAccess = sessionBuyerId ? await hasAccess(sessionBuyerId, content.id) : false;
+  const hasPaidAccess = sessionBuyerId ? (await hasAccess(sessionBuyerId, content.id)) || Boolean(providerBackedAccess?.entitled) : false;
   const paidContent = content.priceSats != null && content.priceSats > 0n;
   const devUnlock = String(process.env.DEV_P2P_UNLOCK || "").trim() === "1" || PAYMENT_PROVIDER.kind === "none";
   const accessMode = resolveBuyPermitAccessMode({
@@ -40983,39 +40995,58 @@ async function hasAccess(buyerId: string | null | undefined, contentId: string):
 async function reconcileBuyerEntitlementsFromPurchaseHistory(input: { buyerId: string; contentId?: string }) {
   const buyerId = asString(input.buyerId || "").trim();
   if (!buyerId) return { healedCount: 0 };
-  return reconcileMissingEntitlementsForBuyer(
-    {
-      listPaidIntents: async (bid: string, contentFilter?: string) =>
-        (prisma.paymentIntent as any).findMany({
-          where: {
-            buyerId: bid,
-            status: "paid",
-            ...(contentFilter ? { contentId: contentFilter } : {})
-          },
-          select: { id: true, buyerId: true, contentId: true, manifestSha256: true, status: true },
-          orderBy: { paidAt: "desc" }
-        }) as any,
-      getEntitlement: async (bid: string, cid: string) =>
-        ((await prisma.entitlement.findFirst({
-          where: { buyerId: bid, contentId: cid },
-          select: { id: true, buyerId: true, contentId: true }
-        })) as any) || null,
-      upsertEntitlement: async ({ buyerId: bid, contentId, manifestSha256, paymentIntentId }) => {
-        await prisma.entitlement.upsert({
-          where: { buyerId_contentId: { buyerId: bid, contentId } },
-          update: { paymentIntentId, manifestSha256: manifestSha256 || "" },
-          create: {
-            buyerId: bid,
-            buyerUserId: null,
-            contentId,
-            manifestSha256: manifestSha256 || "",
-            paymentIntentId
-          }
-        });
-      }
-    },
-    { buyerId, contentId: input.contentId || undefined }
-  );
+  const sessions = await prisma.buyerSession
+    .findMany({
+      where: { buyerId },
+      select: { id: true }
+    })
+    .catch(() => []);
+  const sessionIds = new Set(sessions.map((session) => asString(session.id || "").trim()).filter(Boolean));
+  let healedCount = 0;
+
+  const localCandidates = await prisma.paymentIntent
+    .findMany({
+      where: {
+        status: "paid" as any,
+        ...(input.contentId ? { contentId: input.contentId } : {})
+      },
+      select: { id: true, contentId: true, manifestSha256: true, buyerUserId: true },
+      orderBy: { paidAt: "desc" },
+      take: 100
+    })
+    .catch(() => []);
+
+  for (const intent of localCandidates) {
+    const providerIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
+    const providerBuyerSessionId = asString(providerIntent?.buyerSessionId || "").trim();
+    if (!providerBuyerSessionId || !sessionIds.has(providerBuyerSessionId)) continue;
+    await prisma.entitlement
+      .upsert({
+        where: { buyerId_contentId: { buyerId, contentId: intent.contentId } },
+        update: {
+          paymentIntentId: intent.id,
+          manifestSha256: intent.manifestSha256 || ""
+        },
+        create: {
+          buyerId,
+          buyerUserId: intent.buyerUserId || null,
+          contentId: intent.contentId,
+          manifestSha256: intent.manifestSha256 || "",
+          paymentIntentId: intent.id
+        }
+      })
+      .then(() => {
+        healedCount += 1;
+      })
+      .catch(() => {});
+  }
+
+  if (input.contentId) {
+    const providerAccess = await reconcileProviderBackedAccessForBuyer({ buyerId, contentId: input.contentId }).catch(() => null);
+    if (providerAccess?.entitled) healedCount += 1;
+  }
+
+  return { healedCount };
 }
 
 function createStableReceiptId(): string {
@@ -41268,6 +41299,143 @@ async function resolveBuyerIdFromIntent(intent: any): Promise<string | null> {
   }
 }
 
+async function settleLocalProviderPaymentIntentRecord(
+  providerIntent: ProviderPaymentIntentRecord | null
+): Promise<ProviderPaymentIntentRecord | null> {
+  if (!providerIntent) return null;
+  let current = providerIntent;
+  if (current.status !== "paid" && current.providerInvoiceRef) {
+    const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef).catch(() => null);
+    if (invoiceStatus?.paid) {
+      const patched = updateProviderPaymentIntent(current.id, {
+        status: "paid",
+        paidAt: invoiceStatus.paidAt || new Date().toISOString()
+      });
+      current = patched || current;
+    }
+  }
+  if (current.status === "paid") {
+    current = await ensureProviderPaymentSettlement(current);
+  }
+  return current;
+}
+
+async function providerPaymentIntentBelongsToBuyer(input: {
+  providerIntent: ProviderPaymentIntentRecord;
+  buyerId: string;
+  buyerSessionId?: string | null;
+}): Promise<boolean> {
+  const buyerId = asString(input.buyerId || "").trim();
+  if (!buyerId) return false;
+  const boundSessionId = asString(input.providerIntent.buyerSessionId || "").trim();
+  if (!boundSessionId) return false;
+  const requestSessionId = asString(input.buyerSessionId || "").trim();
+  if (requestSessionId && boundSessionId === requestSessionId) return true;
+  const session = await prisma.buyerSession
+    .findUnique({ where: { id: boundSessionId }, select: { buyerId: true } })
+    .catch(() => null);
+  return asString(session?.buyerId || "").trim() === buyerId;
+}
+
+async function reconcileProviderBackedAccessForBuyer(input: {
+  buyerId: string | null | undefined;
+  buyerSessionId?: string | null;
+  contentId: string;
+}): Promise<{
+  entitled: boolean;
+  paymentIntentId: string | null;
+  paidAt: string | null;
+  status: string | null;
+}> {
+  const buyerId = asString(input.buyerId || "").trim();
+  const contentId = asString(input.contentId || "").trim();
+  if (!buyerId || !contentId) return { entitled: false, paymentIntentId: null, paidAt: null, status: null };
+
+  const candidates = listProviderPaymentIntents().filter((intent) => asString(intent.contentId || "").trim() === contentId);
+  for (const candidate of candidates) {
+    const belongs = await providerPaymentIntentBelongsToBuyer({
+      providerIntent: candidate,
+      buyerId,
+      buyerSessionId: input.buyerSessionId || null
+    });
+    if (!belongs) continue;
+
+    const settled = await settleLocalProviderPaymentIntentRecord(candidate);
+    if (settled?.status !== "paid") continue;
+
+    const manifestSha256 =
+      asString(listProviderDelegatedPublishes().find((row) => row.contentId === contentId)?.manifestHash || "").trim() ||
+      asString((await prisma.manifest.findUnique({ where: { contentId }, select: { sha256: true } }).catch(() => null))?.sha256 || "").trim();
+    const localContent = await prisma.contentItem.findUnique({ where: { id: contentId }, select: { id: true } }).catch(() => null);
+    if (localContent?.id) {
+      const localPayment = await prisma.paymentIntent
+        .findUnique({ where: { id: settled.paymentIntentId }, select: { id: true } })
+        .catch(() => null);
+      await prisma.entitlement
+        .upsert({
+          where: { buyerId_contentId: { buyerId, contentId } },
+          update: {
+            paymentIntentId: localPayment?.id || null,
+            manifestSha256
+          },
+          create: {
+            buyerId,
+            buyerUserId: null,
+            contentId,
+            manifestSha256,
+            paymentIntentId: localPayment?.id || null
+          }
+        })
+        .catch(() => {});
+    }
+
+    return {
+      entitled: true,
+      paymentIntentId: settled.paymentIntentId || null,
+      paidAt: settled.paidAt || null,
+      status: settled.status || null
+    };
+  }
+
+  return { entitled: false, paymentIntentId: null, paidAt: null, status: null };
+}
+
+async function restoreProviderBuyerSessionForPaidIntent(
+  providerIntent: ProviderPaymentIntentRecord | null,
+  req: any,
+  reply: any
+): Promise<{ sessionId: string; buyerId: string } | null> {
+  if (!providerIntent || providerIntent.status !== "paid") return null;
+  const sessionId = asString(providerIntent.buyerSessionId || "").trim();
+  if (!sessionId) return null;
+
+  const existing = await prisma.buyerSession
+    .findUnique({ where: { id: sessionId }, include: { buyer: true } })
+    .catch(() => null);
+  if (existing?.buyer?.id && existing.expiresAt.getTime() > Date.now()) {
+    setBuyerSessionCookies(reply, req, sessionId);
+    return { sessionId, buyerId: existing.buyer.id };
+  }
+
+  const now = new Date();
+  const buyer = await prisma.buyer.create({
+    data: {
+      email: `local+${crypto.randomUUID()}@contentbox.local`,
+      lastLoginAt: now
+    }
+  });
+  const expiresAt = new Date(Date.now() + BUYER_SESSION_DAYS * 24 * 60 * 60 * 1000);
+  await prisma.buyerSession.create({
+    data: {
+      id: sessionId,
+      buyerId: buyer.id,
+      expiresAt
+    }
+  });
+  setBuyerSessionCookies(reply, req, sessionId);
+  return { sessionId, buyerId: buyer.id };
+}
+
 async function resolveAccessBuyerId(
   intent: any,
   cookieBuyerId: string | null
@@ -41333,8 +41501,14 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
   const buyerSession = await resolveBuyerSession(req, reply);
   const cookieBuyerId = buyerSession?.buyer?.id || null;
   const buyerSessionId = asString(buyerSession?.id || "").trim() || null;
+  let providerBackedAccess: Awaited<ReturnType<typeof reconcileProviderBackedAccessForBuyer>> | null = null;
   if (cookieBuyerId) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId: cookieBuyerId, contentId: content.id }).catch(() => {});
+    providerBackedAccess = await reconcileProviderBackedAccessForBuyer({
+      buyerId: cookieBuyerId,
+      buyerSessionId,
+      contentId: content.id
+    }).catch(() => null);
   }
 
   const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
@@ -41342,7 +41516,7 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
   let bindBuyerId: string | null = cookieBuyerId;
 
   if (!entitled && cookieBuyerId) {
-    entitled = await hasAccess(cookieBuyerId, content.id);
+    entitled = (await hasAccess(cookieBuyerId, content.id)) || Boolean(providerBackedAccess?.entitled);
   }
 
   if (!entitled && receiptToken) {
@@ -50029,7 +50203,16 @@ async function settlePaymentIntentFromRails(intentId: string) {
   if (intent.providerId?.startsWith("providerpi:")) {
     const delegatedPaymentIntentId = intent.providerId.slice("providerpi:".length).trim();
     if (delegatedPaymentIntentId) {
-      const providerStatus = await fetchDelegatedProviderPaymentIntentStatus(delegatedPaymentIntentId);
+      const localProviderIntent = findProviderPaymentIntentByPaymentIntentId(delegatedPaymentIntentId);
+      const settledLocalProviderIntent = await settleLocalProviderPaymentIntentRecord(localProviderIntent);
+      const providerStatus =
+        settledLocalProviderIntent?.status === "paid"
+          ? {
+              paid: true,
+              paidAt: settledLocalProviderIntent.paidAt || new Date().toISOString(),
+              status: "paid"
+            }
+          : await fetchDelegatedProviderPaymentIntentStatus(delegatedPaymentIntentId);
       if (providerStatus.paid) {
         paidVia = "lightning";
         paidAt = providerStatus.paidAt || new Date().toISOString();
