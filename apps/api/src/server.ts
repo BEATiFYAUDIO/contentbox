@@ -781,6 +781,14 @@ type PublicDeliveryTokenClaims = {
   buyerSessionId?: string | null;
 };
 
+type HlsRenditionInfo = {
+  playlistObjectKey: string;
+  keyObjectKey: string;
+  segmentPrefix: string;
+  sourceObjectKey: string;
+  mime: string;
+};
+
 function signPermit(claims: PermitClaims): string {
   const header = { alg: "HS256", typ: "CBP1" };
   const headerB64 = base64UrlEncode(JSON.stringify(header));
@@ -12298,6 +12306,168 @@ function isStablePreviewObjectKey(contentId: string, objectKey: string) {
   return key === stablePreviewObjectKey(contentId, "mp4") || key === stablePreviewObjectKey(contentId, "mp3");
 }
 
+function isAudioVideoMime(mime: unknown): boolean {
+  const normalized = asString(mime || "").trim().toLowerCase();
+  return normalized.startsWith("audio/") || normalized.startsWith("video/");
+}
+
+function isProtectedStreamOnlyMedia(input: { paidContent: boolean; deliveryMode?: unknown; mime?: unknown }): boolean {
+  if (!input.paidContent || !isAudioVideoMime(input.mime)) return false;
+  const mode = asString(input.deliveryMode || "").trim().toLowerCase();
+  return mode === "stream_only" || !mode;
+}
+
+function stableHlsPrefix(contentId: string, sourceObjectKey: string): string {
+  const sourceHash = crypto.createHash("sha256").update(sourceObjectKey).digest("hex").slice(0, 16);
+  return `streams/${contentId}/${sourceHash}`;
+}
+
+function stableHlsInfo(contentId: string, sourceObjectKey: string, mime: string): HlsRenditionInfo {
+  const segmentPrefix = stableHlsPrefix(contentId, sourceObjectKey);
+  return {
+    playlistObjectKey: `${segmentPrefix}/master.m3u8`,
+    keyObjectKey: `${segmentPrefix}/enc.key`,
+    segmentPrefix,
+    sourceObjectKey,
+    mime
+  };
+}
+
+function getHlsInfoFromManifest(manifestJson: any, sourceObjectKey: string): HlsRenditionInfo | null {
+  const hls = (manifestJson || {})?.hls;
+  if (!hls || typeof hls !== "object") return null;
+  if (asString(hls.sourceObjectKey || "").trim() !== sourceObjectKey) return null;
+  const playlistObjectKey = asString(hls.playlistObjectKey || "").trim();
+  const keyObjectKey = asString(hls.keyObjectKey || "").trim();
+  const segmentPrefix = asString(hls.segmentPrefix || "").trim();
+  const mime = asString(hls.mime || "").trim();
+  if (!playlistObjectKey || !keyObjectKey || !segmentPrefix || !mime) return null;
+  if (!normalizeDeliveryObjectKey(playlistObjectKey).ok) return null;
+  if (!normalizeDeliveryObjectKey(keyObjectKey).ok) return null;
+  if (!normalizeDeliveryObjectKey(`${segmentPrefix}/placeholder.ts`).ok) return null;
+  return { playlistObjectKey, keyObjectKey, segmentPrefix, sourceObjectKey, mime };
+}
+
+function pickHlsSourceFile(content: any, files: any[], manifestJson: any): any | null {
+  const primaryObjectKey = getPrimaryFileObjectKeyFromManifest(manifestJson);
+  if (primaryObjectKey) {
+    const primary = files.find((file) => asString(file?.objectKey || "").trim() === primaryObjectKey);
+    if (primary && isAudioVideoMime(primary.mime)) return primary;
+  }
+  return files.find((file) => {
+    const key = asString(file?.objectKey || "").trim().toLowerCase();
+    if (!key || key.startsWith("previews/") || key.startsWith("streams/")) return false;
+    return isAudioVideoMime(file?.mime);
+  }) || null;
+}
+
+async function ensureEncryptedHlsRendition(content: any, files: any[], manifestRecord?: any | null): Promise<HlsRenditionInfo | null> {
+  try {
+    if (!content?.repoPath || !content?.id) return null;
+    const currentManifest = manifestRecord || (await prisma.manifest.findUnique({ where: { contentId: content.id } }).catch(() => null));
+    const manifestJson = ((currentManifest?.json as any) || {}) as any;
+    const source = pickHlsSourceFile(content, files, manifestJson);
+    if (!source || !isAudioVideoMime(source.mime)) return null;
+    const sourceObjectKey = asString(source.objectKey || "").trim();
+    const sourceKeyCheck = normalizeDeliveryObjectKey(sourceObjectKey);
+    if (!sourceKeyCheck.ok) return null;
+    const mime = asString(source.mime || "").trim().toLowerCase();
+    const hlsInfo = getHlsInfoFromManifest(manifestJson, sourceKeyCheck.objectKey) || stableHlsInfo(content.id, sourceKeyCheck.objectKey, mime);
+    const playlistResolved = resolveDeliveryPath(content.repoPath, hlsInfo.playlistObjectKey);
+    const keyResolved = resolveDeliveryPath(content.repoPath, hlsInfo.keyObjectKey);
+    if (!playlistResolved.ok || !keyResolved.ok) return null;
+    if (fsSync.existsSync(playlistResolved.absPath) && fsSync.existsSync(keyResolved.absPath)) return hlsInfo;
+
+    const inputResolved = resolveDeliveryPath(content.repoPath, sourceKeyCheck.objectKey);
+    if (!inputResolved.ok || !fsSync.existsSync(inputResolved.absPath)) return null;
+    await fs.mkdir(path.dirname(playlistResolved.absPath), { recursive: true });
+
+    const keyBytes = crypto.randomBytes(16);
+    await fs.writeFile(keyResolved.absPath, keyBytes);
+    const keyInfoPath = path.join(os.tmpdir(), `contentbox-hls-keyinfo-${content.id}-${Date.now()}.txt`);
+    const segmentPattern = path.join(path.dirname(playlistResolved.absPath), "seg%05d.ts");
+    const iv = crypto.randomBytes(16).toString("hex");
+    await fs.writeFile(keyInfoPath, `enc.key\n${keyResolved.absPath}\n${iv}\n`, "utf8");
+
+    const videoArgs = [
+      "-y",
+      "-i",
+      inputResolved.absPath,
+      "-map",
+      "0:v:0?",
+      "-map",
+      "0:a:0?",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "24",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "160k",
+      "-hls_time",
+      "6",
+      "-hls_playlist_type",
+      "vod",
+      "-hls_key_info_file",
+      keyInfoPath,
+      "-hls_segment_filename",
+      segmentPattern,
+      playlistResolved.absPath
+    ];
+    const audioArgs = [
+      "-y",
+      "-i",
+      inputResolved.absPath,
+      "-vn",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "160k",
+      "-hls_time",
+      "6",
+      "-hls_playlist_type",
+      "vod",
+      "-hls_key_info_file",
+      keyInfoPath,
+      "-hls_segment_filename",
+      segmentPattern,
+      playlistResolved.absPath
+    ];
+
+    await execFileAsync("ffmpeg", mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
+    try {
+      fsSync.unlinkSync(keyInfoPath);
+    } catch {}
+
+    await commitAll(content.repoPath, `generate encrypted stream ${content.id}`).catch(() => {});
+    app.log.info({ contentId: content.id, playlistObjectKey: hlsInfo.playlistObjectKey }, "hls.artifact.ready");
+    return hlsInfo;
+  } catch (e: any) {
+    app.log.warn({ err: e, contentId: content?.id || null }, "hls.generate.failed");
+    return null;
+  }
+}
+
+const hlsGenerationInflight = new Map<string, Promise<HlsRenditionInfo | null>>();
+async function ensureEncryptedHlsRenditionOnce(content: any, files: any[], manifestRecord?: any | null): Promise<HlsRenditionInfo | null> {
+  const contentId = asString(content?.id || "").trim();
+  const manifestJson = ((manifestRecord?.json as any) || {}) as any;
+  const source = pickHlsSourceFile(content, files, manifestJson);
+  const sourceObjectKey = asString(source?.objectKey || "").trim();
+  const key = `${contentId}:${sourceObjectKey}`;
+  if (!contentId || !sourceObjectKey) return null;
+  const inflight = hlsGenerationInflight.get(key);
+  if (inflight) return inflight;
+  const task = ensureEncryptedHlsRendition(content, files, manifestRecord).finally(() => {
+    hlsGenerationInflight.delete(key);
+  });
+  hlsGenerationInflight.set(key, task);
+  return task;
+}
+
 function getFirstImageAssetFromManifest(
   manifest: any
 ): { path: string; sha256: string | null; mime: string | null } | null {
@@ -13237,6 +13407,9 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
   appPublic.get("/public/content/:contentId/access-status", handlePublicContentAccessStatus);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
+  appPublic.get("/public/content/:id/hls/master.m3u8", handlePublicHlsPlaylist);
+  appPublic.get("/public/content/:id/hls/key", handlePublicHlsKey);
+  appPublic.get("/public/content/:id/hls/segment/:asset", handlePublicHlsSegment);
   appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
   appPublic.get("/public/profile-wallpapers/:userId/:filename", handlePublicProfileWallpaper);
@@ -33683,6 +33856,22 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     : null;
   const mime = file?.mime || derivedPreviewMime || "application/octet-stream";
 
+  if (
+    isProtectedStreamOnlyMedia({
+      paidContent,
+      deliveryMode: (content as any).deliveryMode || null,
+      mime
+    }) &&
+    deliveryAccess === "full" &&
+    !isPublicPreviewAsset &&
+    !isPublicCoverAsset
+  ) {
+    return reply.code(403).send({
+      error: "Encrypted stream required",
+      code: "ENCRYPTED_HLS_REQUIRED"
+    });
+  }
+
   const accessPolicy = evaluatePublicMediaDelivery({
     paidContent,
     freeContent,
@@ -33722,6 +33911,116 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
   reply.header("Content-Length", String(effectiveSize));
   return reply.send(fsSync.createReadStream(absPath));
+}
+
+async function loadAuthorizedHlsContext(req: any, reply: any): Promise<
+  | {
+      ok: true;
+      content: any;
+      sourceObjectKey: string;
+      hls: HlsRenditionInfo;
+    }
+  | { ok: false; response?: any }
+> {
+  const contentId = asString((req.params as any).id || "").trim();
+  let sourceObjectKey = asString((req.query || {})?.objectKey || "").trim();
+  const token = asString((req.query || {})?.t || (req.query || {})?.token || "").trim();
+  if (!contentId) return { ok: false, response: badRequest(reply, "contentId required") };
+  if (!sourceObjectKey) return { ok: false, response: badRequest(reply, "objectKey required") };
+  const sourceCheck = normalizeDeliveryObjectKey(sourceObjectKey);
+  if (!sourceCheck.ok) return { ok: false, response: forbidden(reply) };
+  sourceObjectKey = sourceCheck.objectKey;
+  if (!token) return { ok: false, response: reply.code(401).send({ error: "Unauthorized" }) };
+
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  if (!gated.content) {
+    if (gated.tombstoned && !gated.entitled) return { ok: false, response: reply.code(410).send({ tombstoned: true, error: "Removed from store" }) };
+    return { ok: false, response: notFound(reply, "Content not found") };
+  }
+  const content = gated.content;
+  const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey: sourceObjectKey } });
+  if (!file || !isAudioVideoMime(file.mime)) return { ok: false, response: notFound(reply, "File not found") };
+  const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
+  const paidContent = !isFreeContent({ priceSats: content.priceSats }) && priceSats > 0n;
+  if (!isProtectedStreamOnlyMedia({ paidContent, deliveryMode: (content as any).deliveryMode || null, mime: file.mime })) {
+    return { ok: false, response: reply.code(403).send({ error: "Encrypted stream not required", code: "HLS_NOT_REQUIRED" }) };
+  }
+  const verified = await verifyPublicDeliveryToken(token, {
+    contentId,
+    objectKey: sourceObjectKey,
+    paidContent,
+    req,
+    reply
+  });
+  if (!verified.ok || verified.access !== "full") return { ok: false, response: reply.code(401).send({ error: "Unauthorized" }) };
+
+  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+  const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
+  const hls =
+    getHlsInfoFromManifest((manifest?.json as any) || {}, sourceObjectKey) ||
+    (await ensureEncryptedHlsRenditionOnce(content, files, manifest));
+  if (!hls || hls.sourceObjectKey !== sourceObjectKey) {
+    return { ok: false, response: reply.code(503).send({ error: "Encrypted stream is not ready", code: "HLS_NOT_READY" }) };
+  }
+  return { ok: true, content, sourceObjectKey, hls };
+}
+
+function rewriteHlsPlaylist(input: { playlist: string; contentId: string; sourceObjectKey: string; token: string }) {
+  const source = encodeURIComponent(input.sourceObjectKey);
+  const token = encodeURIComponent(input.token);
+  return input.playlist
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      if (trimmed.startsWith("#EXT-X-KEY:")) {
+        return trimmed.replace(/URI="[^"]+"/, `URI="/public/content/${encodeURIComponent(input.contentId)}/hls/key?objectKey=${source}&t=${token}"`);
+      }
+      if (trimmed.startsWith("#")) return line;
+      const asset = encodeURIComponent(path.posix.basename(trimmed));
+      return `/public/content/${encodeURIComponent(input.contentId)}/hls/segment/${asset}?objectKey=${source}&t=${token}`;
+    })
+    .join("\n");
+}
+
+async function handlePublicHlsPlaylist(req: any, reply: any) {
+  const context = await loadAuthorizedHlsContext(req, reply);
+  if (!context.ok) return context.response;
+  const token = asString((req.query || {})?.t || (req.query || {})?.token || "").trim();
+  const resolved = resolveDeliveryPath(context.content.repoPath, context.hls.playlistObjectKey);
+  if (!resolved.ok || !fsSync.existsSync(resolved.absPath)) return notFound(reply, "Stream not found");
+  const playlist = await fs.readFile(resolved.absPath, "utf8");
+  reply.type("application/vnd.apple.mpegurl");
+  reply.header("Cache-Control", "no-store");
+  return reply.send(rewriteHlsPlaylist({
+    playlist,
+    contentId: context.content.id,
+    sourceObjectKey: context.sourceObjectKey,
+    token
+  }));
+}
+
+async function handlePublicHlsKey(req: any, reply: any) {
+  const context = await loadAuthorizedHlsContext(req, reply);
+  if (!context.ok) return context.response;
+  const resolved = resolveDeliveryPath(context.content.repoPath, context.hls.keyObjectKey);
+  if (!resolved.ok || !fsSync.existsSync(resolved.absPath)) return notFound(reply, "Stream key not found");
+  reply.type("application/octet-stream");
+  reply.header("Cache-Control", "no-store");
+  return reply.send(fsSync.createReadStream(resolved.absPath));
+}
+
+async function handlePublicHlsSegment(req: any, reply: any) {
+  const context = await loadAuthorizedHlsContext(req, reply);
+  if (!context.ok) return context.response;
+  const asset = asString((req.params as any).asset || "").trim();
+  if (!/^[A-Za-z0-9._-]+\.ts$/.test(asset)) return forbidden(reply);
+  const segmentObjectKey = `${context.hls.segmentPrefix}/${asset}`;
+  const resolved = resolveDeliveryPath(context.content.repoPath, segmentObjectKey);
+  if (!resolved.ok || !fsSync.existsSync(resolved.absPath)) return notFound(reply, "Stream segment not found");
+  reply.type("video/mp2t");
+  reply.header("Cache-Control", "no-store");
+  return reply.send(fsSync.createReadStream(resolved.absPath));
 }
 
 async function handlePublicCoverFile(req: any, reply: any) {
@@ -33787,6 +34086,9 @@ app.addHook("onRequest", (req: any, reply: any, done: any) => {
 });
 
 app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
+app.get("/public/content/:id/hls/master.m3u8", handlePublicHlsPlaylist);
+app.get("/public/content/:id/hls/key", handlePublicHlsKey);
+app.get("/public/content/:id/hls/segment/:asset", handlePublicHlsSegment);
 app.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
 app.get("/public/content/:id/cover", handlePublicCoverFile);
 app.get("/buy/content/:id/cover", handlePublicCoverFile);
@@ -39643,16 +39945,32 @@ async function handlePublicOffer(req: any, reply: any) {
   const previewUrl = previewObjectKey
     ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`
     : null;
+  const shouldUseEncryptedHls = Boolean(
+    baseUrl &&
+      hasFull &&
+      primaryFileId &&
+      isProtectedStreamOnlyMedia({
+        paidContent: hasStoredPrice,
+        deliveryMode: (content as any).deliveryMode || null,
+        mime: primaryFileMime || ""
+      })
+  );
+  const fullDeliveryToken =
+    hasFull && primaryFileId && (freeContent || buyerSessionId)
+      ? createPublicDeliveryToken({
+          contentId: content.id,
+          objectKey: primaryFileId,
+          access: "full",
+          buyerSessionId: freeContent ? null : buyerSessionId
+        })
+      : null;
   const fullMediaUrl =
-    baseUrl && hasFull && primaryFileId && (freeContent || buyerSessionId)
+    baseUrl && primaryFileId && fullDeliveryToken
       ? appendPublicDeliveryToken(
-          `${baseUrl}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(primaryFileId)}`,
-          createPublicDeliveryToken({
-            contentId: content.id,
-            objectKey: primaryFileId,
-            access: "full",
-            buyerSessionId: freeContent ? null : buyerSessionId
-          })
+          shouldUseEncryptedHls
+            ? `${baseUrl}/public/content/${encodeURIComponent(content.id)}/hls/master.m3u8?objectKey=${encodeURIComponent(primaryFileId)}`
+            : `${baseUrl}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(primaryFileId)}`,
+          fullDeliveryToken
         )
       : null;
   const showPreviewOnly = shouldShowPreview({
@@ -39697,6 +40015,7 @@ async function handlePublicOffer(req: any, reply: any) {
     isLocked: !hasFull,
     hasFullAccess: hasFull,
     playback,
+    hlsRequired: shouldUseEncryptedHls,
     previewUrl: showPreviewOnly ? previewUrl : null,
     fullMediaUrl: hasFull ? fullMediaUrl : null,
     fullContentUrl: hasFull ? fullMediaUrl : null,
@@ -42855,6 +43174,21 @@ async function handlePublicContentFile(req: any, reply: any) {
         return reply.send({ error: "Payment required", code: "PAYMENT_REQUIRED" });
       }
     }
+  }
+
+  if (
+    isProtectedStreamOnlyMedia({
+      paidContent: !freeContent && priceSats > 0n,
+      deliveryMode: (content as any).deliveryMode || null,
+      mime
+    }) &&
+    accessMode === "stream" &&
+    !isManifestPreviewAsset
+  ) {
+    return reply.code(403).send({
+      error: "Encrypted stream required",
+      code: "ENCRYPTED_HLS_REQUIRED"
+    });
   }
 
   const resolvedPath = resolveDeliveryPath(content.repoPath, objectKey);
