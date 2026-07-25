@@ -36361,15 +36361,18 @@ app.get("/p/:token", handleShortPublicLink);
 app.get("/u/:handle", handlePublicNodeProfilePage);
 app.get("/u/:handle/proofs.json", handlePublicProofBundle);
 async function getDefaultPublicProfileHandle(): Promise<string | null> {
+  const configuredHandle = normalizePublicProfileHandle(process.env.CONTENTBOX_PUBLIC_ROOT_HANDLE);
+  if (configuredHandle) return configuredHandle;
+
   const conf = await readBeatifyNodeProof();
   if (conf.revokedAt) return null;
-  return normalizeBeatifyHandle(conf.beatifyHandle);
+  return normalizePublicProfileHandle(conf.beatifyHandle) || normalizeBeatifyHandle(conf.beatifyHandle);
 }
 
 async function handlePublicRoot(req: any, reply: any) {
-  const beatifyHandle = await getDefaultPublicProfileHandle();
-  if (beatifyHandle) {
-    req.params = { ...(req.params || {}), handle: beatifyHandle };
+  const rootHandle = await getDefaultPublicProfileHandle();
+  if (rootHandle) {
+    req.params = { ...(req.params || {}), handle: rootHandle };
     return handlePublicNodeProfilePage(req, reply);
   }
 
@@ -36388,9 +36391,9 @@ async function handlePublicRoot(req: any, reply: any) {
 }
 
 async function handlePublicProfileRedirect(req: any, reply: any) {
-  const beatifyHandle = await getDefaultPublicProfileHandle();
-  if (!beatifyHandle) return notFound(reply, "Not found");
-  return reply.redirect(302, `/u/${encodeURIComponent(beatifyHandle)}`);
+  const rootHandle = await getDefaultPublicProfileHandle();
+  if (!rootHandle) return notFound(reply, "Not found");
+  return reply.redirect(302, `/u/${encodeURIComponent(rootHandle)}`);
 }
 
 app.get("/profile", handlePublicProfileRedirect);
