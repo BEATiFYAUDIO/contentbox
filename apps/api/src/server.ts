@@ -13340,20 +13340,7 @@ function registerPublicRoutes(appPublic: any) {
     }
     done();
   });
-  appPublic.get("/", async (_req: any, reply: any) => {
-    return reply.send({
-      ok: true,
-      message: "This is the Certifyd Creator public endpoint. It can be whatever you want.",
-      examples: [
-        "A storefront",
-        "A cryptographic identity",
-        "A catalog of releases",
-        "A studio landing page",
-        "A private licensing gateway"
-      ],
-      hint: "Share a specific content link like /p/<contentId> or /buy/<contentId>."
-    });
-  });
+  appPublic.get("/", handlePublicRoot);
   appPublic.get("/health", handlePublicPing);
   appPublic.get("/api/health", handlePublicPing);
   appPublic.get("/public/ping", handlePublicPing);
@@ -36373,9 +36360,35 @@ async function handleShortPublicLink(req: any, reply: any) {
 app.get("/p/:token", handleShortPublicLink);
 app.get("/u/:handle", handlePublicNodeProfilePage);
 app.get("/u/:handle/proofs.json", handlePublicProofBundle);
-async function handlePublicProfileRedirect(req: any, reply: any) {
+async function getDefaultPublicProfileHandle(): Promise<string | null> {
   const conf = await readBeatifyNodeProof();
-  const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
+  if (conf.revokedAt) return null;
+  return normalizeBeatifyHandle(conf.beatifyHandle);
+}
+
+async function handlePublicRoot(req: any, reply: any) {
+  const beatifyHandle = await getDefaultPublicProfileHandle();
+  if (beatifyHandle) {
+    req.params = { ...(req.params || {}), handle: beatifyHandle };
+    return handlePublicNodeProfilePage(req, reply);
+  }
+
+  return reply.send({
+    ok: true,
+    message: "This is the Certifyd Creator public endpoint. It can be whatever you want.",
+    examples: [
+      "A storefront",
+      "A cryptographic identity",
+      "A catalog of releases",
+      "A studio landing page",
+      "A private licensing gateway"
+    ],
+    hint: "Share a specific content link like /p/<contentId> or /buy/<contentId>."
+  });
+}
+
+async function handlePublicProfileRedirect(req: any, reply: any) {
+  const beatifyHandle = await getDefaultPublicProfileHandle();
   if (!beatifyHandle) return notFound(reply, "Not found");
   return reply.redirect(302, `/u/${encodeURIComponent(beatifyHandle)}`);
 }
