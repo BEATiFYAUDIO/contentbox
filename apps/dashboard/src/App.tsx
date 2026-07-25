@@ -733,7 +733,6 @@ export default function App() {
   const hideSidebar = Boolean(inviteToken && !me);
   const creatorHandle = normalizePublicProfileHandle(me?.displayName || me?.email || "");
   const logoHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : "/";
-  const creatorProfileHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : null;
   const publicStatusOnline = publicStatus?.status === "online";
   const namedTunnelCommerceReady =
     productTier !== "basic" && publicStatus?.mode === "named" && publicStatusOnline;
@@ -741,7 +740,7 @@ export default function App() {
     Boolean(sovereignCapabilities.canUseProviderBackedCommerce) || namedTunnelCommerceReady;
   const publicCreatorUrl =
     publicStatusOnline && publicStatus?.url
-      ? new URL(creatorProfileHref || "/profile", String(publicStatus.url)).toString()
+      ? new URL("/", String(publicStatus.url)).toString()
       : null;
 
   return (
