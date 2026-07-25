@@ -38224,6 +38224,7 @@ async function handleBuyPage(req: any, reply: any) {
 
   function streamUrl(offer, token){
     if (!offer?.primaryFileId) return null;
+    if (offer?.hlsRequired) return null;
     let url = apiBase + "/content/" + offer.manifestSha256 + "/" + encodeURIComponent(offer.primaryFileId);
     if (token) url += "?t=" + encodeURIComponent(token);
     return url;
@@ -38323,8 +38324,8 @@ async function handleBuyPage(req: any, reply: any) {
   function inferPreviewKind(offer, src){
     const mime = String(offer?.primaryFileMime || "").toLowerCase();
     const path = String(src || "").toLowerCase();
-    if (offer?.type === "video" || mime.startsWith("video/") || /\\.(mp4|webm|mov|m4v)(\\?|#|$)/.test(path)) return "video";
-    if (offer?.type === "song" || mime.startsWith("audio/") || /\\.(mp3|wav|m4a|ogg|flac)(\\?|#|$)/.test(path)) return "audio";
+    if (offer?.type === "video" || mime.startsWith("video/") || /\\.(mp4|webm|mov|m4v|m3u8)(\\?|#|$)/.test(path)) return "video";
+    if (offer?.type === "song" || mime.startsWith("audio/") || /\\.(mp3|wav|m4a|ogg|flac|m3u8)(\\?|#|$)/.test(path)) return "audio";
     if (mime.startsWith("image/") || /\\.(png|jpe?g|webp|gif|avif)(\\?|#|$)/.test(path)) return "image";
     return "file";
   }
@@ -38351,6 +38352,7 @@ async function handleBuyPage(req: any, reply: any) {
     const tokenStreamSrc = token ? streamUrl(offer, token) : null;
     const fallbackPreviewSrc = previewFallbackUrl(offer);
     const fullMediaSrc = String(offer?.fullMediaUrl || offer?.fullContentUrl || "").trim();
+    const requiresEncryptedFull = Boolean(offer?.hlsRequired && fullMediaSrc);
     const primaryPreview = basicPrimaryUrl(offer);
     const isPreviewEntitlement = entitlement?.status === "preview";
     const canonicalCanPlayFull = Boolean(canonical?.canPlayFull);
@@ -38394,13 +38396,14 @@ async function handleBuyPage(req: any, reply: any) {
       };
     }
     if (canonicalMode === "full" && canonicalStreamUrl && canUseFull) {
-      const resolved = resolveRenderablePreview(offer, tokenStreamSrc || canonicalStreamUrl, canonicalStreamUrl);
+      const preferredFullSrc = requiresEncryptedFull ? fullMediaSrc : (tokenStreamSrc || canonicalStreamUrl);
+      const resolved = resolveRenderablePreview(offer, preferredFullSrc, requiresEncryptedFull ? canonicalStreamUrl : fullMediaSrc || canonicalStreamUrl);
       const deliveryMode = resolveBasicDeliveryMode(offer);
       const kind = resolved.kind;
       const isVideo = kind === "video";
       const isAudio = kind === "audio";
       return {
-        src: resolved.src || tokenStreamSrc || canonicalStreamUrl,
+        src: resolved.src || preferredFullSrc,
         kind,
         mode: "full",
         isVideo,
@@ -38412,12 +38415,12 @@ async function handleBuyPage(req: any, reply: any) {
       };
     }
     const preferredSrc = canUseFull
-      ? (tokenStreamSrc || canonicalStreamUrl || fullMediaSrc || primaryPreview || fallbackPreviewSrc)
+      ? (requiresEncryptedFull ? fullMediaSrc : (tokenStreamSrc || canonicalStreamUrl || fullMediaSrc || primaryPreview || fallbackPreviewSrc))
       : (isPreviewEntitlement
           ? (fallbackPreviewSrc || tokenStreamSrc || primaryPreview)
           : (tokenStreamSrc || fallbackPreviewSrc || primaryPreview));
     const alternateSrc = canUseFull
-      ? (fullMediaSrc || canonicalStreamUrl || primaryPreview || fallbackPreviewSrc || tokenStreamSrc)
+      ? (requiresEncryptedFull ? (canonicalStreamUrl || primaryPreview || fallbackPreviewSrc) : (fullMediaSrc || canonicalStreamUrl || primaryPreview || fallbackPreviewSrc || tokenStreamSrc))
       : (isPreviewEntitlement ? (tokenStreamSrc || fallbackPreviewSrc || primaryPreview) : (fallbackPreviewSrc || primaryPreview || tokenStreamSrc));
     const resolved = resolveRenderablePreview(offer, preferredSrc, alternateSrc);
     const src = resolved.src || preferredSrc || alternateSrc || "";
@@ -38442,10 +38445,11 @@ async function handleBuyPage(req: any, reply: any) {
     if (!playback?.src) return "";
     const previewLabel = opts?.previewLabel || "";
     const coverSrc = playback.coverSrc || "";
+    const blockContextMenu = playback.deliveryMode === "stream_only" ? ' oncontextmenu="return false;"' : "";
     return '<div class="preview">' +
       (previewLabel ? '<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">' + esc(previewLabel) + '</div>' : '') +
-      (playback.isVideo ? '<video id="player" controls' + playback.controlsList + ' preload="metadata"' + (coverSrc ? ' poster="' + coverSrc + '"' : '') + ' src="' + playback.src + '"></video>' : '') +
-      (playback.isAudio ? '<audio id="player" controls' + playback.controlsList + ' preload="metadata" src="' + playback.src + '"></audio>' : '') +
+      (playback.isVideo ? '<video id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata"' + (coverSrc ? ' poster="' + coverSrc + '"' : '') + ' src="' + playback.src + '"></video>' : '') +
+      (playback.isAudio ? '<audio id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata" src="' + playback.src + '"></audio>' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "image" ? '<img id="player" src="' + playback.src + '" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "file" ? '<a class="muted" href="' + playback.src + '" target="_blank" rel="noreferrer">Open preview</a>' : '') +
     '</div>';
