@@ -2125,6 +2125,8 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                   {list.map((entry) => {
                     const it = entry.item;
                     const participationInfo = entry.participation || participationByContentId[it.id] || null;
+                    const derivativeApproval = derivativeApprovalByChildId[it.id] || null;
+                    const derivativeLinked = entry.isDerivativeChild || entry.isDerivativeParent;
                     const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
                     const ownerFeatured = Boolean(it.featureOnProfile);
                     const shouldUseParticipationHighlight = shouldUseParticipationFeatureHighlight(
@@ -2134,8 +2136,19 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                     const currentlyFeatured = shouldUseParticipationHighlight ? participationFeatured : ownerFeatured;
                     const isPublished = String(it.status || "").toLowerCase() === "published";
                     const isOwnedPublished = entry.relation === "owner" && isPublished;
-                    const canAddToProfile = isPublished && !it.deletedAt && (entry.relation === "owner" || entry.relation === "participant");
-                    const isAddedToProfile = entry.relation === "owner"
+                    const derivativeClearanceApproved =
+                      String(derivativeApproval?.status || "").trim().toUpperCase() === "APPROVED" ||
+                      Number(derivativeApproval?.approveWeightBps || 0) >= Number(derivativeApproval?.approvalBpsTarget || 6667);
+                    const isApprovedDerivativeShadow =
+                      isPublished &&
+                      Boolean(it.deletedAt) &&
+                      derivativeLinked &&
+                      derivativeClearanceApproved;
+                    const canAddToProfile =
+                      isPublished &&
+                      (!it.deletedAt || isApprovedDerivativeShadow) &&
+                      (entry.relation === "owner" || entry.relation === "participant");
+                    const isAddedToProfile = entry.relation === "owner" && !isApprovedDerivativeShadow
                       ? String(it.storefrontStatus || "DISABLED").toUpperCase() !== "DISABLED"
                       : currentlyFeatured;
                     const featureAllowed = isOwnedPublished;
@@ -2155,7 +2168,6 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                     const isVideoByPath = /\.(mp4|mov|m4v|webm|mkv|avi|wmv|ogv)$/.test(mediaPathHint);
                     const isAudioByPath = /\.(mp3|m4a|aac|wav|flac|ogg|oga|opus)$/.test(mediaPathHint);
                     const isImageByPath = /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(mediaPathHint);
-                    const derivativeLinked = entry.isDerivativeChild || entry.isDerivativeParent;
                     const derivativeParentOnly = entry.isDerivativeParent && !entry.isDerivativeChild;
                     const allowUnknownVideoFallback = entry.isDerivativeChild;
                     const isVideo = mime.startsWith("video/") || type === "video" || type === "remix" || isVideoByPath;
@@ -2331,7 +2343,6 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                         : entitlement?.accessMode === "stream_only"
                           ? "Stream only"
                           : null;
-                    const derivativeApproval = derivativeApprovalByChildId[it.id] || null;
                     const splitSummary = ownedSplitSummaryByContentId[it.id] || null;
                     const attribution = attributionByContentId[it.id] || null;
                     const contributors = Array.isArray(attribution?.contributors)
@@ -2601,13 +2612,13 @@ function looksLikeVideoAssetUrl(raw: string | null | undefined): boolean {
                                   : "border-neutral-900 text-neutral-600 cursor-not-allowed"
                               }`}
                               onClick={() => {
-                                if (entry.relation === "owner") {
+                                if (entry.relation === "owner" && !isApprovedDerivativeShadow) {
                                   setProfileVisibilityForContent(it.id, !isAddedToProfile);
                                   return;
                                 }
                                 setFeatureOnProfile(entry, !isAddedToProfile);
                               }}
-                              title={canAddToProfile ? "" : "Only published owned or shared content can be added to profile."}
+                              title={canAddToProfile ? "" : "Only published owned, shared, or cleared derivative content can be added to profile."}
                             >
                               {featureBusyById[it.id]
                                 ? "Updating…"
