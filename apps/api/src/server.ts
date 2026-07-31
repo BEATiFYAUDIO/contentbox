@@ -44925,7 +44925,31 @@ async function getParentLockedSplitSnapshotForDerivativeApprovals(link: {
   parentContentId: string;
   parentSplitVersionId?: string | null;
 }) {
-  const parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
+  let parentSplitVersionId: string | null = null;
+  try {
+    parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
+  } catch {
+    const parentContentId = asString(link.parentContentId || "").trim();
+    if (parentContentId) {
+      const fallbackSplit = await getLockedSplitForContent(parentContentId);
+      parentSplitVersionId = asString(fallbackSplit?.id || "").trim() || null;
+      const linkId = asString(link.id || "").trim();
+      if (parentSplitVersionId && linkId) {
+        await prisma.contentLink
+          .update({
+            where: { id: linkId },
+            data: { parentSplitVersionId }
+          })
+          .catch(() => null);
+      }
+    }
+  }
+  if (!parentSplitVersionId) {
+    const err: any = new Error("PARENT_SPLIT_NOT_LOCKED");
+    err.code = "PARENT_SPLIT_NOT_LOCKED";
+    err.statusCode = 409;
+    throw err;
+  }
   const parentSplit = await prisma.splitVersion.findUnique({
     where: { id: parentSplitVersionId },
     include: {
