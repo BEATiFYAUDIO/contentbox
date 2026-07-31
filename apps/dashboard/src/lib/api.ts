@@ -230,7 +230,11 @@ export async function api<T>(path: string, methodOrOptions: string | ApiOptions 
     }
     const payload = data ?? text;
     const detail = typeof payload === "string" ? payload : JSON.stringify(payload);
-    const err = new Error(`[${method} ${url}] ${res.status} ${res.statusText} :: ${detail}`);
+    const message =
+      payload && typeof payload === "object"
+        ? String(payload.message || payload.reason || payload.error || detail)
+        : detail;
+    const err = new Error(message || `[${method} ${url}] ${res.status} ${res.statusText}`);
     console.error("API Error:", {
       url,
       method,

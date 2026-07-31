@@ -29431,9 +29431,8 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           upstreamRatePercent: Number(link.upstreamBps ?? 0) / 100
         }),
         signal: ctrl.signal as any
-      });
+      }).finally(() => clearTimeout(timeout));
       const data: any = await res.json().catch(() => null);
-      clearTimeout(timeout);
       if (res.ok && Array.isArray(data?.approvalUrls)) {
         remoteApprovalUrls = data.approvalUrls;
       } else {
@@ -29446,6 +29445,13 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           },
           "derivatives.remote_request.failed"
         );
+        return reply.code(502).send({
+          code: "REMOTE_CLEARANCE_REQUEST_FAILED",
+          message: data?.message || data?.reason || data?.error || "Remote clearance request failed.",
+          remoteOrigin,
+          remoteStatus: res.status,
+          details: data
+        });
       }
     } catch (err: any) {
       app.log.warn(
@@ -29456,6 +29462,12 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         },
         "derivatives.remote_request.error"
       );
+      return reply.code(502).send({
+        code: "REMOTE_CLEARANCE_REQUEST_ERROR",
+        message: "Could not reach the original node to send the clearance request.",
+        remoteOrigin,
+        details: String(err?.message || err || "unknown_error")
+      });
     }
   }
 
@@ -51382,7 +51394,6 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
     const approverCount = eligible.length;
     const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
     const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
-    const approvalTokenModel = (prisma as any).approvalToken;
     clearanceInbox = await Promise.all(
       actionableAuths.map(async (auth) => {
         let viewerVote = inviteUserId
@@ -51405,19 +51416,6 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
               )?.decision || null;
           }
         }
-        const clearanceToken =
-          approverEmailForToken && approvalTokenModel
-            ? await approvalTokenModel.findFirst({
-                where: {
-                  authorizationId: auth.id,
-                  approverEmail: emailEquals(approverEmailForToken),
-                  usedAt: null,
-                  expiresAt: { gt: new Date() }
-                },
-                orderBy: { createdAt: "desc" },
-                select: { token: true }
-              })
-            : null;
         return {
           authorizationId: auth.id,
           linkId: auth.derivativeLinkId,
@@ -51436,10 +51434,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approverCount,
           upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
           reviewPreviewUrl: getRemoteReviewPreviewUrlFromDescription(auth.derivativeLink?.childContent?.description || null),
-          clearanceUrl:
-            clearanceToken?.token
-              ? `${clearanceBase}/clearance/${clearanceToken.token}`
-              : `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
+          clearanceUrl: `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
         };
       })
     );
@@ -51454,7 +51449,6 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           eligibleCount: eligible.length,
           inviteIsEligible,
           authCount: actionableAuths.length,
-          approvalTokenModelPresent: Boolean(approvalTokenModel),
           clearanceInboxCount: clearanceInbox.length,
           firstAuthorizationId: first?.authorizationId || null,
           firstStatus: first?.status || null,
