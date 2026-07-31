@@ -13379,6 +13379,15 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.post("/api/network/provider/delegated-publish", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("POST", "/api/network/provider/delegated-publish", req, reply)
   );
+  appPublic.post("/api/derivatives/remote-request", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("POST", "/api/derivatives/remote-request", req, reply)
+  );
+  appPublic.get("/api/derivatives/remote-status", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", asString(req?.raw?.url || req?.url || "/api/derivatives/remote-status"), req, reply)
+  );
+  appPublic.post("/api/derivatives/remote-vote", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("POST", "/api/derivatives/remote-vote", req, reply)
+  );
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
   appPublic.get("/library", handleBuyerLibraryPage);
@@ -29446,8 +29455,14 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           "derivatives.remote_request.failed"
         );
         return reply.code(502).send({
-          code: "REMOTE_CLEARANCE_REQUEST_FAILED",
-          message: data?.message || data?.reason || data?.error || "Remote clearance request failed.",
+          code:
+            res.status === 404 && asString(data?.message || "").includes("/api/derivatives/remote-request")
+              ? "REMOTE_CLEARANCE_ENDPOINT_MISSING"
+              : "REMOTE_CLEARANCE_REQUEST_FAILED",
+          message:
+            res.status === 404 && asString(data?.message || "").includes("/api/derivatives/remote-request")
+              ? "The original node does not have the remote derivative clearance endpoint yet. Pull the latest main branch and restart that node."
+              : data?.message || data?.reason || data?.error || "Remote clearance request failed.",
           remoteOrigin,
           remoteStatus: res.status,
           details: data
