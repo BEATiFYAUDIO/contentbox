@@ -30429,7 +30429,7 @@ async function handlePublicContent(req: any, reply: any) {
   const primaryObjectKey = getPrimaryFileObjectKeyFromManifest(manifestJson);
   let buyerSessionId: string | null = null;
   try {
-    const buyerSession = await resolveBuyerSession(req, reply);
+    const buyerSession = await resolveBuyerReadSession(req, reply);
     buyerSessionId = asString(buyerSession?.id || "").trim() || null;
   } catch {
     buyerSessionId = null;
@@ -40137,7 +40137,7 @@ async function handlePublicOffer(req: any, reply: any) {
   let receiptProofIntent: any | null = null;
   let receiptProofToken: string | null = null;
   try {
-    const buyerSession = await resolveBuyerSession(req, reply);
+    const buyerSession = await resolveBuyerReadSession(req, reply);
     buyerSessionId = asString(buyerSession?.id || "").trim() || null;
     buyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
   } catch {
