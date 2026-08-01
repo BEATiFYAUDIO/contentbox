@@ -38,6 +38,14 @@ export type IdentityDetail = {
   persistentConfigured: boolean;
   reason: string;
   publicOrigin: string | null;
+  publicProfile?: {
+    url: string | null;
+    path: string;
+    routeStyle: "root" | "handle" | "none";
+    handle: string | null;
+    rootHandle: string | null;
+  };
+  publicProfileUrl?: string | null;
   nodeMode?: NodeMode;
   productTier?: ProductTier;
   productTierSource?: "env" | "file" | "legacy";

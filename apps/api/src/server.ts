@@ -18873,7 +18873,18 @@ app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: a
   const capabilities = buildCapabilitySet(ctx);
   const sovereignCapabilities = buildSovereignCapabilityMatrix(ctx);
   const reasonCtx = { namedMode: ctx.publicStatus.mode, namedStatus: ctx.publicStatus.status };
-  const owner = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { email: true } });
+  const currentUserId = (_req.user as JwtUser)?.sub;
+  const [owner, currentUser] = await Promise.all([
+    prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { email: true, displayName: true } }),
+    currentUserId
+      ? prisma.user.findUnique({ where: { id: currentUserId }, select: { email: true, displayName: true } })
+      : Promise.resolve(null)
+  ]);
+  const publicProfile = await resolvePreferredPublicProfileLink({
+    publicOrigin: ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || null,
+    displayName: currentUser?.displayName || owner?.displayName || null,
+    email: currentUser?.email || owner?.email || null
+  });
   return reply.send({
     ...getRuntimeIdentityDetail(),
     nodeMode: runtime.nodeMode,
@@ -18897,6 +18908,8 @@ app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: a
       proofs: capabilityReason(ctx, "proofs", reasonCtx)
     },
     ownerEmail: owner?.email || null,
+    publicProfile,
+    publicProfileUrl: publicProfile.url,
     features: {
       publicShare: capabilities.publicShare,
       derivatives: capabilities.useDerivatives,
@@ -36394,6 +36407,36 @@ async function getDefaultPublicProfileHandle(): Promise<string | null> {
   const conf = await readBeatifyNodeProof();
   if (conf.revokedAt) return null;
   return normalizePublicProfileHandle(conf.beatifyHandle) || normalizeBeatifyHandle(conf.beatifyHandle);
+}
+
+async function resolvePreferredPublicProfileLink(input: {
+  publicOrigin: unknown;
+  displayName?: string | null;
+  email?: string | null;
+}): Promise<{
+  url: string | null;
+  path: string;
+  routeStyle: "root" | "handle" | "none";
+  handle: string | null;
+  rootHandle: string | null;
+}> {
+  const origin = normalizePublicOriginBase(input.publicOrigin);
+  const handle =
+    normalizePublicProfileHandle(input.displayName || "") ||
+    normalizedEmailLocalPart(input.email || "") ||
+    null;
+  const rootHandle = await getDefaultPublicProfileHandle();
+  const useRoot = Boolean(rootHandle);
+  const path = useRoot ? "/" : handle ? `/u/${encodeURIComponent(handle)}` : rootHandle ? "/" : "/";
+  const routeStyle = useRoot || (!handle && rootHandle) ? "root" : handle ? "handle" : "none";
+
+  return {
+    url: origin ? buildPublicUrlFromOrigin(origin, path) : null,
+    path,
+    routeStyle,
+    handle,
+    rootHandle
+  };
 }
 
 async function handlePublicRoot(req: any, reply: any) {

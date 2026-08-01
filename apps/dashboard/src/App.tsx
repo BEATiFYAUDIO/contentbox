@@ -738,9 +738,11 @@ export default function App() {
     productTier !== "basic" && publicStatus?.mode === "named" && publicStatusOnline;
   const providerCommerceReadyUi =
     Boolean(sovereignCapabilities.canUseProviderBackedCommerce) || namedTunnelCommerceReady;
+  const configuredPublicProfileUrl =
+    identityDetail?.publicProfile?.url || identityDetail?.publicProfileUrl || null;
   const publicCreatorUrl =
-    publicStatusOnline && publicStatus?.url
-      ? new URL("/", String(publicStatus.url)).toString()
+    publicStatusOnline && (configuredPublicProfileUrl || publicStatus?.url)
+      ? configuredPublicProfileUrl || new URL("/", String(publicStatus.url)).toString()
       : null;
 
   return (
