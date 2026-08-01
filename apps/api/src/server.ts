@@ -40200,7 +40200,7 @@ async function handlePublicOffer(req: any, reply: any) {
 	  const playback = buildCanonicalPlayback({
 	    hasFullAccess: hasFull,
 	    fullStreamUrl: hasFull ? fullMediaUrl : null,
-	    previewStreamUrl: showPreviewOnly ? previewUrl : null,
+	    previewStreamUrl: previewUrl,
 	    previewLimitSeconds: 20
 	  });
 

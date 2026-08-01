@@ -49,6 +49,25 @@ test("owned paid content returns full playback", () => {
   assert.equal(playback.canPlayFull, true);
 });
 
+
+
+test("paid unlocked content without full stream falls back to preview playback", () => {
+  const playback = buildCanonicalPlayback({
+    hasFullAccess: true,
+    fullStreamUrl: null,
+    previewStreamUrl: "https://creator.example/public/content/owned/preview-file?objectKey=preview.mp3",
+    previewLimitSeconds: 20
+  });
+
+  assert.deepEqual(playback, {
+    mode: "preview",
+    streamUrl: "https://creator.example/public/content/owned/preview-file?objectKey=preview.mp3",
+    previewLimitSeconds: 20,
+    canPlayFull: true,
+    reason: "full_stream_unavailable_preview_fallback"
+  });
+});
+
 test("locked content without preview returns no playback", () => {
   const playback = buildCanonicalPlayback({
     hasFullAccess: false,

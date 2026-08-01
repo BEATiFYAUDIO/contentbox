@@ -40,6 +40,15 @@ export function buildCanonicalPlayback(input: BuildCanonicalPlaybackInput): Cano
         canPlayFull: true
       };
     }
+    if (previewStreamUrl) {
+      return {
+        mode: "preview",
+        streamUrl: previewStreamUrl,
+        previewLimitSeconds: cleanPreviewLimit(input.previewLimitSeconds),
+        canPlayFull: true,
+        reason: "full_stream_unavailable_preview_fallback"
+      };
+    }
     return {
       mode: "none",
       streamUrl: null,
