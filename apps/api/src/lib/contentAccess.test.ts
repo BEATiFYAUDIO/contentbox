@@ -14,15 +14,15 @@ test("free video/audio/file content resolves to full access (price = 0)", () => 
   );
 });
 
-test("free content does not require receipt token semantics (no paid unlock requirement)", () => {
+test("missing price does not grant free full access even with legacy unlock marker", () => {
   const freeByMissingPrice = isFreeContent({ priceSats: null, unlockRequired: false });
-  assert.equal(freeByMissingPrice, true);
+  assert.equal(freeByMissingPrice, false);
   assert.equal(
     hasFullAccess({
       isFree: freeByMissingPrice,
       hasUnlock: false
     }),
-    true
+    false
   );
 });
 
@@ -57,15 +57,15 @@ test("paid unlocked content still returns full access behavior", () => {
   );
 });
 
-test("missing price with explicit free flag resolves to full access", () => {
+test("missing price with legacy free flag does not grant full access", () => {
   const isFree = isFreeContent({ isFree: true, priceSats: undefined });
-  assert.equal(isFree, true);
+  assert.equal(isFree, false);
   assert.equal(
     hasFullAccess({
       isFree,
       hasUnlock: false
     }),
-    true
+    false
   );
 });
 

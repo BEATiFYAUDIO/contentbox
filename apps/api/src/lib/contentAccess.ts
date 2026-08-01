@@ -34,10 +34,6 @@ function toBigIntOrNull(value: unknown): bigint | null {
 export function isFreeContent(content: FreeContentInput | null | undefined): boolean {
   if (!content) return false;
 
-  const access = String(content.access || "").trim().toLowerCase();
-  if (content.isFree === true || content.free === true || access === "free") return true;
-  if (content.unlockRequired === false || content.requiresUnlock === false) return true;
-
   const priceSignals = [
     toBigIntOrNull(content.priceSats),
     toBigIntOrNull(content.priceCents),
@@ -47,9 +43,10 @@ export function isFreeContent(content: FreeContentInput | null | undefined): boo
   ].filter((v): v is bigint => v !== null);
 
   if (priceSignals.some((v) => v > 0n)) return false;
-  if (priceSignals.some((v) => v <= 0n)) return true;
+  if (priceSignals.some((v) => v === 0n)) return true;
 
-  // Missing price is NOT implicitly free without an explicit free marker.
+  // Missing price or legacy free markers are NOT implicitly free.
+  // Public full access is free only when the price is explicitly set to 0.
   return false;
 }
 

@@ -40132,7 +40132,7 @@ async function handlePublicOffer(req: any, reply: any) {
   const freeContent = isFreeContent({ priceSats: rawPriceSats });
   const hasStoredPrice = rawPriceSats != null && rawPriceSats > 0n;
   const paidCommerceActive = authority.authority;
-  const priceSats = hasStoredPrice && paidCommerceActive ? rawPriceSats : null;
+  const priceSats = hasStoredPrice ? rawPriceSats : null;
   const hasPrice = priceSats != null && priceSats > 0n;
   let buyerId: string | null = null;
   let buyerSessionId: string | null = null;
