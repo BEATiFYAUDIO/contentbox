@@ -36397,6 +36397,7 @@ async function handleShortPublicLink(req: any, reply: any) {
   return reply.redirect(`/buy/${encodeURIComponent(token)}`);
 }
 
+app.get("/", handlePublicRootWhenConfigured);
 app.get("/p/:token", handleShortPublicLink);
 app.get("/u/:handle", handlePublicNodeProfilePage);
 app.get("/u/:handle/proofs.json", handlePublicProofBundle);
@@ -36458,6 +36459,13 @@ async function handlePublicRoot(req: any, reply: any) {
     ],
     hint: "Share a specific content link like /p/<contentId> or /buy/<contentId>."
   });
+}
+
+async function handlePublicRootWhenConfigured(req: any, reply: any) {
+  const rootHandle = await getDefaultPublicProfileHandle();
+  if (!rootHandle) return reply.callNotFound();
+  req.params = { ...(req.params || {}), handle: rootHandle };
+  return handlePublicNodeProfilePage(req, reply);
 }
 
 async function handlePublicProfileRedirect(req: any, reply: any) {
