@@ -28766,7 +28766,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     isRequester?: boolean;
   }) => {
     const hasViewerVote = Boolean(asString(input.viewerVote || "").trim());
-    if (scope === "pending") return input.isEligible && (input.status === "PENDING" || input.status === "REJECTED") && !hasViewerVote;
+    if (scope === "pending") return input.isEligible && input.status === "PENDING" && !hasViewerVote;
     if (scope === "voted") return hasViewerVote && input.status !== "APPROVED";
     if (scope === "cleared") return input.status === "APPROVED" && (input.isEligible || hasViewerVote || Boolean(input.isRequester));
     return input.isEligible || hasViewerVote || Boolean(input.isRequester);
@@ -28777,7 +28777,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     remoteAuthorizationId?: string | null;
     remoteOrigin?: string | null;
   }) => {
-    const activeStatus = input.status === "PENDING" || input.status === "REJECTED";
+    const activeStatus = input.status === "PENDING";
     const clearanceUrl = asString(input.clearanceUrl || "").trim();
     const remoteAuthorizationId = asString(input.remoteAuthorizationId || "").trim();
     const remoteOrigin = normalizeRemoteOrigin(input.remoteOrigin || "");
@@ -28848,7 +28848,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   };
   const isActiveStatus = (status: unknown) => {
     const normalized = normalizeStatus(status);
-    return normalized === "PENDING" || normalized === "REJECTED";
+    return normalized === "PENDING";
   };
   const hasActionableRoute = (row: any) => {
     const remoteVoteRoute = asString(row?.remoteVoteRoute || "").trim();
@@ -29081,7 +29081,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     });
 
     const remoteReviewPreviewUrl = asString(getRemoteReviewPreviewUrlFromDescription(link?.childContent?.description || null) || "").trim() || null;
-    const shouldHydrateRemoteRouting = Boolean(remoteOrigin) && (status === "PENDING" || status === "REJECTED");
+    const shouldHydrateRemoteRouting = Boolean(remoteOrigin) && status === "PENDING";
     const parsedRemotePreviewRoute = parseInviteClearanceRouteFromUrl(remoteReviewPreviewUrl);
     const remoteAuthorizationId = shouldHydrateRemoteRouting
       ? asString(parsedRemotePreviewRoute?.authorizationId || remoteStatus?.authorizationId || a.id || "").trim() || null
@@ -29093,7 +29093,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
           )}/vote?origin=${encodeURIComponent(remoteOrigin)}`
         : null;
     const parentAuthorityVoteRoute =
-      parentRemoteOrigin && (status === "PENDING" || status === "REJECTED")
+      parentRemoteOrigin && status === "PENDING"
         ? `/api/remote/derivatives/vote?origin=${encodeURIComponent(parentRemoteOrigin)}&parentContentId=${encodeURIComponent(
             a.parentContentId
           )}&childContentId=${encodeURIComponent(link.childContentId)}`
@@ -29111,7 +29111,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       relation: link.relation,
       status,
       viewerVote,
-      canVote: Boolean(isEligible) && !viewerVote && status !== "APPROVED",
+      canVote: Boolean(isEligible) && !viewerVote && status === "PENDING",
       approveWeightBps,
       rejectWeightBps,
       approvalBpsTarget: Number(a.approvalBpsTarget || 6667),
@@ -29192,7 +29192,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         relation: asString(entry?.relation || "derivative").trim().toLowerCase() || "derivative",
         status,
         viewerVote,
-        canVote: !viewerVote && status !== "APPROVED",
+        canVote: !viewerVote && status === "PENDING",
         approveWeightBps: Number(entry?.approveWeightBps || 0),
         rejectWeightBps: Number(entry?.rejectWeightBps || 0),
         approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
@@ -45925,6 +45925,14 @@ async function applyDerivativeAuthorizationFinalization(input: {
       .updateMany({
         where: { contentLinkId: auth.derivativeLink.id, status: "PENDING" },
         data: { status: "CLEARED" }
+      })
+      .catch(() => null);
+  } else if (tallied.status === "REJECTED") {
+    updatedLink = auth.derivativeLink;
+    await prisma.clearanceRequest
+      .updateMany({
+        where: { contentLinkId: auth.derivativeLink.id, status: "PENDING" },
+        data: { status: "REJECTED" }
       })
       .catch(() => null);
   }
