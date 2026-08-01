@@ -36480,7 +36480,40 @@ async function handlePublicRoot(req: any, reply: any) {
   });
 }
 
+function publicRootProfileAllowedOnApiRequest(req: any): boolean {
+  const requestHost = getPublicHostnameFromReq(req);
+  if (!requestHost || requestHost.startsWith("dashboard.")) return false;
+
+  const cfg = getPublicOriginConfig();
+  const status = getPublicStatusCached();
+  const candidates = [
+    process.env.CONTENTBOX_PUBLIC_ORIGIN,
+    process.env.PUBLIC_ORIGIN,
+    process.env.APP_PUBLIC_ORIGIN,
+    process.env.PUBLIC_BASE_ORIGIN,
+    process.env.PUBLIC_INVITE_ORIGIN,
+    cfg.publicOrigin,
+    cfg.publicOriginFallback,
+    cfg.domain && !String(cfg.domain).includes("://") ? `https://${cfg.domain}` : cfg.domain,
+    cfg.domain && !String(cfg.domain).includes("://") ? `https://certifyd.${cfg.domain}` : null,
+    status?.canonicalOrigin,
+    status?.publicOrigin,
+    getActivePublicOrigin()
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeOrigin(asString(candidate || "").trim());
+    if (!normalized) continue;
+    try {
+      const host = new URL(normalized).hostname.toLowerCase().replace(/^www\./, "");
+      if (host && host === requestHost.replace(/^www\./, "")) return true;
+    } catch {}
+  }
+  return false;
+}
+
 async function handlePublicRootWhenConfigured(req: any, reply: any) {
+  if (!publicRootProfileAllowedOnApiRequest(req)) return reply.callNotFound();
   const rootHandle = await getDefaultPublicProfileHandle({ includeOwnerFallback: true });
   if (!rootHandle) return reply.callNotFound();
   req.params = { ...(req.params || {}), handle: rootHandle };
