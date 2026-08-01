@@ -38677,6 +38677,48 @@ async function handleBuyPage(req: any, reply: any) {
     '</div>';
   }
 
+  function bindPlaybackSourceRecovery(playback, entitlement, owned){
+    if (!playback?.src) return;
+    const player = document.getElementById("player");
+    if (!player || typeof player.setAttribute !== "function") return;
+    let refreshing = false;
+    const refreshSource = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      const nextStatus = document.getElementById("status");
+      if (nextStatus) nextStatus.textContent = playback.mode === "full" ? "Refreshing access..." : "Refreshing preview...";
+      try {
+        const refreshedOffer = await fetchOfferWithAccessProof().catch(() => fetchJson("/buy/content/" + contentId + "/offer").catch(() => null));
+        if (!refreshedOffer) return;
+        currentOffer = refreshedOffer;
+        const nextToken = entitlement?.token || receiptToken || null;
+        const nextPlayback = resolveAuthorizedPlayback(refreshedOffer, {
+          entitlement,
+          owned: Boolean(owned || refreshedOffer?.owned),
+          token: nextToken
+        });
+        if (nextPlayback?.src && String(player.getAttribute("src") || "") !== nextPlayback.src) {
+          player.setAttribute("src", nextPlayback.src);
+          try { player.controls = true; } catch {}
+          try { if (typeof player.load === "function") player.load(); } catch {}
+        }
+        if (nextStatus) nextStatus.textContent = playback.mode === "full" ? "Access ready." : "Preview ready.";
+      } finally {
+        window.setTimeout(() => { refreshing = false; }, 500);
+      }
+    };
+    player.addEventListener("error", refreshSource);
+    player.addEventListener("stalled", () => {
+      if (Number(player.readyState || 0) === 0) refreshSource();
+    });
+    player.addEventListener("pointerdown", () => {
+      if (Number(player.readyState || 0) === 0) refreshSource();
+    });
+    window.setTimeout(() => {
+      if (Number(player.readyState || 0) === 0) refreshSource();
+    }, 5000);
+  }
+
   function bindPreviewLimit(playback, isPaid){
     if (!playback || playback.mode !== "preview" || !isPaid) return;
     const status = document.getElementById("status");
@@ -38918,6 +38960,7 @@ async function handleBuyPage(req: any, reply: any) {
         };
       }
     }
+    bindPlaybackSourceRecovery(playback, entitlement, owned);
     bindPreviewLimit(playback, isPaid);
     renderAttribution();
     if (token) {
