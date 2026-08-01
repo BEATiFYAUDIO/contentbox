@@ -15880,6 +15880,11 @@ const remoteInviteAccountingInflight = new Map<string, Promise<{
 } | null>>();
 const remoteInviteSnapshotInflight = new Map<string, Promise<any | null>>();
 
+function remoteClearanceDecisionEntityId(remoteOrigin: string | null | undefined, authorizationId: string | null | undefined): string {
+  const origin = normalizeRemoteOrigin(asString(remoteOrigin || "").trim()) || asString(remoteOrigin || "").trim().replace(/\/+$/, "");
+  return `${origin}::${asString(authorizationId || "").trim()}`;
+}
+
 async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string): Promise<{
   earnedSatsToDate: string;
   settlementLineCount: number;
@@ -19104,6 +19109,7 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
   if (!decision || !["approve", "reject"].includes(decision)) {
     return badRequest(reply, "decision must be approve|reject");
   }
+  const localUserId = asString((req.user as JwtUser)?.sub || "").trim();
   const payload: any = { decision };
   if (decision === "approve" && body.upstreamRatePercent !== undefined && body.upstreamRatePercent !== null) {
     payload.upstreamRatePercent = body.upstreamRatePercent;
@@ -19126,6 +19132,26 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
     const text = await res.text();
     if (!res.ok) {
       return reply.code(res.status).send({ error: text || `HTTP_${res.status}` });
+    }
+    remoteInviteAccountingCache.delete(`${origin}::${token}`);
+    if (localUserId) {
+      await prisma.auditEvent
+        .create({
+          data: {
+            userId: localUserId,
+            action: "remote_clearance.vote",
+            entityType: "remote_derivative_clearance",
+            entityId: remoteClearanceDecisionEntityId(origin, authorizationId),
+            payloadJson: {
+              origin,
+              tokenHash: hashInviteToken(token),
+              authorizationId,
+              decision,
+              reason: decision === "reject" ? parseRejectReason(body) || null : null
+            } as any
+          }
+        })
+        .catch(() => null);
     }
     return reply.send({ ok: true, message: text || "Recorded." });
   } catch (e: any) {
@@ -29140,6 +29166,26 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     where: { userId, revokedAt: null, tombstonedAt: null },
     orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
   });
+  const localRemoteDecisionEvents = await prisma.auditEvent
+    .findMany({
+      where: {
+        userId,
+        action: "remote_clearance.vote",
+        entityType: "remote_derivative_clearance"
+      },
+      orderBy: { createdAt: "desc" },
+      select: { entityId: true, payloadJson: true }
+    })
+    .catch(() => []);
+  const localRemoteDecisionByEntityId = new Map<string, string>();
+  for (const event of localRemoteDecisionEvents) {
+    const entityId = asString(event.entityId || "").trim();
+    if (!entityId || localRemoteDecisionByEntityId.has(entityId)) continue;
+    const decision = asString((event.payloadJson as any)?.decision || "").trim().toLowerCase();
+    if (decision === "approve" || decision === "reject") {
+      localRemoteDecisionByEntityId.set(entityId, decision);
+    }
+  }
   const remoteRows: any[] = [];
   for (const invite of remoteInvites) {
     const inviteStatus = normalizeRemoteInviteStatusForList(invite as any);
@@ -29175,7 +29221,10 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         if (invite.contentDeletedAt) continue;
         if (["deleted", "archived", "tombstoned"].includes(childStatus)) continue;
       }
-      const viewerVote = asString(entry?.viewerVote || "").trim().toLowerCase() || null;
+      const viewerVote =
+        asString(entry?.viewerVote || "").trim().toLowerCase() ||
+        localRemoteDecisionByEntityId.get(remoteClearanceDecisionEntityId(entryRemoteOrigin || remoteOrigin, remoteAuthorizationId)) ||
+        null;
       const isEligible = true;
       if (!shouldInclude({ status, viewerVote, isEligible, isRequester: false })) continue;
 
@@ -46094,14 +46143,25 @@ function getRemoteReviewPreviewUrlFromDescription(desc?: string | null): string 
 }
 
 function isActionableDerivativeChildForClearanceInbox(
-  child: { deletedAt?: Date | null; deletedReason?: string | null; description?: string | null; repoPath?: string | null } | null | undefined
+  child:
+    | {
+        deletedAt?: Date | null;
+        deletedReason?: string | null;
+        description?: string | null;
+        repoPath?: string | null;
+        status?: string | null;
+      }
+    | null
+    | undefined
 ): boolean {
   if (!child) return false;
   if (!child.deletedAt) return true;
   const deletedReason = asString(child.deletedReason || "").trim().toLowerCase();
+  const childStatus = asString(child.status || "").trim().toLowerCase();
+  if (childStatus === "draft" || childStatus === "archived" || childStatus === "deleted") return false;
   const remoteOrigin = getRemoteOriginFromDescription(child.description || null);
-  // Treat hard-deleted rows with a remote-origin marker as actionable remote-shadow records,
-  // even if a repoPath exists due local mirror/sync artifacts.
+  // Treat current hard-deleted rows with a remote-origin marker as actionable remote-shadow records,
+  // but keep stale deleted drafts/tests out of the active clearance inbox.
   return deletedReason === "hard" && Boolean(remoteOrigin);
 }
 
