@@ -40259,8 +40259,8 @@ async function handlePublicOffer(req: any, reply: any) {
           contentId: content.id,
           objectKey: primaryFileId,
           access: "full",
-          buyerSessionId: freeContent ? null : buyerSessionId,
-          receiptProofAccess: Boolean(!freeContent && !buyerSessionId && receiptProofIntent)
+          buyerSessionId: freeContent || receiptProofIntent ? null : buyerSessionId,
+          receiptProofAccess: Boolean(!freeContent && receiptProofIntent)
         })
       : null;
   const fullMediaUrl =
