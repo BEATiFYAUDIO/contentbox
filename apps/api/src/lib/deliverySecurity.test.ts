@@ -107,7 +107,7 @@ test("public media policy rejects paid full delivery without authorization befor
   assert.deepEqual(decision, { ok: false, status: 402, code: "PAYMENT_REQUIRED" });
 });
 
-test("public media policy rejects preview tokens used against full assets", () => {
+test("public media policy allows signed preview fallback for paid master assets", () => {
   const decision = evaluatePublicMediaDelivery({
     paidContent: true,
     freeContent: false,
@@ -115,7 +115,7 @@ test("public media policy rejects preview tokens used against full assets", () =
     isPublicPreviewAsset: false,
     isPublicCoverAsset: false
   });
-  assert.deepEqual(decision, { ok: false, status: 403, code: "PREVIEW_ASSET_REQUIRED" });
+  assert.deepEqual(decision, { ok: true, mode: "preview" });
 });
 
 test("public media policy allows paid preview only for separately generated preview assets", () => {

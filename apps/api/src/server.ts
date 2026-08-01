@@ -38426,6 +38426,14 @@ async function handleBuyPage(req: any, reply: any) {
     return false;
   }
 
+  async function fetchOfferWithAccessProof(){
+    const params = new URLSearchParams();
+    if (receiptToken) params.set("receiptToken", receiptToken);
+    else if (activeReceiptId) params.set("receiptId", activeReceiptId);
+    const q = params.toString();
+    return fetchJson("/buy/content/" + contentId + "/offer" + (q ? ("?" + q) : ""));
+  }
+
   function setBuyerStatus(text){
     const el = document.getElementById("buyerStatus");
     if (el) el.textContent = text || "";
@@ -38591,7 +38599,7 @@ async function handleBuyPage(req: any, reply: any) {
         tokenStreamSrc
       };
     }
-    if (canonicalMode === "preview" && canonicalStreamUrl) {
+    if (canonicalMode === "preview" && canonicalStreamUrl && !hasFullAccess) {
       const resolved = resolveRenderablePreview(offer, canonicalStreamUrl, fallbackPreviewSrc || primaryPreview || "");
       const deliveryMode = resolveBasicDeliveryMode(offer);
       const kind = resolved.kind;
@@ -39175,8 +39183,10 @@ async function handleBuyPage(req: any, reply: any) {
         }
       }
       if (currentOffer?.manifestSha256) {
+        const refreshedOffer = await fetchOfferWithAccessProof().catch(() => null);
+        if (refreshedOffer) currentOffer = refreshedOffer;
         const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
-        renderOffer(currentOffer, ent, alreadyOwned);
+        renderOffer(currentOffer, ent, true);
       }
       const statusEl = document.getElementById("status");
       if (statusEl && !String(statusEl.textContent || "").trim()) {
@@ -39316,6 +39326,13 @@ async function handleBuyPage(req: any, reply: any) {
 	        const returnedToFan = await fetchOwnedEntitlement().catch(()=>false);
 	        if (returnedToFan) return;
 	      }
+      if ((alreadyOwned || latestReceiptStatus?.paymentStatus === "paid" || latestReceiptStatus?.status === "paid") && (receiptToken || activeReceiptId)) {
+        const refreshedOffer = await fetchOfferWithAccessProof().catch(() => null);
+        if (refreshedOffer) {
+          offer = refreshedOffer;
+          currentOffer = refreshedOffer;
+        }
+      }
       const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
       const durableEnt = (activeReceiptId && latestReceiptStatus?.paymentStatus === "paid" && latestReceiptStatus?.receiptToken && offer?.manifestSha256)
         ? setEntitlement(offer.manifestSha256, latestReceiptStatus.receiptToken, "paid")
@@ -40160,8 +40177,19 @@ async function handlePublicOffer(req: any, reply: any) {
   const owner = content.owner || null;
   const canonicalOrigin = resolveCanonicalPublicOrigin(req);
 
+  const previewDeliveryToken =
+    previewObjectKey && baseUrl
+      ? createPublicDeliveryToken({
+          contentId: content.id,
+          objectKey: previewObjectKey,
+          access: "preview"
+        })
+      : null;
   const previewUrl = previewObjectKey
-    ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`
+    ? appendPublicDeliveryToken(
+        `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`,
+        previewDeliveryToken
+      )
     : null;
   const shouldUseEncryptedHls = Boolean(
     baseUrl &&

@@ -75,8 +75,8 @@ export function evaluatePublicMediaDelivery(input: {
   isPublicCoverAsset: boolean;
 }): { ok: true; mode: "preview" | "full" } | { ok: false; status: 402 | 403 | 404; code: string } {
   const deliveryAccess = input.deliveryAccess || null;
-  if (deliveryAccess === "preview" && !input.isPublicPreviewAsset && !input.isPublicCoverAsset) {
-    return { ok: false, status: 403, code: "PREVIEW_ASSET_REQUIRED" };
+  if (deliveryAccess === "preview") {
+    return { ok: true, mode: "preview" };
   }
   const mode: "preview" | "full" =
     deliveryAccess === "full" || (!deliveryAccess && input.freeContent) || input.isPublicCoverAsset
