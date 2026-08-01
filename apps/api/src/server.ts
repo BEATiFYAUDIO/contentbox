@@ -38684,26 +38684,26 @@ async function handleBuyPage(req: any, reply: any) {
     const player = document.getElementById("player");
     const limitSec = Math.max(1, Number(currentOffer?.playback?.previewLimitSeconds || previewSeconds || 25));
     if (!player) return;
-    let previewEnded = false;
+    let stopping = false;
     const stop = () => {
-      if (previewEnded) return;
-      previewEnded = true;
+      if (stopping) return;
+      stopping = true;
       if (typeof player.pause === "function") player.pause();
       try { player.currentTime = 0; } catch {}
-      try { player.controls = false; } catch {}
+      try { player.controls = true; } catch {}
       const nextStatus = document.getElementById("status");
-      if (nextStatus) nextStatus.textContent = "Preview ended. Support the creator to unlock full access.";
+      if (nextStatus) nextStatus.textContent = "Preview ended. Play again or support the creator to unlock full access.";
+      window.setTimeout(() => { stopping = false; }, 250);
     };
     const onTime = () => {
       if (player.currentTime >= limitSec) stop();
     };
     player.addEventListener("timeupdate", onTime);
-    player.addEventListener("ended", stop, { once: true });
+    player.addEventListener("ended", stop);
     player.addEventListener("play", () => {
-      if (previewEnded) {
-        player.pause();
-        return;
-      }
+      stopping = false;
+      const nextStatus = document.getElementById("status");
+      if (nextStatus) nextStatus.textContent = "Preview playing...";
       window.setTimeout(() => {
         if (player && !player.paused && player.currentTime >= limitSec - 0.2) stop();
       }, limitSec * 1000);
