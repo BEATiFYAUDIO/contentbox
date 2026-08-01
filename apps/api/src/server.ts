@@ -37725,8 +37725,8 @@ async function handleBuyPage(req: any, reply: any) {
     const id = String(receiptId || "").trim();
     return id ? ("/buy/receipts/r/" + encodeURIComponent(id) + "/status") : "";
   }
-  function fanReturnUrlWithReceipt(status){
-    if (!fanReturnUrl || fanReturnRedirected) return null;
+  function buildFanAccessUrl(status){
+    if (!fanReturnUrl) return null;
     const receiptId = String(status?.receiptId || activeReceiptId || "").trim();
     if (!receiptId) return null;
     try {
@@ -37741,6 +37741,10 @@ async function handleBuyPage(req: any, reply: any) {
     } catch {
       return null;
     }
+  }
+  function fanReturnUrlWithReceipt(status){
+    if (fanReturnRedirected) return null;
+    return buildFanAccessUrl(status);
   }
   function maybeReturnToFan(status){
     const target = fanReturnUrlWithReceipt(status);
@@ -38980,7 +38984,7 @@ async function handleBuyPage(req: any, reply: any) {
         const view = deriveReceiptViewState(entitlement, owned);
         const statusEl = document.getElementById("status");
         if (view.actionKind === "view_library") {
-          window.location.assign("/library");
+          window.location.assign(buildFanAccessUrl(latestReceiptStatus) || "/library");
           return;
         }
         if (view.actionKind === "open_content") {
