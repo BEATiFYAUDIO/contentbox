@@ -36401,13 +36401,32 @@ app.get("/", handlePublicRootWhenConfigured);
 app.get("/p/:token", handleShortPublicLink);
 app.get("/u/:handle", handlePublicNodeProfilePage);
 app.get("/u/:handle/proofs.json", handlePublicProofBundle);
-async function getDefaultPublicProfileHandle(): Promise<string | null> {
+async function getConfiguredPublicProfileHandle(): Promise<string | null> {
   const configuredHandle = normalizePublicProfileHandle(process.env.CONTENTBOX_PUBLIC_ROOT_HANDLE);
   if (configuredHandle) return configuredHandle;
 
   const conf = await readBeatifyNodeProof();
   if (conf.revokedAt) return null;
   return normalizePublicProfileHandle(conf.beatifyHandle) || normalizeBeatifyHandle(conf.beatifyHandle);
+}
+
+async function getOwnerPublicProfileHandle(): Promise<string | null> {
+  const owner = await prisma.user.findFirst({
+    orderBy: { createdAt: "asc" },
+    select: { displayName: true, email: true }
+  });
+  return (
+    normalizePublicProfileHandle(owner?.displayName || "") ||
+    normalizedEmailLocalPart(owner?.email || "") ||
+    null
+  );
+}
+
+async function getDefaultPublicProfileHandle(opts?: { includeOwnerFallback?: boolean }): Promise<string | null> {
+  const configuredHandle = await getConfiguredPublicProfileHandle();
+  if (configuredHandle) return configuredHandle;
+  if (opts?.includeOwnerFallback) return getOwnerPublicProfileHandle();
+  return null;
 }
 
 async function resolvePreferredPublicProfileLink(input: {
@@ -36426,7 +36445,7 @@ async function resolvePreferredPublicProfileLink(input: {
     normalizePublicProfileHandle(input.displayName || "") ||
     normalizedEmailLocalPart(input.email || "") ||
     null;
-  const rootHandle = await getDefaultPublicProfileHandle();
+  const rootHandle = await getDefaultPublicProfileHandle({ includeOwnerFallback: true });
   const useRoot = Boolean(rootHandle);
   const path = useRoot ? "/" : handle ? `/u/${encodeURIComponent(handle)}` : rootHandle ? "/" : "/";
   const routeStyle = useRoot || (!handle && rootHandle) ? "root" : handle ? "handle" : "none";
@@ -36441,7 +36460,7 @@ async function resolvePreferredPublicProfileLink(input: {
 }
 
 async function handlePublicRoot(req: any, reply: any) {
-  const rootHandle = await getDefaultPublicProfileHandle();
+  const rootHandle = await getDefaultPublicProfileHandle({ includeOwnerFallback: true });
   if (rootHandle) {
     req.params = { ...(req.params || {}), handle: rootHandle };
     return handlePublicNodeProfilePage(req, reply);
@@ -36462,14 +36481,14 @@ async function handlePublicRoot(req: any, reply: any) {
 }
 
 async function handlePublicRootWhenConfigured(req: any, reply: any) {
-  const rootHandle = await getDefaultPublicProfileHandle();
+  const rootHandle = await getDefaultPublicProfileHandle({ includeOwnerFallback: true });
   if (!rootHandle) return reply.callNotFound();
   req.params = { ...(req.params || {}), handle: rootHandle };
   return handlePublicNodeProfilePage(req, reply);
 }
 
 async function handlePublicProfileRedirect(req: any, reply: any) {
-  const rootHandle = await getDefaultPublicProfileHandle();
+  const rootHandle = await getDefaultPublicProfileHandle({ includeOwnerFallback: true });
   if (!rootHandle) return notFound(reply, "Not found");
   return reply.redirect(302, `/u/${encodeURIComponent(rootHandle)}`);
 }
