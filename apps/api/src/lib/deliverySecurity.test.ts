@@ -53,6 +53,36 @@ test("paid full delivery allows only the matching live buyer session", () => {
   );
 });
 
+test("paid full delivery allows short-lived receipt-proof tokens without a live buyer session", () => {
+  assert.equal(
+    isPaidFullDeliverySessionAuthorized({
+      paidContent: true,
+      access: "full",
+      tokenReceiptProofAccess: true,
+      requestBuyerSessionId: null
+    }),
+    true
+  );
+  assert.deepEqual(
+    validatePublicDeliveryTokenClaims(
+      {
+        scope: "public_delivery",
+        contentId: "content_1",
+        objectKey: "files/song.mp3",
+        access: "full",
+        receiptProofAccess: true
+      },
+      {
+        contentId: "content_1",
+        objectKey: "files/song.mp3",
+        paidContent: true,
+        requestBuyerSessionId: null
+      }
+    ),
+    { ok: true, access: "full" }
+  );
+});
+
 test("preview and free full delivery do not require buyer-session binding", () => {
   assert.equal(
     isPaidFullDeliverySessionAuthorized({

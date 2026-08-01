@@ -22,8 +22,10 @@ export function isPaidFullDeliverySessionAuthorized(input: {
   access: "preview" | "full";
   tokenBuyerSessionId?: string | null;
   requestBuyerSessionId?: string | null;
+  tokenReceiptProofAccess?: boolean;
 }): boolean {
   if (!input.paidContent || input.access !== "full") return true;
+  if (input.tokenReceiptProofAccess === true) return true;
   const tokenBuyerSessionId = String(input.tokenBuyerSessionId || "").trim();
   const requestBuyerSessionId = String(input.requestBuyerSessionId || "").trim();
   return Boolean(tokenBuyerSessionId && requestBuyerSessionId && tokenBuyerSessionId === requestBuyerSessionId);
@@ -107,6 +109,7 @@ export function validatePublicDeliveryTokenClaims(
     objectKey?: string;
     access?: string;
     buyerSessionId?: string | null;
+    receiptProofAccess?: boolean;
   } | null;
   if (!decoded || decoded.scope !== "public_delivery") return { ok: false, reason: "invalid_scope" };
   const objectKey = normalizeDeliveryObjectKey(expected.objectKey);
@@ -120,7 +123,8 @@ export function validatePublicDeliveryTokenClaims(
     paidContent: expected.paidContent,
     access,
     tokenBuyerSessionId: decoded.buyerSessionId || null,
-    requestBuyerSessionId: expected.requestBuyerSessionId || null
+    requestBuyerSessionId: expected.requestBuyerSessionId || null,
+    tokenReceiptProofAccess: decoded.receiptProofAccess === true
   })) {
     return { ok: false, reason: "session_mismatch" };
   }

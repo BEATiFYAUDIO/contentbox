@@ -779,6 +779,7 @@ type PublicDeliveryTokenClaims = {
   scope: "public_delivery";
   access: "preview" | "full";
   buyerSessionId?: string | null;
+  receiptProofAccess?: boolean;
 };
 
 type HlsRenditionInfo = {
@@ -1367,6 +1368,7 @@ function createPublicDeliveryToken(input: {
   objectKey: string;
   access: "preview" | "full";
   buyerSessionId?: string | null;
+  receiptProofAccess?: boolean;
 }) {
   const objectKeyCheck = normalizeDeliveryObjectKey(input.objectKey);
   if (!objectKeyCheck.ok) throw new Error(`invalid delivery object key: ${objectKeyCheck.reason}`);
@@ -1376,7 +1378,8 @@ function createPublicDeliveryToken(input: {
       objectKey: objectKeyCheck.objectKey,
       scope: "public_delivery",
       access: input.access,
-      ...(input.buyerSessionId ? { buyerSessionId: input.buyerSessionId } : {})
+      ...(input.buyerSessionId ? { buyerSessionId: input.buyerSessionId } : {}),
+      ...(input.receiptProofAccess === true ? { receiptProofAccess: true } : {})
     } satisfies PublicDeliveryTokenClaims,
     { expiresIn: `${PUBLIC_DELIVERY_TOKEN_TTL_SECONDS}s` }
   );
@@ -40251,12 +40254,13 @@ async function handlePublicOffer(req: any, reply: any) {
       })
   );
   const fullDeliveryToken =
-    hasFull && primaryFileId && (freeContent || buyerSessionId)
+    hasFull && primaryFileId && (freeContent || buyerSessionId || receiptProofIntent)
       ? createPublicDeliveryToken({
           contentId: content.id,
           objectKey: primaryFileId,
           access: "full",
-          buyerSessionId: freeContent ? null : buyerSessionId
+          buyerSessionId: freeContent ? null : buyerSessionId,
+          receiptProofAccess: Boolean(!freeContent && !buyerSessionId && receiptProofIntent)
         })
       : null;
   const fullMediaUrl =
