@@ -12317,6 +12317,10 @@ function isProtectedStreamOnlyMedia(input: { paidContent: boolean; deliveryMode?
   return mode === "stream_only" || !mode;
 }
 
+function isEncryptedHlsPlaybackEnabled(): boolean {
+  return String(process.env.PUBLIC_ENCRYPTED_HLS_ENABLED || "").trim() === "1";
+}
+
 function stableHlsPrefix(contentId: string, sourceObjectKey: string): string {
   const sourceHash = crypto.createHash("sha256").update(sourceObjectKey).digest("hex").slice(0, 16);
   return `streams/${contentId}/${sourceHash}`;
@@ -33935,6 +33939,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const mime = file?.mime || derivedPreviewMime || "application/octet-stream";
 
   if (
+    isEncryptedHlsPlaybackEnabled() &&
     isProtectedStreamOnlyMedia({
       paidContent,
       deliveryMode: (content as any).deliveryMode || null,
@@ -40236,6 +40241,7 @@ async function handlePublicOffer(req: any, reply: any) {
     : null;
   const shouldUseEncryptedHls = Boolean(
     baseUrl &&
+      isEncryptedHlsPlaybackEnabled() &&
       hasFull &&
       primaryFileId &&
       isProtectedStreamOnlyMedia({
@@ -43638,6 +43644,7 @@ async function handlePublicContentFile(req: any, reply: any) {
   }
 
   if (
+    isEncryptedHlsPlaybackEnabled() &&
     isProtectedStreamOnlyMedia({
       paidContent: !freeContent && priceSats > 0n,
       deliveryMode: (content as any).deliveryMode || null,
