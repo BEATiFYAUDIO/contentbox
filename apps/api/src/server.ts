@@ -3015,6 +3015,8 @@ function isTransientParticipantDestinationVerificationError(error: string | null
     message.includes("LIGHTNING_ADDRESS_LOOKUP_FAILED") ||
     message.includes("FETCH") ||
     message.includes("TIMEOUT") ||
+    message.includes("ABORT") ||
+    message.includes("OPERATION WAS ABORTED") ||
     message.includes("ECONNRESET") ||
     message.includes("ETIMEDOUT") ||
     message.includes("ENOTFOUND")
@@ -3383,23 +3385,29 @@ async function resolveParticipantDestinationHandshake(input: {
 
 function resolveDelegatedBlueprintDestination(input: {
   paymentIntentId: string | null;
+  contentId?: string | null;
   participantRef?: string | null;
   splitParticipantId?: string | null;
   participantUserId?: string | null;
+  roleKey?: string | null;
+  bps?: number | null;
 }): ParticipantDestinationResolveResult | null {
   const paymentIntentId = asString(input.paymentIntentId || "").trim();
   if (!paymentIntentId) return null;
   const blueprint = getProviderDelegatedAllocationBlueprintByPaymentIntentId(paymentIntentId);
   if (!blueprint?.participants?.length) return null;
+  const contentId = asString(input.contentId || "").trim();
   const participantRef = asString(input.participantRef || "").trim();
   const splitParticipantId = asString(input.splitParticipantId || "").trim();
   const participantUserId = asString(input.participantUserId || "").trim();
+  const roleKey = asString(input.roleKey || "").trim();
+  const bps = Number.isFinite(Number(input.bps)) ? Math.max(0, Math.round(Number(input.bps))) : null;
   const snapshot = getLockedSnapshotBySplitParticipantId(splitParticipantId);
   const snapshotRemoteIdentity = parseRemoteIdentityRef(snapshot?.identityRef || null);
   const snapshotRemoteUserId = asString(snapshotRemoteIdentity.userId || "").trim();
   const snapshotEmail = normalizeEmail(asString(snapshot?.participantEmail || "").trim()) || null;
   const refUserId = parseUserIdFromParticipantRef(participantRef);
-  const match =
+  let match =
     blueprint.participants.find((row) => participantRef && String(row.participantRef || "").trim() === participantRef) ||
     blueprint.participants.find(
       (row) => splitParticipantId && String(row.splitParticipantId || "").trim() === splitParticipantId
@@ -3419,6 +3427,14 @@ function resolveDelegatedBlueprintDestination(input: {
       return Boolean(rowEmail && rowEmail === snapshotEmail);
     }) ||
     null;
+  if (!match && contentId && blueprint.contentId === contentId && blueprint.participants.length === 1) {
+    const onlyParticipant = blueprint.participants[0];
+    const sameRole = !roleKey || String(onlyParticipant.roleKey || "").trim() === roleKey;
+    const sameBps = bps === null || Math.max(0, Math.round(Number(onlyParticipant.bps || 0))) === bps;
+    if (sameRole && sameBps) {
+      match = onlyParticipant;
+    }
+  }
   if (!match) return null;
   const destinationType = parseParticipantDestinationType(match.destinationType || null);
   const destinationValue = asString(match.destinationValue || "").trim() || null;
@@ -3550,9 +3566,12 @@ async function resolveParticipantPayoutReadinessForAllocation(
   intent: ProviderPaymentIntentRecord,
   participantUserId: string | null,
   allocationCtx?: {
+    contentId?: string | null;
     splitParticipantId?: string | null;
     participantRef?: string | null;
     allocationSource?: string | null;
+    roleKey?: string | null;
+    bps?: number | null;
   }
 ): Promise<ParticipantPayoutReadiness> {
   const policy = normalizeProviderFallbackPolicy((intent as any).payoutPolicy, (intent as any).allowProviderFallback);
@@ -3669,9 +3688,12 @@ async function resolveParticipantPayoutReadinessForAllocation(
 
   const delegatedBlueprintDestination = resolveDelegatedBlueprintDestination({
     paymentIntentId: intent.paymentIntentId,
+    contentId: allocationCtx?.contentId || intent.contentId || null,
     participantRef: allocationCtx?.participantRef || null,
     splitParticipantId: allocationCtx?.splitParticipantId || null,
-    participantUserId
+    participantUserId,
+    roleKey: allocationCtx?.roleKey || null,
+    bps: allocationCtx?.bps ?? null
   });
   if (delegatedBlueprintDestination) {
     const delegatedNormalized = normalizeParticipantDestinationForPayout(delegatedBlueprintDestination);
@@ -4132,14 +4154,25 @@ async function hasVerifiedParticipantKey(userId: string): Promise<boolean> {
 async function resolveParticipantIdentityGate(input: {
   splitParticipantId: string | null;
   participantUserId: string | null;
+  contentId?: string | null;
+  participantEmail?: string | null;
+  roleKey?: string | null;
+  bps?: number | null;
 }): Promise<ParticipantIdentityGate> {
   const userId = String(input.participantUserId || "").trim();
   const splitParticipantId = String(input.splitParticipantId || "").trim();
-  const splitParticipant = splitParticipantId
+  const contentId = String(input.contentId || "").trim();
+  const participantEmail = normalizeEmail(String(input.participantEmail || "").trim()) || "";
+  const roleKey = String(input.roleKey || "").trim();
+  const bps = Number.isFinite(Number(input.bps)) ? Math.max(0, Math.round(Number(input.bps))) : null;
+  let splitParticipant = splitParticipantId
     ? await prisma.splitParticipant.findUnique({
         where: { id: splitParticipantId },
         select: {
           participantUserId: true,
+          participantEmail: true,
+          roleCode: true,
+          bps: true,
           acceptedAt: true,
           verifiedAt: true,
           invitation: { select: { status: true, acceptedIdentityRef: true } },
@@ -4153,6 +4186,46 @@ async function resolveParticipantIdentityGate(input: {
         }
       })
     : null;
+  if (!splitParticipant && contentId && (userId || participantEmail)) {
+    const candidateWhere = [
+      userId ? { participantUserId: userId } : null,
+      participantEmail ? { participantEmail } : null
+    ].filter(Boolean) as Array<{ participantUserId: string } | { participantEmail: string }>;
+    const candidates = await prisma.splitParticipant.findMany({
+      where: {
+        OR: candidateWhere,
+        splitVersion: { contentId }
+      },
+      select: {
+        participantUserId: true,
+        participantEmail: true,
+        roleCode: true,
+        bps: true,
+        acceptedAt: true,
+        verifiedAt: true,
+        invitation: { select: { status: true, acceptedIdentityRef: true } },
+        invitations: {
+          where: {
+            OR: [{ status: "accepted" as any }, { acceptedAt: { not: null } }]
+          },
+          select: { id: true, status: true, acceptedIdentityRef: true },
+          take: 1
+        }
+      },
+      orderBy: [{ verifiedAt: "desc" }, { acceptedAt: "desc" }, { createdAt: "desc" }],
+      take: 10
+    });
+    splitParticipant =
+      candidates.find((candidate) => {
+        const candidateRole = String(candidate.roleCode || "").trim();
+        const candidateBps = Math.max(0, Math.round(Number(candidate.bps || 0)));
+        const roleMatches = !roleKey || !candidateRole || candidateRole === roleKey;
+        const bpsMatches = bps === null || candidateBps === bps;
+        return roleMatches && bpsMatches && Boolean(candidate.acceptedAt) && Boolean(candidate.verifiedAt);
+      }) ||
+      candidates.find((candidate) => Boolean(candidate.acceptedAt) && Boolean(candidate.verifiedAt)) ||
+      null;
+  }
   const signedAccepted =
     splitParticipant
       ? normalizeInviteStatus(splitParticipant.invitation?.status) === "accepted" ||
@@ -5068,10 +5141,15 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
       where: { providerPaymentIntentId: intent.id },
       select: {
         id: true,
+        contentId: true,
         participantRef: true,
         amountSats: true,
         splitParticipantId: true,
-        participantUserId: true
+        participantUserId: true,
+        participantEmail: true,
+        roleKey: true,
+        bps: true,
+        allocationSource: true
       }
     });
     if (!allocations.length) return;
@@ -5121,15 +5199,22 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
       });
       const identityGate = await resolveParticipantIdentityGate({
         splitParticipantId: allocation.splitParticipantId || null,
-        participantUserId: allocation.participantUserId || null
+        participantUserId: allocation.participantUserId || null,
+        contentId: allocation.contentId || intent.contentId || null,
+        participantEmail: allocation.participantEmail || null,
+        roleKey: allocation.roleKey || null,
+        bps: allocation.bps ?? null
       });
       const baseReadiness = await resolveParticipantPayoutReadinessForAllocation(
         intent,
         allocation.participantUserId || null,
         {
+          contentId: allocation.contentId || intent.contentId || null,
           splitParticipantId: allocation.splitParticipantId || null,
           participantRef: executionParticipantRef,
-          allocationSource: (allocation as any)?.allocationSource || null
+          allocationSource: allocation.allocationSource || null,
+          roleKey: allocation.roleKey || null,
+          bps: allocation.bps ?? null
         }
       );
       const canBypassInviteGate =

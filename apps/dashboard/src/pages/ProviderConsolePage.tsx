@@ -881,6 +881,25 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       ? creatorScopedPaymentIntents
       : creatorScopedPaymentIntents.filter((intent) => intent.status === paymentStatusFilter);
 
+  const participantPayoutsByIntentId = useMemo(() => {
+    const map = new Map<string, ParticipantPayoutRow[]>();
+    creatorAllParticipantPayouts.forEach((payout) => {
+      const key = String(payout.providerPaymentIntentId || "").trim();
+      if (!key) return;
+      const rows = map.get(key) || [];
+      rows.push(payout);
+      map.set(key, rows);
+    });
+    map.forEach((rows) => {
+      rows.sort((a, b) => {
+        const roleA = String(a.allocation?.role || "").localeCompare(String(b.allocation?.role || ""));
+        if (roleA !== 0) return roleA;
+        return String(a.allocation?.participantRef || "").localeCompare(String(b.allocation?.participantRef || ""));
+      });
+    });
+    return map;
+  }, [creatorAllParticipantPayouts]);
+
   const contentMetaById = useMemo(() => {
     const map = new Map<
       string,
@@ -1844,7 +1863,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                 </tr>
               </thead>
               <tbody>
-                {visiblePaymentIntents.map((row) => (
+                {visiblePaymentIntents.map((row) => {
+                  const intentPayoutRows = participantPayoutsByIntentId.get(row.id) || [];
+                  return (
                   <Fragment key={row.id}>
                   <tr className="border-t border-neutral-800/70">
                     <td className="py-2 pr-3 align-top">
@@ -1937,24 +1958,82 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                               Destination: {row.payoutDestinationSummary || row.payoutDestinationType || "—"}
                             </div>
                           </div>
-                          <div className="text-xs text-neutral-400">
-                            <div className="uppercase tracking-wide text-neutral-500">Remittance</div>
-                            <div className="mt-1 break-all font-mono text-[11px] text-neutral-300">
-                              Ref: {row.payoutReference || "—"}
+                        </div>
+                        <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/50 p-3">
+                          <div className="text-xs uppercase tracking-wide text-neutral-500">Participant Remittance</div>
+                          {intentPayoutRows.length === 0 ? (
+                            <div className="mt-2 text-xs text-neutral-400">
+                              No participant payout rows have been created for this intent.
                             </div>
-                            <div className="mt-1 text-neutral-300">
-                              Remitted: {formatDate(row.remittedAt)} <span className="mx-1 text-neutral-500">|</span> Paid: {formatDate(row.paidAt)}
+                          ) : (
+                            <div className="mt-2 overflow-x-auto">
+                              <table className="w-full min-w-[820px] text-xs">
+                                <thead className="text-left uppercase tracking-wide text-neutral-500">
+                                  <tr>
+                                    <th className="py-1 pr-3 font-medium">Participant</th>
+                                    <th className="py-1 pr-3 font-medium">Role / Split</th>
+                                    <th className="py-1 pr-3 font-medium">Net</th>
+                                    <th className="py-1 pr-3 font-medium">Status</th>
+                                    <th className="py-1 pr-3 font-medium">Destination</th>
+                                    <th className="py-1 pr-3 font-medium">Remittance</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {intentPayoutRows.map((payout) => (
+                                    <tr key={payout.id} className="border-t border-neutral-800/70">
+                                      <td className="py-2 pr-3 align-top">
+                                        <div className="max-w-[220px] truncate text-neutral-200" title={payout.allocation?.participantEmail || payout.allocation?.participantRef || payout.id}>
+                                          {payout.allocation?.participantEmail || payout.allocation?.participantRef || shortId(payout.id, 10, 8)}
+                                        </div>
+                                        <div className="max-w-[220px] truncate font-mono text-[11px] text-neutral-500" title={payout.allocation?.participantRef || ""}>
+                                          {payout.allocation?.participantRef || "—"}
+                                        </div>
+                                      </td>
+                                      <td className="py-2 pr-3 align-top text-neutral-300">
+                                        {payout.allocation?.role || "—"}
+                                        <span className="mx-1 text-neutral-500">/</span>
+                                        {Number(payout.allocation?.bps || 0) / 100}%
+                                      </td>
+                                      <td className="py-2 pr-3 align-top text-neutral-300">{payout.amountSats} sats</td>
+                                      <td className="py-2 pr-3 align-top">
+                                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(payout.status)}`}>
+                                          {payout.status}
+                                        </span>
+                                        {payout.readinessReason ? (
+                                          <div className="mt-1 max-w-[220px] truncate text-[11px] text-amber-300" title={payout.readinessReason}>
+                                            {payout.readinessReason}
+                                          </div>
+                                        ) : null}
+                                      </td>
+                                      <td className="py-2 pr-3 align-top">
+                                        <div className="max-w-[220px] break-all font-mono text-[11px] text-neutral-300">
+                                          {payout.destinationSummary || payout.destinationType || "—"}
+                                        </div>
+                                      </td>
+                                      <td className="py-2 pr-3 align-top">
+                                        <div className="break-all font-mono text-[11px] text-neutral-300">
+                                          Ref: {payout.payoutReference || "—"}
+                                        </div>
+                                        <div className="mt-1 text-neutral-400">Remitted: {formatDate(payout.remittedAt)}</div>
+                                        {payout.lastError ? (
+                                          <div className="mt-1 break-all text-rose-300">{payout.lastError}</div>
+                                        ) : null}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
                             </div>
-                            {row.payoutLastError ? (
-                              <div className="mt-1 break-all text-rose-300">{row.payoutLastError}</div>
-                            ) : null}
-                          </div>
+                          )}
+                          {row.payoutLastError ? (
+                            <div className="mt-2 break-all text-xs text-rose-300">Intent error: {row.payoutLastError}</div>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
                   ) : null}
                   </Fragment>
-                ))}
+                )})}
               </tbody>
             </table>
           </div>
