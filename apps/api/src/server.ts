@@ -29399,7 +29399,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         remoteInviteToken: inviteToken,
         remoteInviteId: invite.id,
         remoteClearanceUrl: clearanceUrl,
-        remoteReviewPreviewUrl: reviewPreviewUrl || toRemoteReviewPreviewUrl(clearanceUrl),
+        remoteReviewPreviewUrl: toRemoteReviewPreviewUrl(clearanceUrl) || reviewPreviewUrl,
         remoteVoteRoute: `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
           remoteAuthorizationId
         )}/vote?origin=${encodeURIComponent(entryRemoteOrigin || remoteOrigin)}`
@@ -51843,6 +51843,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
               )?.decision || null;
           }
         }
+        const clearanceUrl = `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`;
         return {
           authorizationId: auth.id,
           linkId: auth.derivativeLinkId,
@@ -51860,8 +51861,8 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approvedApprovers: auth.approvedApprovers ?? 0,
           approverCount,
           upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
-          reviewPreviewUrl: getRemoteReviewPreviewUrlFromDescription(auth.derivativeLink?.childContent?.description || null),
-          clearanceUrl: `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
+          reviewPreviewUrl: `${clearanceUrl}/preview`,
+          clearanceUrl
         };
       })
     );
