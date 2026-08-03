@@ -1879,6 +1879,38 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
+  async function dismissRemoteClearance(approval: any) {
+    const approvalKey = clearanceApprovalKey(approval);
+    if (clearanceSubmittingRef.current[approvalKey]) return;
+    const inviteToken = String(approval?.remoteInviteToken || "").trim();
+    const remoteOrigin = String(approval?.remoteOrigin || "").trim();
+    const remoteAuthorizationId = String(approval?.remoteAuthorizationId || "").trim();
+    if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
+      setError("Missing remote clearance context.");
+      return;
+    }
+    clearanceSubmittingRef.current[approvalKey] = true;
+    setClearanceSubmittingByApproval((m) => ({ ...m, [approvalKey]: true }));
+    try {
+      await api(
+        `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
+          remoteAuthorizationId
+        )}/dismiss?origin=${encodeURIComponent(remoteOrigin)}`,
+        "POST"
+      );
+      await loadApprovals(clearanceScope);
+      await loadPendingClearanceCount();
+    } finally {
+      clearanceSubmittingRef.current[approvalKey] = false;
+      setClearanceSubmittingByApproval((m) => {
+        if (!m[approvalKey]) return m;
+        const next = { ...m };
+        delete next[approvalKey];
+        return next;
+      });
+    }
+  }
+
   async function openApprovalPreview(approval: any) {
     const isRemoteApproval = Boolean(String(approval?.remoteOrigin || "").trim());
     if (isRemoteApproval) {
@@ -3183,6 +3215,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         >
                           {isSubmitting ? "Submitting…" : "Reject"}
                         </button>
+                        {isRemoteApproval ? (
+                          <button
+                            type="button"
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 text-neutral-300 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                            onClick={() => dismissRemoteClearance(a)}
+                            disabled={isSubmitting}
+                            title="Hide this remote clearance row on this dashboard"
+                          >
+                            {isSubmitting ? "Saving…" : "Dismiss"}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                     {!crossNodeAllowed ? (

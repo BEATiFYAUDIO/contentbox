@@ -19251,6 +19251,34 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
   }
 });
 
+app.post("/api/remote/invites/:token/clearance/:authorizationId/dismiss", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const token = asString((req.params as any).token);
+  const authorizationId = asString((req.params as any).authorizationId);
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!token) return badRequest(reply, "token required");
+  if (!authorizationId) return badRequest(reply, "authorizationId required");
+  if (!origin) return badRequest(reply, "invalid origin");
+
+  const localUserId = asString((req.user as JwtUser)?.sub || "").trim();
+  if (!localUserId) return unauthorized(reply);
+
+  await prisma.auditEvent.create({
+    data: {
+      userId: localUserId,
+      action: "remote_clearance.dismiss",
+      entityType: "remote_derivative_clearance",
+      entityId: remoteClearanceDecisionEntityId(origin, authorizationId),
+      payloadJson: {
+        origin,
+        tokenHash: hashInviteToken(token),
+        authorizationId
+      } as any
+    }
+  });
+  remoteInviteAccountingCache.delete(`${origin}::${token}`);
+  return reply.send({ ok: true });
+});
+
 // Proxy derivative vote to remote parent authority (server-to-server; avoids local split tally divergence).
 app.post("/api/remote/derivatives/vote", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const clearanceCtx = getCapabilityContext();
@@ -29279,6 +29307,22 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       localRemoteDecisionByEntityId.set(entityId, decision);
     }
   }
+  const localRemoteDismissalEvents = await prisma.auditEvent
+    .findMany({
+      where: {
+        userId,
+        action: "remote_clearance.dismiss",
+        entityType: "remote_derivative_clearance"
+      },
+      orderBy: { createdAt: "desc" },
+      select: { entityId: true }
+    })
+    .catch(() => []);
+  const dismissedRemoteClearanceEntityIds = new Set(
+    localRemoteDismissalEvents
+      .map((event) => asString(event.entityId || "").trim())
+      .filter(Boolean)
+  );
   const remoteRows: any[] = [];
   for (const invite of remoteInvites) {
     const inviteStatus = normalizeRemoteInviteStatusForList(invite as any);
@@ -29304,6 +29348,9 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         asString(entry?.childOrigin || "").trim(),
         clearanceUrl
       );
+      if (dismissedRemoteClearanceEntityIds.has(remoteClearanceDecisionEntityId(entryRemoteOrigin || remoteOrigin, remoteAuthorizationId))) {
+        continue;
+      }
       const actionableRemoteEntry = isActionableRemoteClearanceEntry({
         status,
         clearanceUrl,
