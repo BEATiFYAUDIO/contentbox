@@ -43506,8 +43506,8 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   return reply.send(jsonStringifySafe(safe));
 });
 
-app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: any, reply: any) => {
-  const contentId = asString((req.params as any).id);
+async function handleReviewPreviewFile(req: any, reply: any) {
+  const contentId = asString((req.params as any).id || (req.params as any).manifestHash);
   let objectKey = asString((req.query || {})?.objectKey || "");
   const token = asString((req.query || {})?.token || "");
   if (!objectKey) return badRequest(reply, "objectKey required");
@@ -43585,11 +43585,16 @@ app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: a
   reply.code(200);
   reply.header("Content-Length", String(fileSize));
   return reply.send(fsSync.createReadStream(absPath));
-});
+}
+
+app.get("/content/:id/preview-file", { preHandler: optionalAuth }, handleReviewPreviewFile);
 
 async function handlePublicContentFile(req: any, reply: any) {
   const manifestHash = asString((req.params as any).manifestHash || "").trim().toLowerCase();
   const fileId = asString((req.params as any).fileId || "").trim();
+  if (fileId === "preview-file") {
+    return handleReviewPreviewFile(req, reply);
+  }
   if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
 
   const tokenHeader = asString(req.headers.authorization || "");
