@@ -28884,10 +28884,11 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     isRequester?: boolean;
   }) => {
     const hasViewerVote = Boolean(asString(input.viewerVote || "").trim());
-    if (scope === "pending") return input.isEligible && input.status === "PENDING" && !hasViewerVote;
+    const isRequester = Boolean(input.isRequester);
+    if (scope === "pending") return input.isEligible && !isRequester && input.status === "PENDING" && !hasViewerVote;
     if (scope === "voted") return hasViewerVote && input.status !== "APPROVED";
-    if (scope === "cleared") return input.status === "APPROVED" && (input.isEligible || hasViewerVote || Boolean(input.isRequester));
-    return input.isEligible || hasViewerVote || Boolean(input.isRequester);
+    if (scope === "cleared") return input.status === "APPROVED" && (input.isEligible || hasViewerVote) && !isRequester;
+    return (input.isEligible || hasViewerVote) && !isRequester;
   };
   const isActionableRemoteClearanceEntry = (input: {
     status: "PENDING" | "REJECTED" | "APPROVED";
