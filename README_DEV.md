@@ -43,6 +43,18 @@ Dashboard env (`apps/dashboard/.env.local`):
 - `VITE_API_BASE_URL=http://127.0.0.1:4000`
   - `VITE_API_URL` is also accepted
 
+## Local node secret hardening
+
+Before running a mainnet Lightning node, restrict local LND and Bitcoin credentials:
+
+```bash
+npm run security:harden-local-node
+```
+
+The script only touches known sensitive local files under `~/.lnd` and `~/.bitcoin`.
+
+If you use the optional Docker services, copy `infra/.env.example` to `infra/.env`, replace every placeholder secret, and start them from `infra/`. Postgres and MinIO bind to `127.0.0.1` by default.
+
 ## Mode model (must stay coherent)
 
 - Basic Creator:

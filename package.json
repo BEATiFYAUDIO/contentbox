@@ -11,6 +11,7 @@
     "dev:up": "node ./scripts/dev-runtime.mjs start",
     "dev:down": "node ./scripts/dev-runtime.mjs stop",
     "dev:status": "node ./scripts/dev-runtime.mjs status",
-    "dev:restart": "node ./scripts/dev-runtime.mjs restart"
+    "dev:restart": "node ./scripts/dev-runtime.mjs restart",
+    "security:harden-local-node": "bash ./scripts/harden-local-node-secrets.sh"
   }
 }
