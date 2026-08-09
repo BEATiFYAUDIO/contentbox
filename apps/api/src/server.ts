@@ -100,6 +100,7 @@ import { validateNodeMode, writeNodeConfig, writeProductTier } from "./lib/nodeC
 import { deriveActivationStatusMessageFromNetwork, deriveUserNetworkStatusFromState } from "./lib/userNetworkStatus.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
+import { isPublicRouteAllowed } from "./security/publicRoutePolicy.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 import { SingleFlight } from "./lib/asyncPrimitives.js";
 import { resolveContentboxRootInfo } from "./lib/contentboxRoot.js";
@@ -190,6 +191,15 @@ function asString(x: unknown): string {
 
 function normalizeEmail(x: unknown): string {
   return asString(x).trim().toLowerCase();
+}
+
+function normalizeRequestHost(req: any): string {
+  const raw = asString(req?.headers?.["x-forwarded-host"] || req?.headers?.host || "").trim().toLowerCase();
+  return raw.replace(/:\d+$/, "");
+}
+
+function isLoopbackRequestHost(host: string): boolean {
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 }
 
 function base32Encode(buf: Buffer): string {
@@ -1700,6 +1710,13 @@ app.addHook("onRequest", async (req, reply) => {
   (req as any).requestId = id;
   reply.header("x-request-id", id);
   reply.header("Referrer-Policy", "no-referrer");
+  const host = normalizeRequestHost(req);
+  if (host && !isLoopbackRequestHost(host) && String(process.env.CONTENTBOX_ALLOW_PRIVATE_API_PUBLIC_HOST || "") !== "1") {
+    const path = asString(req?.raw?.url || req?.url || "/");
+    if (!isPublicRouteAllowed(asString(req?.method || "GET"), path)) {
+      return reply.code(404).send({ error: "Not Found" });
+    }
+  }
 });
 
 app.setErrorHandler((error, req, reply) => {
@@ -1734,6 +1751,9 @@ if (!String(process.env.CONTENTBOX_ROOT || "").trim()) {
 }
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
 const NODE_HTTP_PORT = Number(process.env.PORT || 4000);
+const PRIVATE_API_BIND_HOST = String(process.env.CONTENTBOX_API_BIND_HOST || "").trim() || (
+  String(process.env.CONTENTBOX_PRIVATE_BIND || "").trim().toLowerCase() === "public" ? "0.0.0.0" : "127.0.0.1"
+);
 const PUBLIC_MODE = String(process.env.PUBLIC_MODE || "").trim().toLowerCase();
 const PUBLIC_HEALTH_INTERVAL_MS = Math.max(5000, Math.floor(Number(process.env.PUBLIC_HEALTH_INTERVAL_MS || "60000")));
 const PUBLIC_HEALTH_FAILURE_THRESHOLD = Math.max(1, Math.floor(Number(process.env.PUBLIC_HEALTH_FAILURE_THRESHOLD || "2")));
@@ -13810,6 +13830,12 @@ function registerPublicRoutes(appPublic: any) {
   });
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/api/public/payments/intents", handlePublicPaymentsIntents);
+  appPublic.get("/api/payments/intents/:id", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", asString(req?.raw?.url || req?.url || `/api/payments/intents/${encodeURIComponent(String((req.params as any)?.id || ""))}`), req, reply)
+  );
+  appPublic.post("/api/payments/intents/:id/refresh", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("POST", `/api/payments/intents/${encodeURIComponent(String((req.params as any)?.id || ""))}/refresh`, req, reply)
+  );
   appPublic.post("/buy/permits", handlePublicPermits);
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
   appPublic.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
@@ -18640,7 +18666,7 @@ function getNodeModeStatus() {
 
 function hasDetectedNamedTunnel(): boolean {
   const state = getPublicStatusCached();
-  if (state.mode !== "named" || state.status !== "online") return false;
+  if (state.status !== "online") return false;
   const origin = normalizePublicOriginBase(String(state.canonicalOrigin || state.publicOrigin || "").trim());
   if (!origin) return false;
   return isPersistentOrigin(origin);
@@ -18656,7 +18682,19 @@ type LocalSovereignReadiness = {
 };
 
 async function getLocalSovereignReadiness(): Promise<LocalSovereignReadiness> {
-  const namedTunnelDetected = hasDetectedNamedTunnel();
+  const publicState = getPublicLinkState();
+  const configuredOrigin = normalizePublicOriginBase(
+    String(
+      publicState.canonicalOrigin ||
+        getPublicOriginConfig()?.publicOrigin ||
+        process.env.CONTENTBOX_PUBLIC_ORIGIN ||
+        ""
+    ).trim()
+  );
+  const configuredOriginReady =
+    Boolean(configuredOrigin && isPersistentOrigin(configuredOrigin)) &&
+    (await ensureNamedHealthFresh(configuredOrigin, true).catch(() => false));
+  const namedTunnelDetected = configuredOriginReady || hasDetectedNamedTunnel();
   const [bitcoinHealth, lndHealth] = await Promise.all([bitcoindHealthCheck(), lndHealthCheck()]);
   const localBitcoinReady = bitcoinHealth.status === "healthy";
   const localLndReady = lndHealth.status === "healthy";
@@ -53190,7 +53228,7 @@ async function start() {
   await preflightDb();
   scheduleReceiptIdBackfillBestEffort();
   const port = Number(process.env.PORT || 4000);
-  await app.listen({ port, host: "0.0.0.0" });
+  await app.listen({ port, host: PRIVATE_API_BIND_HOST });
   // Run provider verification in the background so startup/health becomes
   // available immediately even when remote provider endpoints are slow.
   setTimeout(() => {

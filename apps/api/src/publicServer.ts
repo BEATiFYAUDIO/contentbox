@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { isPublicRouteAllowed } from "./security/publicRoutePolicy.js";
 
 const PUBLIC_PORT = Number(process.env.PUBLIC_PORT || 4010);
 
@@ -10,7 +11,7 @@ function resolvePublicCorsOrigin(originHeader: unknown): string {
   return origin;
 }
 
-export async function startPublicServer(registerPublicRoutes: RegisterFn, host: string) {
+export function createPublicServer(registerPublicRoutes: RegisterFn) {
   const app = Fastify({
     logger: { level: "warn" },
     bodyLimit: 2 * 1024 * 1024
@@ -48,13 +49,23 @@ export async function startPublicServer(registerPublicRoutes: RegisterFn, host: 
     return reply.code(204).send();
   });
 
-  app.addHook("onRequest", async (req: any) => {
+  app.addHook("onRequest", async (req: any, reply: any) => {
+    const method = String(req?.method || "GET").toUpperCase();
+    const url = String(req?.raw?.url || req?.url || "/");
+    if (!isPublicRouteAllowed(method, url)) {
+      return reply.code(404).send({ error: "Not Found" });
+    }
     if (req.headers && "authorization" in req.headers) {
       delete (req.headers as any).authorization;
     }
   });
 
   registerPublicRoutes(app);
+  return app;
+}
+
+export async function startPublicServer(registerPublicRoutes: RegisterFn, host: string) {
+  const app = createPublicServer(registerPublicRoutes);
   await app.listen({ port: PUBLIC_PORT, host });
   return app;
 }

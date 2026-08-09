@@ -87,6 +87,38 @@ Run `npm run security:harden-local-node` again after generating these files.
 
 Legacy single-macaroon configuration is kept only for operator/migration use. If Lightning status reports `securityMigrationRequired`, upload the restricted invoice, read, and send credentials before using mainnet commerce.
 
+## Public/private API boundary
+
+The API process starts two HTTP surfaces:
+
+- private creator/operator API: `PORT` / default `4000`
+- public buyer/discovery API: `PUBLIC_PORT` / default `4010`
+
+The private API binds to `127.0.0.1` by default. Do not point a public Cloudflare hostname at `:4000`. If a public hostname is accidentally routed to the private API, non-public routes fail closed with `404` unless `CONTENTBOX_ALLOW_PRIVATE_API_PUBLIC_HOST=1` is explicitly set. If remote dashboard access is required, put that hostname behind Cloudflare Access, VPN, or another private ingress control before exposing it.
+
+The public API binds to `127.0.0.1` unless `CONTENTBOX_BIND=public` is set for direct public serving. Public Cloudflare tunnels should forward public creator hostnames to:
+
+```text
+http://127.0.0.1:4010
+```
+
+The public listener is fail-closed by `apps/api/src/security/publicRoutePolicy.ts`. Only routes explicitly listed in `PUBLIC_ROUTE_ALLOWLIST` are reachable from the public listener. A JWT or `Authorization` header does not make creator/operator routes reachable through this listener; authorization headers are stripped before public handlers run.
+
+Route authority model:
+
+| Classification | Examples | Public listener |
+| --- | --- | --- |
+| PUBLIC | public profile, buy pages, public content metadata, previews, buyer invoice creation, receipt polling, public discovery, public network presence, remote derivative ingress | allowed only by explicit allowlist |
+| CREATOR AUTHENTICATED | creator library, uploads, publishing, profile management, splits, clearance, creator revenue, private buyer/creator data | private API only |
+| OPERATOR / ADMIN | LND credential setup, channel/peer administration, node/tunnel config, diagnostics, backup/storage controls, privileged settlement controls | private API only; add Cloudflare Access/VPN if remote access is needed |
+
+To add a new public endpoint:
+
+1. classify the route as genuinely public buyer/discovery/commerce functionality
+2. add it to `PUBLIC_ROUTE_ALLOWLIST` with a narrow method and path pattern
+3. add/extend `test:public-boundary`
+4. confirm no secrets, local addresses, liquidity, balances, invoices, payment hashes, filesystem paths, or private diagnostics are returned
+
 ## Mode model (must stay coherent)
 
 - Basic Creator:
