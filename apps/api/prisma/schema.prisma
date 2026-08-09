@@ -859,6 +859,19 @@ model LightningNodeConfig {
   updatedAt          DateTime @updatedAt
 }
 
+model LightningNodeCredential {
+  id                 String   @id @default(cuid())
+  role               String   @unique
+  macaroonCiphertext String
+  macaroonIv         String
+  macaroonTag        String
+  lastValidatedAt    DateTime?
+  lastStatus         String?
+  lastError          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
 model MetadataProviderConfig {
   provider               String   @id
   clientId               String?

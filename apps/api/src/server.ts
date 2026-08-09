@@ -54,10 +54,13 @@ import {
   interpretLightningDiscoveryHttpProbe,
   probeLndConnection,
   saveLightningNodeConfig,
+  saveLightningNodeCredential,
   sendBolt11Payment,
   lookupOutgoingPaymentByHash,
   lookupOutgoingPaymentStatusByHash,
-  testLightningNodeConnection
+  testLightningNodeConnection,
+  testLightningNodeCredential,
+  type LightningCredentialRole
 } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import {
@@ -913,7 +916,7 @@ async function withSoftTimeoutKeepRunning<T>(
 }
 
 async function lndHealthCheck() {
-  const cfg = await getStoredLndConfig(prisma).catch(() => null);
+  const cfg = await getStoredLndConfig(prisma, "read").catch(() => null);
   if (!cfg) {
     return {
       status: "missing",
@@ -5761,17 +5764,6 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   return withSummary;
 }
 
-function normalizeLndMacaroonHex(): string | null {
-  const raw = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
-  if (!raw) return null;
-  if (/^[0-9a-fA-F]+$/.test(raw)) return raw.toLowerCase();
-  try {
-    return Buffer.from(raw, "base64").toString("hex").toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
 async function fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -5885,7 +5877,7 @@ async function resolveLightningCapabilityRuntime(userId: string | null): Promise
   capabilityState: LightningCapabilityState;
   sendFailureReason: string | null;
   lndRestUrl: string | null;
-  lndMacaroonHex: string | null;
+  hasLndSendCredential: boolean;
   source: "stored_lnd" | "env_lnd" | "destination_only" | "none";
 }> {
   const productTier = resolveProductTier().productTier;
@@ -5900,7 +5892,7 @@ async function resolveLightningCapabilityRuntime(userId: string | null): Promise
       capabilityState: state,
       sendFailureReason: hasDestinationOnly ? "LND_SEND_NOT_APPLICABLE_DESTINATION_ONLY" : "LND_SEND_NOT_CONFIGURED",
       lndRestUrl: null,
-      lndMacaroonHex: null,
+      hasLndSendCredential: false,
       source: hasDestinationOnly ? ("destination_only" as const) : ("none" as const)
     };
     app.log.info({ userId, ...out }, "lightning.runtime_state");
@@ -5909,17 +5901,15 @@ async function resolveLightningCapabilityRuntime(userId: string | null): Promise
 
   const lndStatus = await getLightningNodeConfigStatus(prisma as any).catch(() => null);
   const lndReadiness = await getLightningReadiness(prisma as any).catch(() => null);
-  const stored = await getStoredLndConfig(prisma as any).catch(() => null);
-  const envRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "") || null;
-  const envMac = normalizeLndMacaroonHex();
-  const lndRestUrl = stored?.restUrl || envRest || null;
-  const lndMacaroonHex = stored?.macaroonHex || envMac || null;
-  const source = stored?.restUrl && stored?.macaroonHex ? "stored_lnd" : envRest && envMac ? "env_lnd" : "none";
+  const sendConfig = await getStoredLndConfig(prisma as any, "send").catch(() => null);
+  const lndRestUrl = sendConfig?.restUrl || null;
+  const hasLndSendCredential = Boolean(sendConfig?.macaroonHex);
+  const source = sendConfig?.credentialRole ? (sendConfig.credentialRole === "send" ? "stored_lnd" : "env_lnd") : "none";
 
   const connected = Boolean(lndReadiness?.nodeReachable);
   const canReceive = Boolean(lndReadiness?.receiveReady);
   const channelCount = Math.max(0, Number(lndReadiness?.channels?.count || 0));
-  const hasTransport = Boolean(lndRestUrl && lndMacaroonHex);
+  const hasTransport = Boolean(lndRestUrl && hasLndSendCredential);
   const canSend = Boolean(hasTransport && connected && channelCount > 0);
 
   let sendFailureReason: string | null = null;
@@ -5940,7 +5930,7 @@ async function resolveLightningCapabilityRuntime(userId: string | null): Promise
     capabilityState,
     sendFailureReason,
     lndRestUrl,
-    lndMacaroonHex,
+    hasLndSendCredential,
     source
   } as const;
   app.log.info(
@@ -5975,12 +5965,8 @@ async function resolvePayoutExecutionRuntime(userId: string | null): Promise<{
   // not by creator-facing paymentsMode posture.
   const lndStatus = await getLightningNodeConfigStatus(prisma as any).catch(() => null);
   const lndReadiness = await getLightningReadiness(prisma as any).catch(() => null);
-  const stored = await getStoredLndConfig(prisma as any).catch(() => null);
-  const envRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "") || null;
-  const envMac = normalizeLndMacaroonHex();
-  const lndRestUrl = stored?.restUrl || envRest || null;
-  const lndMacaroonHex = stored?.macaroonHex || envMac || null;
-  const hasTransport = Boolean(lndRestUrl && lndMacaroonHex);
+  const sendConfig = await getStoredLndConfig(prisma as any, "send").catch(() => null);
+  const hasTransport = Boolean(sendConfig?.restUrl && sendConfig?.macaroonHex);
   const connected = Boolean(lndReadiness?.nodeReachable);
   const channelCount = Math.max(0, Number(lndReadiness?.channels?.count || 0));
   const canSend = Boolean(hasTransport && connected && channelCount > 0);
@@ -6190,8 +6176,7 @@ async function payBolt11ViaLnd(
   }
   const runtime = await resolveLightningCapabilityRuntime(null);
   const lndRest = String(runtime.lndRestUrl || "").trim().replace(/\/+$/, "");
-  const hasMacaroon = Boolean(String(runtime.lndMacaroonHex || "").trim());
-  if (!runtime.canSend || !lndRest || !hasMacaroon) {
+  if (!runtime.canSend || !lndRest || !runtime.hasLndSendCredential) {
     throw new Error(runtime.sendFailureReason || "LND_SEND_NOT_CONFIGURED");
   }
   const paymentRequestTag = crypto.createHash("sha256").update(String(bolt11 || "")).digest("hex").slice(0, 12);
@@ -40578,19 +40563,10 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   const diagnoseLightning = async () => {
     try {
-      const cfg = await getStoredLndConfig(prisma as any);
-      if (!cfg) return { configured: false, connectivity: "not_configured", reason: null as string | null };
-      try {
-        await probeLndConnection({
-          restUrl: cfg.restUrl,
-          network: cfg.network,
-          macaroonHex: cfg.macaroonHex,
-          tlsCert: cfg.tlsCert || null
-        });
-        return { configured: true, connectivity: "ok", reason: null as string | null };
-      } catch (e: any) {
-        return { configured: true, connectivity: "error", reason: String(e?.message || e || "probe_failed") };
-      }
+      const cfg = await getStoredLndConfig(prisma as any, "invoice");
+      return cfg
+        ? { configured: true, connectivity: "configured", reason: null as string | null }
+        : { configured: false, connectivity: "not_configured", reason: null as string | null };
     } catch (e: any) {
       return { configured: false, connectivity: "error", reason: String(e?.message || e || "config_probe_failed") };
     }
@@ -47898,8 +47874,8 @@ async function getPaymentsReadiness(userId: string) {
     lightningReason = "DISABLED";
   } else if (PAYMENT_PROVIDER.kind === "lnd") {
     const hasUrl = Boolean(String(process.env.LND_REST_URL || "").trim());
-    const macHex = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
-    const macPath = String(process.env.LND_MACAROON_PATH || "").trim();
+    const macHex = String(process.env.LND_INVOICE_MACAROON_HEX || process.env.LND_INVOICE_MACAROON || "").trim();
+    const macPath = String(process.env.LND_INVOICE_MACAROON_PATH || "").trim();
     const hasMac = Boolean(macHex) || (macPath ? fsSync.existsSync(macPath) : false);
     if (hasUrl && hasMac) {
       lightningReady = true;
@@ -47978,11 +47954,26 @@ async function parseLightningAdminRequest(req: any) {
   let tlsCertPem: string | null = null;
   let macaroonPath = "";
   let tlsCertPath = "";
+  const credentialMacaroons: Partial<Record<LightningCredentialRole, string>> = {};
+  const credentialPaths: Partial<Record<LightningCredentialRole, string>> = {};
+
+  const roleFromField = (field: string): LightningCredentialRole | null => {
+    const normalized = String(field || "").trim();
+    if (/^(invoiceMacaroon(File)?|invoice)$/i.test(normalized)) return "invoice";
+    if (/^(readMacaroon(File)?|read)$/i.test(normalized)) return "read";
+    if (/^(sendMacaroon(File)?|send)$/i.test(normalized)) return "send";
+    if (/^(operatorMacaroon(File)?|adminMacaroon(File)?|operator)$/i.test(normalized)) return "operator";
+    return null;
+  };
 
   for await (const part of req.parts()) {
     if (part.type === "file") {
       const field = String(part.fieldname || "");
-      if (field === "macaroonFile" || field === "macaroon") {
+      const role = roleFromField(field);
+      if (role) {
+        const buf = await readMultipartPartBuffer(part, 512 * 1024);
+        credentialMacaroons[role] = buf.toString("base64");
+      } else if (field === "macaroonFile" || field === "macaroon") {
         const buf = await readMultipartPartBuffer(part, 512 * 1024);
         macaroonBase64 = buf.toString("base64");
       } else if (field === "tlsCertFile" || field === "tlsCert") {
@@ -48000,6 +47991,10 @@ async function parseLightningAdminRequest(req: any) {
     if (field === "restUrl") restUrl = value.trim();
     if (field === "network") networkRaw = value;
     if (field === "macaroonPath") macaroonPath = value.trim();
+    if (field === "invoiceMacaroonPath") credentialPaths.invoice = value.trim();
+    if (field === "readMacaroonPath") credentialPaths.read = value.trim();
+    if (field === "sendMacaroonPath") credentialPaths.send = value.trim();
+    if (field === "operatorMacaroonPath" || field === "adminMacaroonPath") credentialPaths.operator = value.trim();
     if (field === "tlsCertPath") tlsCertPath = value.trim();
   }
 
@@ -48012,6 +48007,18 @@ async function parseLightningAdminRequest(req: any) {
     }
   }
 
+  for (const role of ["invoice", "read", "send", "operator"] as LightningCredentialRole[]) {
+    const rolePath = credentialPaths[role];
+    if (!credentialMacaroons[role] && rolePath) {
+      try {
+        const buf = await fs.readFile(rolePath);
+        credentialMacaroons[role] = Buffer.from(buf).toString("base64");
+      } catch (e: any) {
+        throw new Error(`failed to read ${role}MacaroonPath: ${String(e?.message || e)}`);
+      }
+    }
+  }
+
   if (!tlsCertPem && tlsCertPath) {
     try {
       const buf = await fs.readFile(tlsCertPath, "utf8");
@@ -48021,7 +48028,7 @@ async function parseLightningAdminRequest(req: any) {
     }
   }
 
-  return { restUrl, networkRaw, macaroonBase64, tlsCertPem, macaroonPath, tlsCertPath };
+  return { restUrl, networkRaw, macaroonBase64, tlsCertPem, macaroonPath, tlsCertPath, credentialMacaroons };
 }
 
 function getWindowsLndDefaults() {
@@ -48030,13 +48037,21 @@ function getWindowsLndDefaults() {
     return {
       restUrl: "https://127.0.0.1:8080",
       tlsCertPath: "",
-      macaroonPath: ""
+      macaroonPath: "",
+      invoiceMacaroonPath: "",
+      readMacaroonPath: "",
+      sendMacaroonPath: "",
+      operatorMacaroonPath: ""
     };
   }
   return {
     restUrl: "https://127.0.0.1:8080",
     tlsCertPath: path.join(localAppData, "Lnd", "tls.cert"),
-    macaroonPath: path.join(localAppData, "Lnd", "data", "chain", "bitcoin", "mainnet", "admin.macaroon")
+    macaroonPath: "",
+    invoiceMacaroonPath: path.join(localAppData, "Lnd", "data", "chain", "bitcoin", "mainnet", "certifyd-invoice.macaroon"),
+    readMacaroonPath: path.join(localAppData, "Lnd", "data", "chain", "bitcoin", "mainnet", "certifyd-read.macaroon"),
+    sendMacaroonPath: path.join(localAppData, "Lnd", "data", "chain", "bitcoin", "mainnet", "certifyd-send.macaroon"),
+    operatorMacaroonPath: path.join(localAppData, "Lnd", "data", "chain", "bitcoin", "mainnet", "admin.macaroon")
   };
 }
 
@@ -48505,7 +48520,15 @@ app.post("/api/admin/lightning/close-channel", { preHandler: [requireAuth, requi
 });
 
 app.post("/api/admin/lightning/test", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
-  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null; macaroonPath: string; tlsCertPath: string };
+  let parsed: {
+    restUrl: string;
+    networkRaw: unknown;
+    macaroonBase64: string;
+    tlsCertPem: string | null;
+    macaroonPath: string;
+    tlsCertPath: string;
+    credentialMacaroons: Partial<Record<LightningCredentialRole, string>>;
+  };
   try {
     parsed = await parseLightningAdminRequest(req);
   } catch (e: any) {
@@ -48515,9 +48538,10 @@ app.post("/api/admin/lightning/test", { preHandler: [requireAuth, requireAdvance
   const network = normalizeLightningNetwork(parsed.networkRaw);
   const macaroonBase64 = parsed.macaroonBase64;
   const tlsCertPem = parsed.tlsCertPem;
+  const credentialMacaroons = parsed.credentialMacaroons || {};
   if (!restUrl) return badRequest(reply, "restUrl required");
   if (!network) return badRequest(reply, "network must be mainnet, testnet, or regtest");
-  if (!macaroonBase64) return badRequest(reply, "macaroonFile required");
+  if (!macaroonBase64 && Object.keys(credentialMacaroons).length === 0) return badRequest(reply, "macaroonFile or restricted credential files required");
   try {
     const u = new URL(restUrl);
     app.log.info(
@@ -48526,26 +48550,48 @@ app.post("/api/admin/lightning/test", { preHandler: [requireAuth, requireAdvance
         protocolUsed: u.protocol.replace(":", ""),
         restPort: u.port || null,
         tlsLen: (tlsCertPem || "").length || 0,
-        macaroonLen: macaroonBase64.length
+        macaroonLen: macaroonBase64.length,
+        restrictedCredentialRoles: Object.keys(credentialMacaroons)
       },
       "lightning.config.test"
     );
   } catch {}
 
-  const result = await testLightningNodeConnection({ restUrl, network, macaroonBase64, tlsCertPem });
-  if (!result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed" });
+  const restrictedResults: Record<string, unknown> = {};
+  for (const role of ["invoice", "read", "send", "operator"] as LightningCredentialRole[]) {
+    const roleMacaroon = credentialMacaroons[role];
+    if (!roleMacaroon) continue;
+    restrictedResults[role] = await testLightningNodeCredential({ restUrl, network, role, macaroonBase64: roleMacaroon, tlsCertPem });
+  }
+  const result = macaroonBase64
+    ? await testLightningNodeConnection({ restUrl, network, macaroonBase64, tlsCertPem })
+    : null;
+  const failedRestricted = Object.entries(restrictedResults).find(([, value]: any) => !value?.ok);
+  if (failedRestricted) return reply.send({ ok: false, role: failedRestricted[0], error: (failedRestricted[1] as any)?.error || "Credential validation failed", restrictedResults });
+  if (result && !result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed", restrictedResults });
   return reply.send({
     ok: true,
-    info: {
-      alias: result.info.alias || "",
-      version: result.info.version || "",
-      identityPubkey: result.info.identityPubkey || ""
-    }
+    info: result?.ok
+      ? {
+          alias: result.info.alias || "",
+          version: result.info.version || "",
+          identityPubkey: result.info.identityPubkey || ""
+        }
+      : null,
+    restrictedResults
   });
 });
 
 app.post("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
-  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null; macaroonPath: string; tlsCertPath: string };
+  let parsed: {
+    restUrl: string;
+    networkRaw: unknown;
+    macaroonBase64: string;
+    tlsCertPem: string | null;
+    macaroonPath: string;
+    tlsCertPath: string;
+    credentialMacaroons: Partial<Record<LightningCredentialRole, string>>;
+  };
   try {
     parsed = await parseLightningAdminRequest(req);
   } catch (e: any) {
@@ -48555,9 +48601,10 @@ app.post("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier
   const network = normalizeLightningNetwork(parsed.networkRaw);
   const macaroonBase64 = parsed.macaroonBase64;
   const tlsCertPem = parsed.tlsCertPem;
+  const credentialMacaroons = parsed.credentialMacaroons || {};
   if (!restUrl) return badRequest(reply, "restUrl required");
   if (!network) return badRequest(reply, "network must be mainnet, testnet, or regtest");
-  if (!macaroonBase64) return badRequest(reply, "macaroonFile required");
+  if (!macaroonBase64 && Object.keys(credentialMacaroons).length === 0) return badRequest(reply, "macaroonFile or restricted credential files required");
   try {
     const u = new URL(restUrl);
     app.log.info(
@@ -48566,16 +48613,25 @@ app.post("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier
         protocolUsed: u.protocol.replace(":", ""),
         restPort: u.port || null,
         tlsLen: (tlsCertPem || "").length || 0,
-        macaroonLen: macaroonBase64.length
+        macaroonLen: macaroonBase64.length,
+        restrictedCredentialRoles: Object.keys(credentialMacaroons)
       },
       "lightning.config.save"
     );
   } catch {}
 
   try {
-    const result = await saveLightningNodeConfig(prisma as any, { restUrl, network, macaroonBase64, tlsCertPem });
-    if (!result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed" });
-    return reply.send({ ok: true });
+    const restrictedResults: Record<string, unknown> = {};
+    for (const role of ["invoice", "read", "send", "operator"] as LightningCredentialRole[]) {
+      const roleMacaroon = credentialMacaroons[role];
+      if (!roleMacaroon) continue;
+      restrictedResults[role] = await saveLightningNodeCredential(prisma as any, { restUrl, network, role, macaroonBase64: roleMacaroon, tlsCertPem });
+    }
+    const failedRestricted = Object.entries(restrictedResults).find(([, value]: any) => !value?.ok);
+    if (failedRestricted) return reply.send({ ok: false, role: failedRestricted[0], error: (failedRestricted[1] as any)?.error || "Credential validation failed", restrictedResults });
+    const result = macaroonBase64 ? await saveLightningNodeConfig(prisma as any, { restUrl, network, macaroonBase64, tlsCertPem }) : null;
+    if (result && !result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed", restrictedResults });
+    return reply.send({ ok: true, restrictedResults });
   } catch (e: any) {
     return reply.code(500).send({ ok: false, error: String(e?.message || e) });
   }

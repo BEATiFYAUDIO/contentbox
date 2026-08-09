@@ -55,6 +55,38 @@ The script only touches known sensitive local files under `~/.lnd` and `~/.bitco
 
 If you use the optional Docker services, copy `infra/.env.example` to `infra/.env`, replace every placeholder secret, and start them from `infra/`. Postgres and MinIO bind to `127.0.0.1` by default.
 
+## Restricted LND macaroons
+
+Contentbox normal commerce should not use `admin.macaroon`. Generate restricted macaroons on the node and upload them in Lightning settings:
+
+```bash
+lncli bakemacaroon \
+  uri:/lnrpc.Lightning/AddInvoice \
+  uri:/lnrpc.Lightning/LookupInvoice \
+  uri:/lnrpc.Lightning/ListInvoices \
+  --save_to ~/.lnd/data/chain/bitcoin/mainnet/certifyd-invoice.macaroon
+
+lncli bakemacaroon \
+  uri:/lnrpc.Lightning/GetInfo \
+  uri:/lnrpc.Lightning/ListChannels \
+  uri:/lnrpc.Lightning/PendingChannels \
+  uri:/lnrpc.Lightning/WalletBalance \
+  uri:/walletrpc.WalletKit/ListLeases \
+  uri:/lnrpc.Lightning/DescribeGraph \
+  uri:/lnrpc.Lightning/GetNodeInfo \
+  --save_to ~/.lnd/data/chain/bitcoin/mainnet/certifyd-read.macaroon
+
+lncli bakemacaroon \
+  uri:/lnrpc.Lightning/DecodePayReq \
+  uri:/lnrpc.Lightning/ListPayments \
+  uri:/routerrpc.Router/SendPaymentV2 \
+  --save_to ~/.lnd/data/chain/bitcoin/mainnet/certifyd-send.macaroon
+```
+
+Run `npm run security:harden-local-node` again after generating these files.
+
+Legacy single-macaroon configuration is kept only for operator/migration use. If Lightning status reports `securityMigrationRequired`, upload the restricted invoice, read, and send credentials before using mainnet commerce.
+
 ## Mode model (must stay coherent)
 
 - Basic Creator:

@@ -22,11 +22,28 @@ type LightningNodeConfigRow = {
   updatedAt: Date | string;
 };
 
+export type LightningCredentialRole = "invoice" | "read" | "send" | "operator";
+export type LightningCapabilityScope = LightningCredentialRole;
+
+type LightningNodeCredentialRow = {
+  id: string;
+  role: string;
+  macaroonCiphertext: string;
+  macaroonIv: string;
+  macaroonTag: string;
+  lastValidatedAt: Date | string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+};
+
 type RuntimeLndConfig = {
   restUrl: string;
   network: string;
   macaroonHex: string;
   tlsCert?: Buffer | null;
+  credentialRole?: LightningCredentialRole | "legacy";
 };
 
 export type LightningDiscoveryCandidate = { restUrl: string; requiresTlsCertHint?: boolean; notes?: string };
@@ -171,6 +188,9 @@ export type LightningNodeConfigStatus = {
   lastStatus: string | null;
   lastError: string | null;
   warnings: string[];
+  legacyCredentialPresent?: boolean;
+  securityMigrationRequired?: boolean;
+  restrictedCredentials?: Record<LightningCredentialRole, { configured: boolean; decryptOk: boolean; lastStatus: string | null; lastError: string | null }>;
 };
 
 export type LightningSendPaymentResult = {
@@ -218,6 +238,45 @@ type SuggestionResult = {
   peers: LightningPeerSuggestion[];
   meta: { cachedGraph: boolean; probed: number };
 };
+
+export type LndRpcInventoryItem = {
+  certifydFunction: string;
+  restMethod: "GET" | "POST" | "DELETE";
+  restPath: string;
+  rpc: string;
+  category: "invoice" | "read" | "send" | "operator";
+  credentialRole: LightningCredentialRole;
+};
+
+export const LND_RPC_INVENTORY: LndRpcInventoryItem[] = [
+  { certifydFunction: "createLightningInvoice", restMethod: "POST", restPath: "/v1/invoices", rpc: "lnrpc.Lightning/AddInvoice", category: "invoice", credentialRole: "invoice" },
+  { certifydFunction: "checkLightningInvoice/getInvoiceByPaymentHashHex", restMethod: "GET", restPath: "/v1/invoice/:paymentHash", rpc: "lnrpc.Lightning/LookupInvoice", category: "invoice", credentialRole: "invoice" },
+  { certifydFunction: "getLightningInvoices", restMethod: "GET", restPath: "/v1/invoices", rpc: "lnrpc.Lightning/ListInvoices", category: "invoice", credentialRole: "invoice" },
+  { certifydFunction: "getLightningReadiness/probeLndConnection", restMethod: "GET", restPath: "/v1/getinfo", rpc: "lnrpc.Lightning/GetInfo", category: "read", credentialRole: "read" },
+  { certifydFunction: "getLightningReadiness/getLightningChannels/getLightningReceiveCapacity", restMethod: "GET", restPath: "/v1/channels", rpc: "lnrpc.Lightning/ListChannels", category: "read", credentialRole: "read" },
+  { certifydFunction: "getLightningChannels/getLightningBalances/getLightningReceiveCapacity", restMethod: "GET", restPath: "/v1/channels/pending", rpc: "lnrpc.Lightning/PendingChannels", category: "read", credentialRole: "read" },
+  { certifydFunction: "getLightningBalances/getLightningReceiveCapacity", restMethod: "GET", restPath: "/v1/balance/blockchain", rpc: "lnrpc.Lightning/WalletBalance", category: "read", credentialRole: "read" },
+  { certifydFunction: "getLightningBalances", restMethod: "GET", restPath: "/v1/wallet/anchors", rpc: "walletrpc.WalletKit/ListLeases", category: "read", credentialRole: "read" },
+  { certifydFunction: "getPeerSuggestions", restMethod: "GET", restPath: "/v1/graph", rpc: "lnrpc.Lightning/DescribeGraph", category: "read", credentialRole: "read" },
+  { certifydFunction: "resolveAliasesBestEffortInBackground", restMethod: "GET", restPath: "/v1/graph/node/:pubkey", rpc: "lnrpc.Lightning/GetNodeInfo", category: "read", credentialRole: "read" },
+  { certifydFunction: "sendBolt11Payment/decodeBolt11PaymentRequest", restMethod: "GET", restPath: "/v1/payreq/:payReq", rpc: "lnrpc.Lightning/DecodePayReq", category: "send", credentialRole: "send" },
+  { certifydFunction: "sendBolt11Payment/lookupOutgoingPaymentStatusByHash", restMethod: "GET", restPath: "/v1/payments", rpc: "lnrpc.Lightning/ListPayments", category: "send", credentialRole: "send" },
+  { certifydFunction: "sendBolt11Payment", restMethod: "POST", restPath: "/v2/router/send", rpc: "routerrpc.Router/SendPaymentV2", category: "send", credentialRole: "send" },
+  { certifydFunction: "probePeer/ensurePeerConnected", restMethod: "GET", restPath: "/v1/peers", rpc: "lnrpc.Lightning/ListPeers", category: "operator", credentialRole: "operator" },
+  { certifydFunction: "probePeer/ensurePeerConnected", restMethod: "POST", restPath: "/v1/peers", rpc: "lnrpc.Lightning/ConnectPeer", category: "operator", credentialRole: "operator" },
+  { certifydFunction: "openLightningChannel", restMethod: "POST", restPath: "/v1/channels", rpc: "lnrpc.Lightning/OpenChannelSync", category: "operator", credentialRole: "operator" },
+  { certifydFunction: "closeLightningChannel", restMethod: "DELETE", restPath: "/v1/channels/:fundingTxid/:outputIndex", rpc: "lnrpc.Lightning/CloseChannel", category: "operator", credentialRole: "operator" }
+];
+
+export function getRequiredLndRpcPermissions(role: LightningCredentialRole): string[] {
+  return Array.from(
+    new Set(
+      LND_RPC_INVENTORY
+        .filter((item) => item.credentialRole === role)
+        .map((item) => `uri:/${item.rpc}`)
+    )
+  ).sort();
+}
 
 type PeerSuggestionErrorCode = "NODE_NOT_CONFIGURED" | "NOT_READY";
 
@@ -324,6 +383,113 @@ async function readLightningNodeConfigRow(prisma: PrismaLike): Promise<Lightning
   return rows[0] || null;
 }
 
+function normalizeLightningCredentialRole(role: string): LightningCredentialRole {
+  const value = String(role || "").trim().toLowerCase();
+  if (value === "invoice" || value === "read" || value === "send" || value === "operator") return value;
+  throw new Error("INVALID_LND_CREDENTIAL_ROLE");
+}
+
+async function readLightningNodeCredentialRows(prisma: PrismaLike): Promise<LightningNodeCredentialRow[]> {
+  try {
+    return await prisma.$queryRaw<LightningNodeCredentialRow[]>`
+      SELECT
+        "id",
+        "role",
+        "macaroonCiphertext",
+        "macaroonIv",
+        "macaroonTag",
+        "lastValidatedAt",
+        "lastStatus",
+        "lastError",
+        "createdAt",
+        "updatedAt"
+      FROM "LightningNodeCredential"
+    `;
+  } catch (e: any) {
+    const msg = String(e?.message || e || "").toLowerCase();
+    if (msg.includes("lightningnodecredential") || msg.includes("no such table")) return [];
+    throw e;
+  }
+}
+
+async function readLightningNodeCredentialRow(
+  prisma: PrismaLike,
+  role: LightningCredentialRole
+): Promise<LightningNodeCredentialRow | null> {
+  try {
+    const rows = await prisma.$queryRaw<LightningNodeCredentialRow[]>`
+      SELECT
+        "id",
+        "role",
+        "macaroonCiphertext",
+        "macaroonIv",
+        "macaroonTag",
+        "lastValidatedAt",
+        "lastStatus",
+        "lastError",
+        "createdAt",
+        "updatedAt"
+      FROM "LightningNodeCredential"
+      WHERE "role" = ${role}
+      LIMIT 1
+    `;
+    return rows[0] || null;
+  } catch (e: any) {
+    const msg = String(e?.message || e || "").toLowerCase();
+    if (msg.includes("lightningnodecredential") || msg.includes("no such table")) return null;
+    throw e;
+  }
+}
+
+async function upsertLightningNodeCredentialRow(
+  prisma: PrismaLike,
+  data: {
+    role: LightningCredentialRole;
+    macaroonCiphertext: string;
+    macaroonIv: string;
+    macaroonTag: string;
+    lastValidatedAt: Date | null;
+    lastStatus: string | null;
+    lastError: string | null;
+  }
+) {
+  const now = new Date();
+  await prisma.$executeRaw`
+    INSERT INTO "LightningNodeCredential" (
+      "id",
+      "role",
+      "macaroonCiphertext",
+      "macaroonIv",
+      "macaroonTag",
+      "lastValidatedAt",
+      "lastStatus",
+      "lastError",
+      "createdAt",
+      "updatedAt"
+    ) VALUES (
+      ${`credential:${data.role}`},
+      ${data.role},
+      ${data.macaroonCiphertext},
+      ${data.macaroonIv},
+      ${data.macaroonTag},
+      ${data.lastValidatedAt},
+      ${data.lastStatus},
+      ${data.lastError},
+      ${now},
+      ${now}
+    )
+    ON CONFLICT ("role")
+    DO UPDATE SET
+      "macaroonCiphertext" = EXCLUDED."macaroonCiphertext",
+      "macaroonIv" = EXCLUDED."macaroonIv",
+      "macaroonTag" = EXCLUDED."macaroonTag",
+      "lastValidatedAt" = EXCLUDED."lastValidatedAt",
+      "lastStatus" = EXCLUDED."lastStatus",
+      "lastError" = EXCLUDED."lastError",
+      "updatedAt" = ${now}
+  `;
+}
+
 async function upsertLightningNodeConfigRow(
   prisma: PrismaLike,
   data: {
@@ -408,20 +574,36 @@ function normalizeTlsCertPem(value?: string | null): string | null {
   return s.replace(/\r\n/g, "\n");
 }
 
-function getLegacyEnvLndConfig(): RuntimeLndConfig | null {
+function getEnvMacaroonForRole(role: LightningCredentialRole): string {
+  const prefix = role === "operator" ? "LND_OPERATOR" : `LND_${role.toUpperCase()}`;
+  const roleHex = String(process.env[`${prefix}_MACAROON_HEX`] || process.env[`${prefix}_MACAROON`] || "").trim();
+  const roleB64 = String(process.env[`${prefix}_MACAROON_B64`] || "").trim();
+  if (roleHex) return normalizeMacaroonHex(roleHex);
+  if (roleB64) return normalizeMacaroonHex(Buffer.from(roleB64, "base64").toString("hex"));
+  if (role === "operator") {
+    const adminHex = String(process.env.LND_ADMIN_MACAROON_HEX || process.env.LND_ADMIN_MACAROON || "").trim();
+    const adminB64 = String(process.env.LND_ADMIN_MACAROON_B64 || "").trim();
+    const legacyHex = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
+    const legacyB64 = String(process.env.LND_MACAROON_B64 || "").trim();
+    if (adminHex) return normalizeMacaroonHex(adminHex);
+    if (adminB64) return normalizeMacaroonHex(Buffer.from(adminB64, "base64").toString("hex"));
+    if (legacyHex) return normalizeMacaroonHex(legacyHex);
+    if (legacyB64) return normalizeMacaroonHex(Buffer.from(legacyB64, "base64").toString("hex"));
+  }
+  return "";
+}
+
+function getEnvLndConfigForRole(role: LightningCredentialRole): RuntimeLndConfig | null {
   const restUrl = process.env.LND_REST_URL;
-  const invoiceMacB64 =
-    process.env.LND_INVOICE_MACAROON_B64 ||
-    process.env.LND_MACAROON_B64 ||
-    "";
-  const invoiceMacHex = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
-  if (!restUrl || (!invoiceMacB64 && !invoiceMacHex)) return null;
+  const macaroonHex = getEnvMacaroonForRole(role);
+  if (!restUrl || !macaroonHex) return null;
   const tlsCertPem = readPemMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
   return {
     restUrl: stripTrailingSlash(restUrl),
     network: "mainnet",
-    macaroonHex: invoiceMacHex ? normalizeMacaroonHex(invoiceMacHex) : normalizeMacaroonHex(Buffer.from(invoiceMacB64, "base64").toString("hex")),
-    tlsCert: tlsCertPem ? Buffer.from(tlsCertPem, "utf8") : null
+    macaroonHex,
+    tlsCert: tlsCertPem ? Buffer.from(tlsCertPem, "utf8") : null,
+    credentialRole: role
   };
 }
 
@@ -774,7 +956,7 @@ export async function probePeer(
   if (cd) return { reachableNow: false, reason: "CONNECT_COOLDOWN" };
 
   const timeoutMs = Math.max(500, Math.min(10000, Math.floor(Number(input.timeoutMs || 2500))));
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "operator");
   if (!lnd) throw new Error("Lightning node not configured");
 
   const run = async (): Promise<{ reachableNow: boolean; reason?: string }> => {
@@ -840,7 +1022,7 @@ export async function ensurePeerConnected(
 
   const timeoutMs = Math.max(1000, Math.min(2500, Math.floor(Number(input.timeoutMs || 2500))));
   const key = pubkeyLower;
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "operator");
   if (!lnd) throw new Error("Lightning node not configured");
 
   return await ensureConnectSingleFlight.do(`ensure:${pubkeyLower}`, async () => {
@@ -884,7 +1066,7 @@ export async function getPeerSuggestions(
   prisma: PrismaLike,
   input?: { limit?: number; probeTop?: number; graphTimeoutMs?: number; forceRefresh?: boolean }
 ): Promise<SuggestionResult> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "read");
   if (!lnd) throw new Error("NODE_NOT_CONFIGURED");
 
   const limit = Math.max(1, Math.min(100, Math.floor(Number(input?.limit ?? 20))));
@@ -1093,17 +1275,21 @@ export function mapLightningReadinessFromLnd(input: { getinfo: any; channels: an
   };
 }
 
-export async function getLndConfig(prisma: PrismaLike): Promise<RuntimeLndConfig | null> {
+function decryptMacaroonFromEncryptedFields(fields: { macaroonCiphertext: string; macaroonIv: string; macaroonTag: string }): string {
+  const decrypted = decryptSecret({
+    ciphertextB64: fields.macaroonCiphertext,
+    ivB64: fields.macaroonIv,
+    tagB64: fields.macaroonTag
+  });
+  return normalizeMacaroonHex(decrypted.toString("utf8"));
+}
+
+async function getLegacyOperatorLndConfig(prisma: PrismaLike): Promise<RuntimeLndConfig | null> {
   const row = await readLightningNodeConfigRow(prisma);
   if (!row) return null;
   let macaroonHex = "";
   try {
-    const decrypted = decryptSecret({
-      ciphertextB64: row.macaroonCiphertext,
-      ivB64: row.macaroonIv,
-      tagB64: row.macaroonTag
-    });
-    macaroonHex = normalizeMacaroonHex(decrypted.toString("utf8"));
+    macaroonHex = decryptMacaroonFromEncryptedFields(row);
   } catch (e: any) {
     const msg = String(e?.message || e || "");
     if (msg === "NODE_MACAROON_MISSING" || msg === "NODE_MACAROON_INVALID_FORMAT") throw e;
@@ -1113,8 +1299,38 @@ export async function getLndConfig(prisma: PrismaLike): Promise<RuntimeLndConfig
     restUrl: stripTrailingSlash(row.restUrl),
     network: row.network || "mainnet",
     macaroonHex,
-    tlsCert: row.tlsCertPem ? Buffer.from(row.tlsCertPem, "utf8") : null
+    tlsCert: row.tlsCertPem ? Buffer.from(row.tlsCertPem, "utf8") : null,
+    credentialRole: "legacy"
   };
+}
+
+export async function getLndConfig(prisma: PrismaLike, scope: LightningCapabilityScope = "read"): Promise<RuntimeLndConfig | null> {
+  const role = normalizeLightningCredentialRole(scope);
+  const row = await readLightningNodeConfigRow(prisma);
+  const credential = await readLightningNodeCredentialRow(prisma, role);
+  if (row && credential) {
+    let macaroonHex = "";
+    try {
+      macaroonHex = decryptMacaroonFromEncryptedFields(credential);
+    } catch (e: any) {
+      const msg = String(e?.message || e || "");
+      if (msg === "NODE_MACAROON_MISSING" || msg === "NODE_MACAROON_INVALID_FORMAT") throw e;
+      throw new Error(`NODE_KEY_MISMATCH:${role}`);
+    }
+    return {
+      restUrl: stripTrailingSlash(row.restUrl),
+      network: row.network || "mainnet",
+      macaroonHex,
+      tlsCert: row.tlsCertPem ? Buffer.from(row.tlsCertPem, "utf8") : null,
+      credentialRole: role
+    };
+  }
+
+  const envConfig = getEnvLndConfigForRole(role);
+  if (envConfig) return envConfig;
+
+  if (role === "operator") return await getLegacyOperatorLndConfig(prisma);
+  return null;
 }
 
 export async function getLightningNodeConfigStatus(prisma: PrismaLike): Promise<LightningNodeConfigStatus> {
@@ -1131,23 +1347,39 @@ export async function getLightningNodeConfigStatus(prisma: PrismaLike): Promise<
       lastTestedAt: null,
       lastStatus: null,
       lastError: null,
-      warnings: []
+      warnings: [],
+      legacyCredentialPresent: false,
+      securityMigrationRequired: false,
+      restrictedCredentials: {
+        invoice: { configured: false, decryptOk: false, lastStatus: null, lastError: null },
+        read: { configured: false, decryptOk: false, lastStatus: null, lastError: null },
+        send: { configured: false, decryptOk: false, lastStatus: null, lastError: null },
+        operator: { configured: false, decryptOk: false, lastStatus: null, lastError: null }
+      }
     };
   }
 
   const hasTlsCert = Boolean(String(row.tlsCertPem || "").trim());
   const hasMacaroon = Boolean(row.macaroonCiphertext && row.macaroonIv && row.macaroonTag);
+  const credentialRows = await readLightningNodeCredentialRows(prisma);
+  const credentialsByRole = new Map<LightningCredentialRole, LightningNodeCredentialRow>();
+  for (const credential of credentialRows) {
+    try {
+      credentialsByRole.set(normalizeLightningCredentialRole(credential.role), credential);
+    } catch {}
+  }
+  const restrictedCredentials: Record<LightningCredentialRole, { configured: boolean; decryptOk: boolean; lastStatus: string | null; lastError: string | null }> = {
+    invoice: { configured: false, decryptOk: false, lastStatus: null as string | null, lastError: null as string | null },
+    read: { configured: false, decryptOk: false, lastStatus: null as string | null, lastError: null as string | null },
+    send: { configured: false, decryptOk: false, lastStatus: null as string | null, lastError: null as string | null },
+    operator: { configured: false, decryptOk: false, lastStatus: null as string | null, lastError: null as string | null }
+  };
   const warnings: string[] = [];
   let decryptOk = false;
 
   if (hasMacaroon) {
     try {
-      const buf = decryptSecret({
-        ciphertextB64: row.macaroonCiphertext,
-        ivB64: row.macaroonIv,
-        tagB64: row.macaroonTag
-      });
-      const hex = normalizeMacaroonHex(buf.toString("utf8"));
+      const hex = decryptMacaroonFromEncryptedFields(row);
       decryptOk = Boolean(hex.length);
       if (!decryptOk) warnings.push("Stored macaroon could not be decrypted.");
     } catch (e: any) {
@@ -1161,6 +1393,28 @@ export async function getLightningNodeConfigStatus(prisma: PrismaLike): Promise<
     }
   }
 
+  for (const role of ["invoice", "read", "send", "operator"] as LightningCredentialRole[]) {
+    const credential = credentialsByRole.get(role);
+    if (!credential) continue;
+    restrictedCredentials[role].configured = true;
+    restrictedCredentials[role].lastStatus = credential.lastStatus || null;
+    restrictedCredentials[role].lastError = credential.lastError || null;
+    try {
+      const hex = decryptMacaroonFromEncryptedFields(credential);
+      restrictedCredentials[role].decryptOk = Boolean(hex.length);
+    } catch {
+      restrictedCredentials[role].decryptOk = false;
+      warnings.push(`Stored ${role} Lightning credential cannot be decrypted.`);
+    }
+  }
+
+  const runtimeCredentialsReady = restrictedCredentials.invoice.decryptOk && restrictedCredentials.read.decryptOk;
+  const sendCredentialReady = restrictedCredentials.send.decryptOk;
+  const securityMigrationRequired = hasMacaroon && (!runtimeCredentialsReady || !sendCredentialReady);
+  if (securityMigrationRequired) {
+    warnings.push("Legacy Lightning credential is present. Configure restricted invoice, read, and send credentials before mainnet use.");
+  }
+
   let endpoint: string | null = null;
   try {
     const u = new URL(String(row.restUrl || ""));
@@ -1171,17 +1425,20 @@ export async function getLightningNodeConfigStatus(prisma: PrismaLike): Promise<
   }
 
   return {
-    configured: Boolean(endpoint && hasMacaroon),
+    configured: Boolean(endpoint && (hasMacaroon || runtimeCredentialsReady)),
     hasTlsCert,
     hasMacaroon,
-    decryptOk,
+    decryptOk: decryptOk || runtimeCredentialsReady,
     endpoint,
     network: row.network || null,
     lastUpdated: dateToIso(row.updatedAt),
     lastTestedAt: dateToIso(row.lastTestedAt),
     lastStatus: row.lastStatus || null,
     lastError: row.lastError || null,
-    warnings
+    warnings,
+    legacyCredentialPresent: hasMacaroon,
+    securityMigrationRequired,
+    restrictedCredentials
   };
 }
 
@@ -1210,8 +1467,11 @@ export async function getLightningReadiness(prisma: PrismaLike): Promise<Lightni
     };
   }
 
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "read");
   if (!lnd) {
+    const migrationHint = status.securityMigrationRequired
+      ? "Restricted read Lightning credential is missing. Run the Lightning security migration before using mainnet commerce."
+      : "Lightning node config exists, but read credentials are unavailable.";
     return {
       ok: true,
       configured: true,
@@ -1219,7 +1479,7 @@ export async function getLightningReadiness(prisma: PrismaLike): Promise<Lightni
       wallet: { syncedToChain: false, syncedToGraph: false },
       channels: { count: 0 },
       receiveReady: false,
-      hints: ["Lightning node config exists, but credentials are unavailable."]
+      hints: [migrationHint]
     };
   }
 
@@ -1290,7 +1550,7 @@ export async function openLightningChannel(
   prisma: PrismaLike,
   input: { peerPubKey: string; capacitySats: number; host?: string | null }
 ): Promise<LightningOpenChannelResult> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "operator");
   if (!lnd) throw new Error("Lightning node not configured");
 
   const peerPubKey = String(input.peerPubKey || "").trim();
@@ -1352,7 +1612,7 @@ export async function getLightningChannelStatus(
   prisma: PrismaLike,
   input: { channelId: string; peerPubKey?: string | null }
 ): Promise<LightningChannelStatusResult> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "read");
   if (!lnd) throw new Error("Lightning node not configured");
 
   const requestedId = String(input.channelId || "").trim();
@@ -1443,7 +1703,7 @@ async function resolveAliasesBestEffortInBackground(lnd: RuntimeLndConfig, pubke
 }
 
 export async function getLightningChannels(prisma: PrismaLike): Promise<LightningChannelsResponse> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "read");
   if (!lnd) throw new Error("Lightning node not configured");
 
   const [openRes, pendingRes] = await Promise.all([
@@ -1557,7 +1817,7 @@ export async function getLightningChannels(prisma: PrismaLike): Promise<Lightnin
 }
 
 export async function getLightningBalances(prisma: PrismaLike): Promise<LightningBalancesResponse> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "read");
   if (!lnd) throw new Error("Lightning node not configured");
 
   const [wallet, openRes, pendingRes, anchors] = await Promise.all([
@@ -1625,7 +1885,7 @@ function updateInboundTrend(inboundSats: number, nowMs: number) {
 }
 
 export async function getLightningReceiveCapacity(prisma: PrismaLike): Promise<LightningReceiveCapacityResponse> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "read");
   if (!lnd) throw new Error("Lightning node not configured");
 
   const [openRes, pendingRes, wallet] = await Promise.all([
@@ -1712,7 +1972,7 @@ export function normalizeLndInvoice(input: any): LightningInvoiceRow {
 }
 
 export async function getLightningInvoices(prisma: PrismaLike, input?: { limit?: number }): Promise<LightningInvoiceRow[]> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "invoice");
   if (!lnd) throw new Error("Lightning node not configured");
   const limit = Math.max(1, Math.min(200, Math.floor(Number(input?.limit ?? 50))));
   const res = await lndFetchJson(
@@ -1784,7 +2044,7 @@ export async function lookupOutgoingPaymentStatusByHash(
   prisma: PrismaLike,
   paymentHash: string
 ): Promise<"SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN"> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "send");
   if (!lnd) return "UNKNOWN";
   const hash = String(paymentHash || "").trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(hash)) return "UNKNOWN";
@@ -1812,7 +2072,7 @@ export async function lookupOutgoingPaymentByHash(
   prisma: PrismaLike,
   paymentHash: string
 ): Promise<LightningOutgoingPaymentLookup | null> {
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "send");
   if (!lnd) return null;
   const hash = String(paymentHash || "").trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(hash)) return null;
@@ -1839,7 +2099,7 @@ export async function sendBolt11Payment(
 ): Promise<LightningSendPaymentResult> {
   const paymentRequest = String(input.paymentRequest || "").trim();
   if (!paymentRequest) throw new Error("BOLT11_REQUIRED");
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "send");
   if (!lnd) throw new Error("LND_SEND_NOT_CONFIGURED");
   const timeoutSeconds = Math.max(5, Math.min(300, Math.floor(Number(input.timeoutSeconds ?? 60))));
   const feeLimitSat = Math.max(0, Math.min(100_000, Math.floor(Number(input.feeLimitSat ?? 50))));
@@ -1951,7 +2211,7 @@ export async function closeLightningChannel(
 ): Promise<{ status: "ok"; channelPoint: string; force: boolean; message: string }> {
   const parsed = parseChannelPoint(input.channelPoint);
   if (!parsed) throw new Error("INVALID_CHANNEL_POINT");
-  const lnd = await getLndConfig(prisma);
+  const lnd = await getLndConfig(prisma, "operator");
   if (!lnd) throw new Error("Lightning node not configured");
   const force = Boolean(input.force);
   const path = `/v1/channels/${encodeURIComponent(parsed.txid)}/${parsed.outputIndex}${force ? "?force=true" : ""}`;
@@ -1981,11 +2241,18 @@ export async function getLightningNodeConfigMeta(prisma: PrismaLike) {
     network: status.network,
     lastTestedAt: status.lastTestedAt,
     lastStatus: status.lastStatus,
-    lastError: status.lastError
+    lastError: status.lastError,
+    legacyCredentialPresent: Boolean(status.legacyCredentialPresent),
+    securityMigrationRequired: Boolean(status.securityMigrationRequired),
+    restrictedCredentials: status.restrictedCredentials
   };
 }
 
 export async function deleteLightningNodeConfig(prisma: PrismaLike) {
+  await prisma.$executeRaw`DELETE FROM "LightningNodeCredential"`.catch((e: any) => {
+    const msg = String(e?.message || e || "").toLowerCase();
+    if (!msg.includes("lightningnodecredential") && !msg.includes("no such table")) throw e;
+  });
   await prisma.$executeRaw`DELETE FROM "LightningNodeConfig" WHERE "id" = 'singleton'`;
 }
 
@@ -2024,6 +2291,90 @@ export async function testLightningNodeConnection(input: { restUrl: string; netw
   } catch (e: any) {
     return { ok: false as const, error: String(e?.message || e) };
   }
+}
+
+async function validateLightningCredentialForRole(input: {
+  restUrl: string;
+  network: string;
+  role: LightningCredentialRole;
+  macaroonHex: string;
+  tlsCertPem?: string | null;
+}) {
+  const tlsCertPem = normalizeTlsCertPem(input.tlsCertPem || null);
+  const cfg: RuntimeLndConfig = {
+    restUrl: normalizeRestUrl(input.restUrl),
+    network: String(input.network || "mainnet"),
+    macaroonHex: normalizeMacaroonHex(input.macaroonHex),
+    tlsCert: tlsCertPem ? Buffer.from(tlsCertPem, "utf8") : null,
+    credentialRole: input.role
+  };
+
+  if (input.role === "invoice") {
+    await lndFetchJson(cfg, "/v1/invoices?num_max_invoices=1", { method: "GET" });
+    return;
+  }
+  if (input.role === "read") {
+    await lndFetchJson(cfg, "/v1/getinfo", { method: "GET" });
+    await lndFetchJson(cfg, "/v1/channels", { method: "GET" });
+    return;
+  }
+  if (input.role === "send") {
+    await lndFetchJson(cfg, "/v1/payments?include_incomplete=true&reversed=true&max_payments=1", { method: "GET" });
+    return;
+  }
+  await lndFetchJson(cfg, "/v1/getinfo", { method: "GET" });
+}
+
+export async function testLightningNodeCredential(input: {
+  restUrl: string;
+  network: string;
+  role: LightningCredentialRole | string;
+  macaroonBase64: string;
+  tlsCertPem?: string | null;
+}) {
+  try {
+    const role = normalizeLightningCredentialRole(String(input.role));
+    const macaroonHex = parseMacaroonBase64ToHex(input.macaroonBase64);
+    await validateLightningCredentialForRole({
+      restUrl: input.restUrl,
+      network: input.network,
+      role,
+      macaroonHex,
+      tlsCertPem: input.tlsCertPem || null
+    });
+    return { ok: true as const, role };
+  } catch (e: any) {
+    return { ok: false as const, error: String(e?.message || e) };
+  }
+}
+
+export async function saveLightningNodeCredential(
+  prisma: PrismaLike,
+  input: { restUrl: string; network: string; role: LightningCredentialRole | string; macaroonBase64: string; tlsCertPem?: string | null }
+) {
+  const restUrl = normalizeRestUrl(input.restUrl);
+  const network = String(input.network || "mainnet").trim().toLowerCase() || "mainnet";
+  const role = normalizeLightningCredentialRole(String(input.role));
+  const macaroonHex = parseMacaroonBase64ToHex(input.macaroonBase64);
+  const tlsCertPem = normalizeTlsCertPem(input.tlsCertPem || null);
+  const test = await testLightningNodeCredential({
+    restUrl,
+    network,
+    role,
+    macaroonBase64: Buffer.from(macaroonHex, "hex").toString("base64"),
+    tlsCertPem
+  });
+  const enc = encryptSecret(Buffer.from(macaroonHex, "utf8"));
+  await upsertLightningNodeCredentialRow(prisma, {
+    role,
+    macaroonCiphertext: enc.ciphertextB64,
+    macaroonIv: enc.ivB64,
+    macaroonTag: enc.tagB64,
+    lastValidatedAt: new Date(),
+    lastStatus: test.ok ? "connected" : "error",
+    lastError: test.ok ? null : test.error || "Credential validation failed"
+  });
+  return test.ok ? { ok: true as const, role } : { ok: false as const, role, error: test.error || "Credential validation failed" };
 }
 
 export async function saveLightningNodeConfig(
@@ -2182,7 +2533,7 @@ export async function refreshIntentFromLnd(
  * - Else fallback to LNbits (existing behavior).
  */
 export async function createLightningInvoice(prisma: PrismaLike, amountSats: bigint, memo: string) {
-  const lnd = (await getLndConfig(prisma)) || getLegacyEnvLndConfig();
+  const lnd = await getLndConfig(prisma, "invoice");
   if (lnd) {
     const expirySeconds = Math.max(60, Math.floor(Number(process.env.LIGHTNING_INVOICE_EXPIRY_SECONDS || "3600")));
 
@@ -2289,7 +2640,7 @@ function derivePaymentHashHexFromProvider(providerId: string, paymentHashMaybe?:
 }
 
 export async function getInvoiceByPaymentHashHex(prisma: PrismaLike, paymentHashHex: string) {
-  const lnd = (await getLndConfig(prisma)) || getLegacyEnvLndConfig();
+  const lnd = await getLndConfig(prisma, "invoice");
   if (!lnd) throw new Error("Lightning node not configured");
   const paymentHash = String(paymentHashHex || "").trim().toLowerCase();
   if (!isHex64(paymentHash)) throw new Error("Invalid payment hash hex");

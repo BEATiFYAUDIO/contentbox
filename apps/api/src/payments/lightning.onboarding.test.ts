@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   interpretLightningDiscoveryHttpProbe,
   interpretLightningDiscoveryError,
+  LND_RPC_INVENTORY,
+  getRequiredLndRpcPermissions,
   mapLightningReadinessFromLnd,
   mapPendingOpenChannelsFromLnd
 } from "./lightning.js";
@@ -76,3 +78,35 @@ test("pending channel mapping includes balances and confirmation fields", () => 
   });
 });
 
+test("LND RPC inventory separates invoice, read, send and operator credentials", () => {
+  const invoice = getRequiredLndRpcPermissions("invoice").join("\n");
+  const read = getRequiredLndRpcPermissions("read").join("\n");
+  const send = getRequiredLndRpcPermissions("send").join("\n");
+  const operator = getRequiredLndRpcPermissions("operator").join("\n");
+
+  assert.match(invoice, /AddInvoice/);
+  assert.match(invoice, /LookupInvoice/);
+  assert.doesNotMatch(invoice, /SendPayment|OpenChannel|CloseChannel|ConnectPeer/);
+
+  assert.match(read, /GetInfo/);
+  assert.match(read, /ListChannels/);
+  assert.doesNotMatch(read, /AddInvoice|SendPayment|OpenChannel|CloseChannel|ConnectPeer/);
+
+  assert.match(send, /SendPaymentV2/);
+  assert.match(send, /DecodePayReq/);
+  assert.doesNotMatch(send, /OpenChannel|CloseChannel|ConnectPeer|AddInvoice/);
+
+  assert.match(operator, /OpenChannelSync/);
+  assert.match(operator, /CloseChannel/);
+  assert.match(operator, /ConnectPeer/);
+  assert.doesNotMatch(operator, /SendPaymentV2|AddInvoice/);
+});
+
+test("normal LND runtime inventory does not map admin-only RPCs to commerce credentials", () => {
+  const commerceRoles = new Set(["invoice", "read", "send"]);
+  const bad = LND_RPC_INVENTORY.filter((item) => {
+    if (!commerceRoles.has(item.credentialRole)) return false;
+    return /OpenChannel|CloseChannel|ConnectPeer/.test(item.rpc);
+  });
+  assert.deepEqual(bad, []);
+});

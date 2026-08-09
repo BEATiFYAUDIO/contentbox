@@ -53,9 +53,9 @@ class LndProvider implements PaymentProvider {
   constructor() {
     this.baseUrl = String(process.env.LND_REST_URL || "").replace(/\/$/, "");
     const macVal =
-      process.env.LND_MACAROON_HEX ||
-      process.env.LND_MACAROON ||
-      process.env.LND_MACAROON_PATH ||
+      process.env.LND_INVOICE_MACAROON_HEX ||
+      process.env.LND_INVOICE_MACAROON ||
+      process.env.LND_INVOICE_MACAROON_PATH ||
       "";
     this.macaroon = readMaybeFile(macVal);
 
@@ -71,7 +71,7 @@ class LndProvider implements PaymentProvider {
 
   private ensureConfig() {
     if (!this.baseUrl) throw new Error("LND_REST_URL not configured");
-    if (!this.macaroon) throw new Error("LND_MACAROON_HEX (or LND_MACAROON_PATH) not configured");
+    if (!this.macaroon) throw new Error("LND_INVOICE_MACAROON_HEX (or LND_INVOICE_MACAROON_PATH) not configured");
   }
 
   private headers() {
