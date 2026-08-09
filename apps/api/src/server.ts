@@ -254,8 +254,10 @@ function verifyRecoveryKey(recoveryKey: string, stored: string): boolean {
 }
 
 function getClientIp(req: any): string {
+  const cf = String(req.headers?.["cf-connecting-ip"] || "").trim();
+  const real = String(req.headers?.["x-real-ip"] || "").trim();
   const xf = String(req.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
-  return xf || req.ip || req.socket?.remoteAddress || "unknown";
+  return cf || real || xf || req.ip || req.socket?.remoteAddress || "unknown";
 }
 
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -40590,6 +40592,15 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   const contentId = asString(body.contentId || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
+  if (
+    !rateLimit(req, "payments.intent.create", 30, 60_000) ||
+    !rateLimit(req, `payments.intent.create:${contentId}`, 12, 60_000)
+  ) {
+    return reply.code(429).send({
+      code: "PAYMENT_INTENT_RATE_LIMITED",
+      message: "Too many payment attempts. Wait a moment and try again."
+    });
+  }
 
   const intentLog: Record<string, unknown> = {
     route: "/buy/payments/intents",
