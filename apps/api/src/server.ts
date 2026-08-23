@@ -13487,6 +13487,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.post("/api/derivatives/remote-vote", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("POST", "/api/derivatives/remote-vote", req, reply)
   );
+  appPublic.get("/oembed", handleBuyOembed);
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
   appPublic.get("/library", handleBuyerLibraryPage);
@@ -36633,6 +36634,7 @@ app.get("/", handlePublicRootWhenConfigured);
 app.get("/p/:token", handleShortPublicLink);
 app.get("/u/:handle", handlePublicNodeProfilePage);
 app.get("/u/:handle/proofs.json", handlePublicProofBundle);
+app.get("/oembed", handleBuyOembed);
 async function getConfiguredPublicProfileHandle(): Promise<string | null> {
   const configuredHandle = normalizePublicProfileHandle(process.env.CONTENTBOX_PUBLIC_ROOT_HANDLE);
   if (configuredHandle) return configuredHandle;
@@ -37334,6 +37336,57 @@ async function handleTabIcon(req: any, reply: any) {
   }
 }
 
+function resolveBuyContentIdFromOembedUrl(input: unknown): string | null {
+  const raw = asString(input || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const match = url.pathname.match(/^\/buy\/([^/?#]+)\/?$/i);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function handleBuyOembed(req: any, reply: any) {
+  const contentId = resolveBuyContentIdFromOembedUrl((req.query || {})?.url);
+  if (!contentId) return badRequest(reply, "Valid buy page url required");
+
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  const content = gated.content;
+  if (!content) return notFound(reply, "Not found");
+
+  const canonicalOrigin = resolveCanonicalPublicOrigin(req);
+  const buyUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/buy/${encodeURIComponent(content.id)}`);
+  const manifest = await prisma.manifest.findUnique({ where: { contentId: content.id } }).catch(() => null);
+  const manifestJson = (manifest?.json || {}) as any;
+  const coverAsset = getCoverAssetFromManifest(manifestJson);
+  const thumbnailUrl = coverAsset?.path
+    ? buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`)
+    : null;
+  const creatorHandle =
+    normalizePublicProfileHandle(content.owner?.displayName || "") ||
+    normalizedEmailLocalPart(content.owner?.email || "") ||
+    null;
+  const authorUrl = creatorHandle ? buildPublicUrlFromOrigin(canonicalOrigin, `/u/${encodeURIComponent(creatorHandle)}`) : canonicalOrigin;
+
+  reply.header("content-type", "application/json; charset=utf-8");
+  reply.header("cache-control", "public, max-age=300");
+  return reply.send({
+    type: "link",
+    version: "1.0",
+    provider_name: "Certifyd",
+    provider_url: canonicalOrigin,
+    title: content.title || "Certifyd work",
+    author_name: content.owner?.displayName || content.owner?.email || "Certifyd creator",
+    author_url: authorUrl,
+    thumbnail_url: thumbnailUrl,
+    url: buyUrl,
+    html: `<a href="${escHtml(buyUrl)}">${escHtml(content.title || "Certifyd work")}</a>`
+  });
+}
+
 async function handleBuyPage(req: any, reply: any) {
   let contentId = asString((req.params as any).contentId || "").trim();
   const initialReceiptId = asString((req.query || {})?.receiptId || "").trim();
@@ -37388,14 +37441,33 @@ async function handleBuyPage(req: any, reply: any) {
   const sellerProfileUrl = sellerHandle ? `/u/${encodeURIComponent(sellerHandle)}` : null;
   const sellerAvatarUrl = resolveCreatorAvatarUrlForPublicPayload(content.owner?.avatarUrl || null, resolveCanonicalPublicOrigin(req));
   const sellerBadgeLabel = ownerAppearance.theme.themeGeneratedFromImage ? "Creator theme" : "Certifyd";
+  const canonicalOrigin = resolveCanonicalPublicOrigin(req);
+  const canonicalBuyUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/buy/${encodeURIComponent(content.id)}`);
+  const oembedUrl = buildPublicUrlFromOrigin(
+    canonicalOrigin,
+    `/oembed?url=${encodeURIComponent(canonicalBuyUrl || `/buy/${encodeURIComponent(content.id)}`)}`
+  );
+  const initialMetaTitle = `${content.title || "Certifyd work"} · Certifyd`;
+  const initialMetaDescription = content.description || `${sellerDisplayName || "A Certifyd creator"} work on Certifyd.`;
   const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="${escHtml(initialMetaDescription)}" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="${escHtml(initialMetaTitle)}" />
+  <meta property="og:description" content="${escHtml(initialMetaDescription)}" />
+  <meta property="og:url" content="${escHtml(canonicalBuyUrl)}" />
+  <meta property="og:image" content="${escHtml(buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`))}" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${escHtml(initialMetaTitle)}" />
+  <meta name="twitter:description" content="${escHtml(initialMetaDescription)}" />
+  <meta name="twitter:image" content="${escHtml(buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`))}" />
+  <link rel="alternate" type="application/json+oembed" href="${escHtml(oembedUrl)}" title="${escHtml(initialMetaTitle)}" />
   <link rel="icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
   <link rel="shortcut icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
-  <title>Buy</title>
+  <title>${escHtml(initialMetaTitle)}</title>
   <style>
     :root { color-scheme: dark; ${ownerAppearance.css} }
     * { box-sizing: border-box; }

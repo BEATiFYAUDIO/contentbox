@@ -41,6 +41,7 @@ export const PUBLIC_ROUTE_ALLOWLIST: PublicRoutePolicyEntry[] = [
   { method: "POST", pattern: "/api/derivatives/remote-request", classification: "public-derivative", note: "remote derivative clearance request" },
   { method: "GET", pattern: "/api/derivatives/remote-status", classification: "public-derivative", note: "remote derivative clearance status" },
   { method: "POST", pattern: "/api/derivatives/remote-vote", classification: "public-derivative", note: "remote derivative vote" },
+  { method: "GET", pattern: "/oembed", classification: "public-commerce", note: "public buy page oEmbed metadata" },
   { method: "GET", pattern: "/buy/:contentId", classification: "public-commerce", note: "public buy page" },
   { method: "GET", pattern: "/buy/receipt/:receiptId", classification: "public-commerce", note: "public receipt page" },
   { method: "GET", pattern: "/library", classification: "public-commerce", note: "buyer library via buyer session" },
