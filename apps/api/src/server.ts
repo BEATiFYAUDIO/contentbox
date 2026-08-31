@@ -142,6 +142,7 @@ import {
   mapRemoteInviteAcceptErrorCode,
   mapTerminalInviteStatusToCode,
   resolveInviteRecipientMatch,
+  selectInviteAcceptanceSigningOrigin,
   validateForwardedInviteTimestamp
 } from "./lib/inviteAcceptResolution.js";
 import { evaluateTunnelConflictGuard, type TunnelConflictGuardState } from "./lib/tunnelConflictGuard.js";
@@ -14156,56 +14157,19 @@ async function signInviteAcceptancePayload(
     where: { id: userId },
     select: { email: true }
   });
-  const hasDiscoveryKey = async (originRaw: string | null | undefined): Promise<boolean> => {
-    const origin = normalizeOrigin(originRaw || "");
-    if (!origin) return false;
-    try {
-      const host = new URL(origin).hostname.toLowerCase();
-      if (host === "localhost" || host === "127.0.0.1" || host === "::1") return false;
-    } catch {
-      return false;
-    }
-    try {
-      const discoveryRes = await fetchWithTimeout(
-        `${origin}/.well-known/contentbox`,
-        { method: "GET", headers: { Accept: "application/json" } as any } as any,
-        4000
-      );
-      if (!discoveryRes.ok) return false;
-      const discoveryPayload: any = await discoveryRes.json().catch(() => null);
-      const discoveredNodeUrl = normalizeOrigin(asString(discoveryPayload?.nodeUrl || "").trim());
-      const discoveredPub = asString(discoveryPayload?.publicKeyPem || "").trim();
-      return Boolean(discoveredNodeUrl && discoveredPub);
-    } catch {
-      return false;
-    }
-  };
-  const originCandidates = Array.from(
-    new Set(
-      [
-        normalizeOrigin(getActivePublicOrigin() || ""),
-        normalizeOrigin(String(getPublicStatus()?.canonicalOrigin || "").trim()),
-        normalizeOrigin(String(getPublicStatus()?.publicOrigin || "").trim()),
-        normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN || ""),
-        normalizeOrigin(process.env.PUBLIC_ORIGIN || ""),
-        normalizeOrigin(process.env.APP_PUBLIC_ORIGIN || "")
-      ].filter(Boolean) as string[]
-    )
-  );
-  let signingNodeUrl: string | null = null;
-  const discoveryChecks: Array<{ origin: string; ok: boolean }> = [];
-  for (const candidate of originCandidates) {
-    const ok = await hasDiscoveryKey(candidate);
-    discoveryChecks.push({ origin: candidate, ok });
-    if (ok) {
-      signingNodeUrl = candidate;
-      break;
-    }
-  }
+  const { signingNodeUrl, originCandidates } = selectInviteAcceptanceSigningOrigin([
+    process.env.PUBLIC_INVITE_ORIGIN || "",
+    process.env.PUBLIC_BASE_ORIGIN || "",
+    getActivePublicOrigin() || "",
+    String(getPublicStatus()?.canonicalOrigin || "").trim(),
+    String(getPublicStatus()?.publicOrigin || "").trim(),
+    process.env.CONTENTBOX_PUBLIC_ORIGIN || "",
+    process.env.PUBLIC_ORIGIN || "",
+    process.env.APP_PUBLIC_ORIGIN || ""
+  ]);
   if (!signingNodeUrl) {
     const err: any = new Error("INVITE_NODE_URL_UNREACHABLE");
     err.code = "INVITE_NODE_URL_UNREACHABLE";
-    err.discoveryChecks = discoveryChecks;
     err.originCandidates = originCandidates;
     throw err;
   }

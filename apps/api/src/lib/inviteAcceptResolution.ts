@@ -111,12 +111,55 @@ export type InviteAcceptanceIdentityWrites = {
   };
 };
 
+export type SigningOriginSelection = {
+  signingNodeUrl: string | null;
+  originCandidates: string[];
+};
+
 function normalizeEmail(value: string | null | undefined): string {
   return String(value || "").trim().toLowerCase();
 }
 
 function looksLikeInternalUserId(value: string | null | undefined): boolean {
   return /^c[a-z0-9]{20,}$/i.test(String(value || "").trim());
+}
+
+function normalizeOrigin(value: string | null | undefined): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+  const isLocal =
+    raw.startsWith("localhost") ||
+    raw.startsWith("127.0.0.1") ||
+    raw === "localhost" ||
+    raw === "127.0.0.1";
+  if (process.env.NODE_ENV !== "production" && isLocal) {
+    return `http://${raw.replace(/\/+$/, "")}`;
+  }
+  return `https://${raw.replace(/\/+$/, "")}`;
+}
+
+function isShareablePublicOrigin(value: string | null | undefined): boolean {
+  const origin = normalizeOrigin(value);
+  if (!origin) return false;
+  try {
+    const url = new URL(origin);
+    const host = String(url.hostname || "").trim().toLowerCase();
+    if (!host) return false;
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return false;
+    if (host.endsWith(".local")) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function selectInviteAcceptanceSigningOrigin(candidates: Array<string | null | undefined>): SigningOriginSelection {
+  const originCandidates = Array.from(new Set(candidates.map((candidate) => normalizeOrigin(candidate)).filter(Boolean) as string[]));
+  return {
+    signingNodeUrl: originCandidates.find((candidate) => isShareablePublicOrigin(candidate)) || null,
+    originCandidates
+  };
 }
 
 export function resolveInviteRecipientMatch(input: InviteRecipientMatchInput): InviteRecipientMatchResult {

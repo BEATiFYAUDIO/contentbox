@@ -5,6 +5,7 @@ import {
   mapRemoteInviteAcceptErrorCode,
   mapTerminalInviteStatusToCode,
   resolveInviteRecipientMatch,
+  selectInviteAcceptanceSigningOrigin,
   validateForwardedInviteTimestamp
 } from "./inviteAcceptResolution.js";
 
@@ -28,6 +29,35 @@ test("mapTerminalInviteStatusToCode maps known statuses", () => {
   assert.equal(mapTerminalInviteStatusToCode("tombstoned"), "INVITE_TOMBSTONED");
   assert.equal(mapTerminalInviteStatusToCode("declined"), "INVITE_DECLINED");
   assert.equal(mapTerminalInviteStatusToCode("expired"), "INVITE_EXPIRED");
+});
+
+test("selectInviteAcceptanceSigningOrigin uses the first shareable public origin", () => {
+  const result = selectInviteAcceptanceSigningOrigin([
+    "localhost:4000",
+    "https://accepting.example.test/",
+    "https://backup.example.test"
+  ]);
+
+  assert.equal(result.signingNodeUrl, "https://accepting.example.test");
+  assert.deepEqual(result.originCandidates, [
+    "http://localhost:4000",
+    "https://accepting.example.test",
+    "https://backup.example.test"
+  ]);
+});
+
+test("selectInviteAcceptanceSigningOrigin does not require local self-discovery", () => {
+  const result = selectInviteAcceptanceSigningOrigin(["https://accepting.example.test"]);
+
+  assert.equal(result.signingNodeUrl, "https://accepting.example.test");
+  assert.deepEqual(result.originCandidates, ["https://accepting.example.test"]);
+});
+
+test("selectInviteAcceptanceSigningOrigin rejects local-only origins", () => {
+  const result = selectInviteAcceptanceSigningOrigin(["http://127.0.0.1:4000", "contentbox.local"]);
+
+  assert.equal(result.signingNodeUrl, null);
+  assert.deepEqual(result.originCandidates, ["http://127.0.0.1:4000", "https://contentbox.local"]);
 });
 
 test("validateForwardedInviteTimestamp accepts current ISO timestamps", () => {
