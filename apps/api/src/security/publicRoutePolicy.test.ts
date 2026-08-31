@@ -8,6 +8,7 @@ test("public route allowlist includes representative public buyer and discovery 
     ["GET", "/"],
     ["GET", "/u/beatify-group"],
     ["GET", "/.well-known/certifyd-node"],
+    ["GET", "/.well-known/contentbox"],
     ["GET", "/api/network/nodes"],
     ["GET", "/public/content/c_123"],
     ["GET", "/public/content/c_123/preview-file"],

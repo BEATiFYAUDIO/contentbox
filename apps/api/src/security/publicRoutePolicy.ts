@@ -31,6 +31,7 @@ export const PUBLIC_ROUTE_ALLOWLIST: PublicRoutePolicyEntry[] = [
   { method: "GET", pattern: "/favicon.png", classification: "public-profile", note: "public icon asset" },
   { method: "GET", pattern: "/apple-touch-icon.png", classification: "public-profile", note: "public icon asset" },
   { method: "GET", pattern: "/.well-known/certifyd-node", classification: "public-network", note: "signed public node presence" },
+  { method: "GET", pattern: "/.well-known/contentbox", classification: "public-network", note: "remote invite signing-key discovery" },
   { method: "GET", pattern: "/api/network/nodes", classification: "public-network", note: "public network discovery" },
   { method: "GET", pattern: "/api/network/nodes/:nodeId", classification: "public-network", note: "public node discovery" },
   { method: "GET", pattern: "/api/network/provider/capabilities", classification: "public-network", note: "public provider capabilities" },
