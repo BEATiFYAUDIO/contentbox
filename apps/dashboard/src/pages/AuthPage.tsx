@@ -225,10 +225,10 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
             <b>Restore from Backup</b>: restores this device from a local backup file.
           </div>
           <div>
-            <b>Recover with Key</b>: restore your identity on a new device using your recovery key.
+            <b>Recover account access</b>: reset your password on this node using your account recovery key.
           </div>
           <div className="text-neutral-400">
-            Your recovery key restores your identity. Backups restore this device.
+            Account recovery does not restore the browser Creator Identity signing key. If that local key is missing, recover it from Profile after signing in.
           </div>
         </div>
 
@@ -375,7 +375,7 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
           <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-900 p-4">
             <div className="text-sm font-medium">Recover with Key</div>
             <div className="text-xs text-neutral-400 mt-1">
-              Restore your identity on a new device using your recovery key, then set a new password.
+              Reset account access with your recovery key, then set a new password. This does not restore a missing Creator Identity signing key.
             </div>
             <div className="mt-3 space-y-2">
               <label className="block text-xs text-neutral-400" htmlFor="recovery-key">

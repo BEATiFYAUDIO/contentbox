@@ -9,9 +9,22 @@ export type WitnessIdentityDto = {
   fingerprint: string;
   createdAt: string;
   revokedAt: string | null;
+  keyHistory?: WitnessIdentityKeyDto[];
 };
 
 export type WitnessRegisterBody = {
   publicKey?: string;
   algorithm?: string;
+};
+
+export type WitnessIdentityKeyDto = {
+  id: string;
+  algorithm: WitnessAlgorithm;
+  fingerprint: string;
+  status: string;
+  statusReason: string | null;
+  createdAt: string;
+  activatedAt: string | null;
+  retiredAt: string | null;
+  revokedAt: string | null;
 };

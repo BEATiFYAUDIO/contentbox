@@ -168,6 +168,9 @@ model User {
   salesAsSeller        Sale[] @relation("SaleSeller")
   salesConfirmed       Sale[] @relation("SaleConfirmer")
   witnessIdentity      WitnessIdentity?
+  witnessIdentityKeys  WitnessIdentityKey[]
+  witnessIdentityEvents WitnessIdentityEvent[]
+  witnessIdentityRecoveryChallenges WitnessIdentityRecoveryChallenge[]
   proofRecords         ProofRecord[]
 
   @@index([email])
@@ -1001,6 +1004,8 @@ model ParticipantPayout {
 model WitnessIdentity {
   id          String   @id @default(cuid())
   userId      String   @unique
+  // Compatibility mirror of the active WitnessIdentityKey. New lifecycle
+  // behavior should read/write WitnessIdentityKey as the authority source.
   algorithm   String
   publicKey   String
   fingerprint String
@@ -1009,8 +1014,71 @@ model WitnessIdentity {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   proofRecords ProofRecord[]
+  keys WitnessIdentityKey[]
+  events WitnessIdentityEvent[]
+  recoveryChallenges WitnessIdentityRecoveryChallenge[]
 
   @@index([fingerprint])
+}
+
+model WitnessIdentityKey {
+  id                String   @id @default(cuid())
+  witnessIdentityId String
+  userId            String
+  algorithm         String
+  publicKey         String
+  fingerprint       String
+  status            String
+  statusReason      String?
+  createdAt         DateTime @default(now())
+  activatedAt       DateTime?
+  retiredAt         DateTime?
+  revokedAt         DateTime?
+
+  witnessIdentity WitnessIdentity @relation(fields: [witnessIdentityId], references: [id], onDelete: Cascade)
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([witnessIdentityId, status])
+  @@index([userId, status])
+  @@index([fingerprint])
+  @@index([publicKey])
+}
+
+model WitnessIdentityEvent {
+  id                String   @id @default(cuid())
+  witnessIdentityId String
+  userId            String
+  type              String
+  previousKeyId     String?
+  newKeyId          String?
+  authorization     String?
+  reason            String?
+  createdAt         DateTime @default(now())
+
+  witnessIdentity WitnessIdentity @relation(fields: [witnessIdentityId], references: [id], onDelete: Cascade)
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([witnessIdentityId, createdAt])
+  @@index([userId, createdAt])
+}
+
+model WitnessIdentityRecoveryChallenge {
+  id                 String   @id @default(cuid())
+  userId             String
+  witnessIdentityId  String
+  candidatePublicKey String
+  candidateFingerprint String
+  challengeText      String
+  nonce              String
+  expiresAt          DateTime
+  usedAt             DateTime?
+  createdAt          DateTime @default(now())
+
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  witnessIdentity WitnessIdentity @relation(fields: [witnessIdentityId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@index([witnessIdentityId, usedAt])
 }
 
 model ProofRecord {

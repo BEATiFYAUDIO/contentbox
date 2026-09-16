@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { clearToken } from "../../lib/auth";
 import type { WitnessIdentityHookResult } from "./useWitnessIdentity";
 
 function shortFingerprint(fp: string): string {
@@ -12,7 +13,11 @@ type Props = {
 };
 
 export default function CreatorIdentityCard({ witness }: Props) {
-  const { state, identity, loading, creating, error, createIdentity } = witness;
+  const { state, identity, loading, creating, recovering, error, createIdentity, recoverIdentity } = witness;
+  const [showRecovery, setShowRecovery] = useState(false);
+  const [recoveryPassword, setRecoveryPassword] = useState("");
+  const [recoveryConfirmation, setRecoveryConfirmation] = useState("");
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const isBrowser = typeof window !== "undefined";
   const isLocalDev = isBrowser && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
   const is4000Surface = isLocalDev && window.location.port === "4000";
@@ -87,6 +92,79 @@ export default function CreatorIdentityCard({ witness }: Props) {
             <div className="font-mono text-sm text-neutral-100 break-all">{shortFingerprint(identity.fingerprint)}</div>
             <div className="text-xs text-neutral-500">This account has a registered creator identity.</div>
             <div className="text-xs text-amber-300">This device does not hold the matching signing key.</div>
+            {!showRecovery ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setRecoveryMessage(null);
+                  setShowRecovery(true);
+                }}
+                disabled={keyOpsBlockedOnThisSurface}
+                className="text-sm rounded-lg border border-amber-500/40 px-3 py-2 text-amber-100 hover:bg-amber-500/10 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                Recover Creator Identity
+              </button>
+            ) : (
+              <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                <div className="text-xs text-amber-100">
+                  Recovery creates a new local signing key for this same creator account and retires the previous signing credential. Your profile, content, commerce history, and proofs are not recreated.
+                </div>
+                <label className="block text-xs text-neutral-400" htmlFor="creator-identity-recovery-password">
+                  Password
+                </label>
+                <input
+                  id="creator-identity-recovery-password"
+                  type="password"
+                  value={recoveryPassword}
+                  onChange={(e) => setRecoveryPassword(e.target.value)}
+                  className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
+                  autoComplete="current-password"
+                />
+                <label className="block text-xs text-neutral-400" htmlFor="creator-identity-recovery-confirmation">
+                  Type RECOVER CREATOR IDENTITY
+                </label>
+                <input
+                  id="creator-identity-recovery-confirmation"
+                  value={recoveryConfirmation}
+                  onChange={(e) => setRecoveryConfirmation(e.target.value)}
+                  className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
+                  autoComplete="off"
+                />
+                {recoveryMessage ? <div className="text-xs text-amber-200">{recoveryMessage}</div> : null}
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setRecoveryMessage(null);
+                      const result = await recoverIdentity({ password: recoveryPassword, confirmation: recoveryConfirmation });
+                      if (!result) {
+                        setRecoveryMessage("Recovery failed. The local candidate key was kept for retry.");
+                        return;
+                      }
+                      clearToken();
+                      setRecoveryPassword("");
+                      setRecoveryConfirmation("");
+                      setRecoveryMessage("Creator identity recovered. Sign in again with this device's new creator key or your password.");
+                    }}
+                    disabled={recovering || keyOpsBlockedOnThisSurface}
+                    className="text-sm rounded-lg border border-amber-500/40 px-3 py-2 text-amber-100 hover:bg-amber-500/10 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {recovering ? "Recovering…" : "Confirm Recovery"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowRecovery(false);
+                      setRecoveryMessage(null);
+                    }}
+                    disabled={recovering}
+                    className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ) : null}
 

@@ -7,6 +7,19 @@ export type WitnessIdentity = {
   fingerprint: string;
   createdAt: string;
   revokedAt: string | null;
+  keyHistory?: WitnessIdentityKey[];
+};
+
+export type WitnessIdentityKey = {
+  id: string;
+  algorithm: "ed25519";
+  fingerprint: string;
+  status: string;
+  statusReason: string | null;
+  createdAt: string;
+  activatedAt: string | null;
+  retiredAt: string | null;
+  revokedAt: string | null;
 };
 
 export type ProofRecord = {
@@ -119,6 +132,47 @@ export async function registerWitnessPublicKey(payload: {
       throw new Error("A creator identity is already registered for this account.");
     }
     throw new Error(status ? `Failed to register creator identity (HTTP ${status}).` : "Failed to register creator identity.");
+  }
+}
+
+export async function createWitnessRecoveryChallenge(payload: {
+  password: string;
+  confirmation: string;
+  publicKey: string;
+  algorithm: "ed25519";
+}): Promise<{ challengeId: string; challengeText: string; expiresAt: string; algorithm: "ed25519" }> {
+  try {
+    return await api<{ challengeId: string; challengeText: string; expiresAt: string; algorithm: "ed25519" }>(
+      "/api/profile/verification/key/recovery/challenge",
+      "POST",
+      payload
+    );
+  } catch (e: any) {
+    const status = parseStatusFromApiError(e);
+    if (status === 403) throw new Error("Password confirmation failed.");
+    if (status === 429) throw new Error("Too many recovery attempts. Try again shortly.");
+    if (status === 400) throw new Error("Recovery requires your password and the exact confirmation phrase.");
+    throw new Error(status ? `Failed to start creator identity recovery (HTTP ${status}).` : "Failed to start creator identity recovery.");
+  }
+}
+
+export async function completeWitnessRecovery(payload: {
+  challengeId: string;
+  publicKey: string;
+  signature: string;
+}): Promise<{ identity: WitnessIdentity; sessionInvalidated: boolean }> {
+  try {
+    return await api<{ identity: WitnessIdentity; sessionInvalidated: boolean }>(
+      "/api/profile/verification/key/recovery/complete",
+      "POST",
+      payload
+    );
+  } catch (e: any) {
+    const status = parseStatusFromApiError(e);
+    if (status === 403) throw new Error("Recovery signature did not match this local key.");
+    if (status === 409) throw new Error("Recovery challenge was already used or the key is no longer recoverable.");
+    if (status === 429) throw new Error("Too many recovery attempts. Try again shortly.");
+    throw new Error(status ? `Failed to complete creator identity recovery (HTTP ${status}).` : "Failed to complete creator identity recovery.");
   }
 }
 

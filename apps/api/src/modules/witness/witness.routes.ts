@@ -1,5 +1,11 @@
 import crypto from "node:crypto";
-import { getWitnessIdentity, registerWitnessIdentity } from "./witness.service.js";
+import bcrypt from "bcrypt";
+import {
+  completeWitnessLegacyRecovery,
+  createWitnessRecoveryChallenge,
+  getWitnessIdentity,
+  registerWitnessIdentity
+} from "./witness.service.js";
 import { registerWitnessProofRoutes } from "./proof.routes.js";
 import type { WitnessRegisterBody } from "./witness.types.js";
 
@@ -7,10 +13,11 @@ function isWitnessStoreSchemaError(err: any): boolean {
   const code = String((err as any)?.code || "");
   const message = String((err as any)?.message || "");
   if (code === "P2021" || code === "P2022") return true;
-  return /WitnessIdentity/i.test(message) && /does not exist|Unknown field/i.test(message);
+  return /WitnessIdentity|WitnessIdentityKey|WitnessIdentityEvent|WitnessIdentityRecoveryChallenge/i.test(message) && /does not exist|Unknown field/i.test(message);
 }
 
 const WITNESS_LOGIN_CHALLENGE_TTL_MS = 5 * 60_000;
+const RECOVERY_CONFIRMATION = "RECOVER CREATOR IDENTITY";
 const witnessLoginChallenges = new Map<string, {
   challengeId: string;
   publicKey: string;
@@ -19,6 +26,7 @@ const witnessLoginChallenges = new Map<string, {
   expiresAt: number;
   usedAt: number | null;
 }>();
+const recoveryRateLimits = new Map<string, { count: number; resetAt: number }>();
 
 function pruneExpiredWitnessChallenges(now = Date.now()) {
   for (const [id, entry] of witnessLoginChallenges.entries()) {
@@ -55,6 +63,17 @@ function verifyWitnessSignature(publicKey: string, challengeText: string, signat
   }
 }
 
+function recoveryRateLimit(key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const existing = recoveryRateLimits.get(key);
+  if (!existing || existing.resetAt <= now) {
+    recoveryRateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  existing.count += 1;
+  return existing.count <= max;
+}
+
 export function registerWitnessRoutes(app: any, deps: {
   prisma: any;
   requireAuth: any;
@@ -76,19 +95,20 @@ export function registerWitnessRoutes(app: any, deps: {
 
     pruneExpiredWitnessChallenges();
 
-    const matches = await prisma.witnessIdentity.findMany({
+    const matches = await prisma.witnessIdentityKey.findMany({
       where: {
         publicKey,
+        status: "active",
         revokedAt: null
       },
       select: {
-        userId: true,
+        witnessIdentity: { select: { revokedAt: true } },
         user: { select: { id: true, tokenVersion: true } }
       },
       take: 2
     });
 
-    if (matches.length !== 1 || !matches[0]?.user?.id) {
+    if (matches.length !== 1 || !matches[0]?.user?.id || matches[0]?.witnessIdentity?.revokedAt) {
       return reply.code(404).send({ error: "WITNESS_IDENTITY_NOT_FOUND", message: "Creator identity is not available for sign-in." });
     }
 
@@ -148,13 +168,15 @@ export function registerWitnessRoutes(app: any, deps: {
       return reply.code(403).send({ error: "INVALID_SIGNATURE", message: "Creator identity signature was rejected." });
     }
 
-    const witness = await prisma.witnessIdentity.findFirst({
+    const witness = await prisma.witnessIdentityKey.findFirst({
       where: {
         userId: challenge.userId,
         publicKey,
+        status: "active",
         revokedAt: null
       },
       select: {
+        witnessIdentity: { select: { revokedAt: true } },
         user: {
           select: {
             id: true,
@@ -167,7 +189,7 @@ export function registerWitnessRoutes(app: any, deps: {
       }
     });
 
-    if (!witness?.user?.id) {
+    if (!witness?.user?.id || witness?.witnessIdentity?.revokedAt) {
       witnessLoginChallenges.delete(challengeId);
       return reply.code(404).send({ error: "WITNESS_IDENTITY_NOT_FOUND", message: "Creator identity is not available for sign-in." });
     }
@@ -241,6 +263,103 @@ export function registerWitnessRoutes(app: any, deps: {
         });
       }
       req.log.error({ err: e }, "witness.register.failed");
+      return reply.code(500).send({ error: "INTERNAL_ERROR" });
+    }
+  });
+
+  app.post("/api/profile/verification/key/recovery/challenge", { preHandler: requireAuth }, async (req: any, reply: any) => {
+    const userId = String(req?.user?.sub || "").trim();
+    if (!userId) return reply.code(401).send({ error: "UNAUTHORIZED" });
+    const rateKey = `${userId}:${req.ip || "unknown"}:witness-recovery`;
+    if (!recoveryRateLimit(rateKey, 5, 5 * 60_000)) {
+      return reply.code(429).send({ error: "RATE_LIMITED", message: "Too many recovery attempts. Try again shortly." });
+    }
+    const body = (req.body || {}) as { password?: string; confirmation?: string; publicKey?: string; algorithm?: string };
+    const password = String(body.password || "");
+    const confirmation = String(body.confirmation || "").trim();
+    if (confirmation !== RECOVERY_CONFIRMATION) {
+      return reply.code(400).send({ error: "CONFIRMATION_REQUIRED", message: `Type ${RECOVERY_CONFIRMATION} to recover creator identity.` });
+    }
+    if (!password) return reply.code(400).send({ error: "PASSWORD_REQUIRED", message: "Password is required." });
+    try {
+      const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } });
+      if (!user?.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
+        return reply.code(403).send({ error: "INVALID_PASSWORD", message: "Password confirmation failed." });
+      }
+      const challenge = await createWitnessRecoveryChallenge(prisma, {
+        userId,
+        algorithm: String(body.algorithm || ""),
+        publicKey: String(body.publicKey || "")
+      });
+      return reply.send(challenge);
+    } catch (e: any) {
+      const message = String(e?.message || "");
+      if (message === "INVALID_ALGORITHM") return reply.code(400).send({ error: message, message: "algorithm must be ed25519" });
+      if (message === "PUBLIC_KEY_REQUIRED") return reply.code(400).send({ error: message, message: "A valid Ed25519 publicKey is required." });
+      if (message === "WITNESS_IDENTITY_REQUIRED") return reply.code(409).send({ error: message, message: "An active creator identity is required before recovery." });
+      if (message === "RECOVERY_KEY_ALREADY_ACTIVE") return reply.code(409).send({ error: message, message: "This key is already active." });
+      if (isWitnessStoreSchemaError(e)) {
+        req.log.warn({ err: e }, "witness.recovery.challenge.store_not_ready");
+        return reply.code(503).send({
+          error: "WITNESS_STORE_NOT_READY",
+          message: "Creator identity recovery storage is not ready on this node. Run: npx prisma db push --schema prisma/schema.prisma"
+        });
+      }
+      req.log.error({ err: e }, "witness.recovery.challenge.failed");
+      return reply.code(500).send({ error: "INTERNAL_ERROR" });
+    }
+  });
+
+  app.post("/api/profile/verification/key/recovery/complete", { preHandler: requireAuth }, async (req: any, reply: any) => {
+    const userId = String(req?.user?.sub || "").trim();
+    if (!userId) return reply.code(401).send({ error: "UNAUTHORIZED" });
+    const rateKey = `${userId}:${req.ip || "unknown"}:witness-recovery-complete`;
+    if (!recoveryRateLimit(rateKey, 10, 5 * 60_000)) {
+      return reply.code(429).send({ error: "RATE_LIMITED", message: "Too many recovery attempts. Try again shortly." });
+    }
+    const body = (req.body || {}) as { challengeId?: string; publicKey?: string; signature?: string };
+    const challengeId = String(body.challengeId || "").trim();
+    const publicKey = String(body.publicKey || "").trim();
+    const signature = String(body.signature || "").trim();
+    if (!challengeId || !publicKey || !signature) {
+      return reply.code(400).send({ error: "INVALID_RECOVERY_COMPLETION", message: "challengeId, publicKey, and signature are required." });
+    }
+    try {
+      const challenge = await prisma.witnessIdentityRecoveryChallenge.findUnique({
+        where: { id: challengeId },
+        select: { userId: true, candidatePublicKey: true, challengeText: true }
+      });
+      if (!challenge || challenge.userId !== userId) {
+        return reply.code(404).send({ error: "RECOVERY_CHALLENGE_NOT_FOUND", message: "Recovery challenge not found." });
+      }
+      if (challenge.candidatePublicKey !== publicKey) {
+        return reply.code(403).send({ error: "RECOVERY_PUBLIC_KEY_MISMATCH", message: "Recovery challenge does not match this local key." });
+      }
+      const identity = await completeWitnessLegacyRecovery(prisma, {
+        userId,
+        challengeId,
+        publicKey,
+        signatureValid: verifyWitnessSignature(publicKey, challenge.challengeText, signature)
+      });
+      return reply.send({ ok: true, identity, sessionInvalidated: true });
+    } catch (e: any) {
+      const message = String(e?.message || "");
+      if (message === "PUBLIC_KEY_REQUIRED") return reply.code(400).send({ error: message });
+      if (message === "INVALID_SIGNATURE") return reply.code(403).send({ error: message, message: "Creator identity recovery signature was rejected." });
+      if (message === "RECOVERY_CHALLENGE_NOT_FOUND") return reply.code(404).send({ error: message });
+      if (message === "RECOVERY_CHALLENGE_USED") return reply.code(409).send({ error: message, message: "Recovery challenge has already been used." });
+      if (message === "RECOVERY_CHALLENGE_EXPIRED") return reply.code(400).send({ error: message, message: "Recovery challenge has expired." });
+      if (message === "RECOVERY_PUBLIC_KEY_MISMATCH") return reply.code(403).send({ error: message });
+      if (message === "WITNESS_IDENTITY_REQUIRED" || message === "ACTIVE_WITNESS_KEY_REQUIRED") return reply.code(409).send({ error: message });
+      if (message === "RECOVERY_KEY_ALREADY_ACTIVE") return reply.code(409).send({ error: message });
+      if (isWitnessStoreSchemaError(e)) {
+        req.log.warn({ err: e }, "witness.recovery.complete.store_not_ready");
+        return reply.code(503).send({
+          error: "WITNESS_STORE_NOT_READY",
+          message: "Creator identity recovery storage is not ready on this node. Run: npx prisma db push --schema prisma/schema.prisma"
+        });
+      }
+      req.log.error({ err: e }, "witness.recovery.complete.failed");
       return reply.code(500).send({ error: "INTERNAL_ERROR" });
     }
   });

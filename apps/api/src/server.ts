@@ -34377,7 +34377,27 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     themeButtonStyle: true,
     themeGeneratedFromImage: true,
     themeUpdatedAt: true,
-    witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+    witnessIdentity: {
+      select: {
+        id: true,
+        revokedAt: true,
+        algorithm: true,
+        publicKey: true,
+        fingerprint: true,
+        keys: {
+          orderBy: [{ activatedAt: "desc" }, { createdAt: "desc" }],
+          select: {
+            algorithm: true,
+            fingerprint: true,
+            status: true,
+            statusReason: true,
+            activatedAt: true,
+            retiredAt: true,
+            revokedAt: true
+          }
+        }
+      }
+    }
   } as const;
 
   let user = getFreshTimedCache(profilePublicUserCache, requested);
@@ -36523,6 +36543,17 @@ async function handlePublicProofBundle(req: any, reply: any) {
     .sort((a, b) => a.pubkey.localeCompare(b.pubkey));
 
   const activeWitness = user.witnessIdentity && !user.witnessIdentity.revokedAt ? user.witnessIdentity : null;
+  const witnessHistory = activeWitness && Array.isArray((activeWitness as any).keys)
+    ? (activeWitness as any).keys.map((key: any) => ({
+        algorithm: asString(key.algorithm || ""),
+        fingerprint: asString(key.fingerprint || ""),
+        status: asString(key.status || ""),
+        statusReason: asString(key.statusReason || "") || null,
+        activatedAt: key.activatedAt?.toISOString?.() || null,
+        retiredAt: key.retiredAt?.toISOString?.() || null,
+        revokedAt: key.revokedAt?.toISOString?.() || null
+      }))
+    : [];
 
   const bundle = {
     version: 1,
@@ -36537,6 +36568,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
           fingerprint: asString(activeWitness.fingerprint || "")
         }
       : null,
+    witnessHistory,
     proofs: {
       domains,
       social,
@@ -36724,7 +36756,7 @@ async function handlePublicRootWhenConfigured(req: any, reply: any) {
 async function handlePublicProfileRedirect(req: any, reply: any) {
   const rootHandle = await getDefaultPublicProfileHandle({ includeOwnerFallback: true });
   if (!rootHandle) return notFound(reply, "Not found");
-  return reply.redirect(302, `/u/${encodeURIComponent(rootHandle)}`);
+  return reply.redirect(`/u/${encodeURIComponent(rootHandle)}`, 302);
 }
 
 app.get("/profile", handlePublicProfileRedirect);

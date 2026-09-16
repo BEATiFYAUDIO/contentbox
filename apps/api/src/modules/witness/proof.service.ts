@@ -15,6 +15,7 @@ import {
   PROOF_TYPE_SOCIAL,
   type ProofRecordDto
 } from "./proof.types.js";
+import { getActiveWitnessIdentityKey } from "./witness.service.js";
 
 type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok" | "rumble" | "reddit" | "substack" | "spotify";
 
@@ -920,10 +921,15 @@ function toDto(row: {
 }
 
 async function readActiveWitnessIdentity(prisma: PrismaClient, userId: string) {
-  return prisma.witnessIdentity.findUnique({
-    where: { userId },
-    select: { id: true, revokedAt: true, fingerprint: true }
-  });
+  const active = await getActiveWitnessIdentityKey(prisma, userId);
+  return active
+    ? {
+        id: active.witnessIdentityId,
+        keyId: active.keyId,
+        revokedAt: null,
+        fingerprint: active.fingerprint
+      }
+    : null;
 }
 
 function parseClaimDnsTxt(claim: unknown): { txtName: string; txtValue: string } | null {

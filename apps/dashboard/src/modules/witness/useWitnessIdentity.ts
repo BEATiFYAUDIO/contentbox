@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchWitnessIdentity, registerWitnessPublicKey, type WitnessIdentity } from "./witnessClient";
+import {
+  completeWitnessRecovery,
+  createWitnessRecoveryChallenge,
+  fetchWitnessIdentity,
+  registerWitnessPublicKey,
+  type WitnessIdentity
+} from "./witnessClient";
 
 export type CreateResult = {
   identity: WitnessIdentity;
   createdLocal: boolean;
+};
+
+export type RecoveryResult = {
+  identity: WitnessIdentity;
+  createdLocal: boolean;
+  sessionInvalidated: boolean;
 };
 
 export type WitnessIdentityState =
@@ -162,6 +174,7 @@ export function useWitnessIdentity() {
   const [localKeyPublicKey, setLocalKeyPublicKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -205,6 +218,46 @@ export function useWitnessIdentity() {
     }
   }, [creating]);
 
+  const recoverIdentity = useCallback(async (args: {
+    password: string;
+    confirmation: string;
+  }): Promise<RecoveryResult | null> => {
+    if (recovering) return null;
+    setRecovering(true);
+    setError(null);
+    try {
+      const { key, createdLocal } = await ensureLocalKey();
+      const challenge = await createWitnessRecoveryChallenge({
+        password: args.password,
+        confirmation: args.confirmation,
+        publicKey: key.publicKey,
+        algorithm: "ed25519"
+      });
+      const signed = await signWithLocalWitnessKey(challenge.challengeText);
+      if (signed.publicKey !== key.publicKey) {
+        throw new Error("Local recovery key changed before recovery could complete.");
+      }
+      const recovered = await completeWitnessRecovery({
+        challengeId: challenge.challengeId,
+        publicKey: signed.publicKey,
+        signature: signed.signature
+      });
+      setIdentity(recovered.identity);
+      setHasLocalKey(true);
+      setLocalKeyPublicKey(signed.publicKey);
+      return {
+        identity: recovered.identity,
+        createdLocal,
+        sessionInvalidated: recovered.sessionInvalidated
+      };
+    } catch (e: any) {
+      setError(String(e?.message || "Failed to recover creator identity."));
+      return null;
+    } finally {
+      setRecovering(false);
+    }
+  }, [recovering]);
+
   const isServerIdentityPresent = Boolean(identity && !identity.revokedAt);
   const localMatchesServer = Boolean(
     isServerIdentityPresent &&
@@ -234,8 +287,10 @@ export function useWitnessIdentity() {
     localKeyPublicKey,
     loading,
     creating,
+    recovering,
     error,
     createIdentity,
+    recoverIdentity,
     refresh
   };
 }
