@@ -100,7 +100,7 @@ import { validateNodeMode, writeNodeConfig, writeProductTier } from "./lib/nodeC
 import { deriveActivationStatusMessageFromNetwork, deriveUserNetworkStatusFromState } from "./lib/userNetworkStatus.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
-import { isPublicRouteAllowed } from "./security/publicRoutePolicy.js";
+import { shouldBlockPrivateHostRequest } from "./security/privateHostGuard.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 import { SingleFlight } from "./lib/asyncPrimitives.js";
 import { resolveContentboxRootInfo } from "./lib/contentboxRoot.js";
@@ -192,15 +192,6 @@ function asString(x: unknown): string {
 
 function normalizeEmail(x: unknown): string {
   return asString(x).trim().toLowerCase();
-}
-
-function normalizeRequestHost(req: any): string {
-  const raw = asString(req?.headers?.["x-forwarded-host"] || req?.headers?.host || "").trim().toLowerCase();
-  return raw.replace(/:\d+$/, "");
-}
-
-function isLoopbackRequestHost(host: string): boolean {
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
 }
 
 function base32Encode(buf: Buffer): string {
@@ -1713,12 +1704,19 @@ app.addHook("onRequest", async (req, reply) => {
   (req as any).requestId = id;
   reply.header("x-request-id", id);
   reply.header("Referrer-Policy", "no-referrer");
-  const host = normalizeRequestHost(req);
-  if (host && !isLoopbackRequestHost(host) && String(process.env.CONTENTBOX_ALLOW_PRIVATE_API_PUBLIC_HOST || "") !== "1") {
-    const path = asString(req?.raw?.url || req?.url || "/");
-    if (!isPublicRouteAllowed(asString(req?.method || "GET"), path)) {
-      return reply.code(404).send({ error: "Not Found" });
-    }
+  const path = asString(req?.raw?.url || req?.url || "/");
+  const rawHost = asString(req?.headers?.["x-forwarded-host"] || req?.headers?.host || "").trim();
+  if (
+    rawHost &&
+    shouldBlockPrivateHostRequest({
+      method: req?.method || "GET",
+      pathOrUrl: path,
+      host: rawHost,
+      privateAllowedHosts: process.env.CONTENTBOX_PRIVATE_ALLOWED_HOSTS,
+      allowAnyPublicHost: process.env.CONTENTBOX_ALLOW_PRIVATE_API_PUBLIC_HOST
+    })
+  ) {
+    return reply.code(404).send({ error: "Not Found" });
   }
 });
 

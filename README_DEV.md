@@ -94,7 +94,16 @@ The API process starts two HTTP surfaces:
 - private creator/operator API: `PORT` / default `4000`
 - public buyer/discovery API: `PUBLIC_PORT` / default `4010`
 
-The private API binds to `127.0.0.1` by default. Do not point a public Cloudflare hostname at `:4000`. If a public hostname is accidentally routed to the private API, non-public routes fail closed with `404` unless `CONTENTBOX_ALLOW_PRIVATE_API_PUBLIC_HOST=1` is explicitly set. If remote dashboard access is required, put that hostname behind Cloudflare Access, VPN, or another private ingress control before exposing it.
+The private API binds to `127.0.0.1` by default. Set `CONTENTBOX_PRIVATE_BIND=public` only when the private listener should listen on non-loopback interfaces such as a LAN address. Binding publicly does not by itself trust every Host header: loopback hosts are accepted automatically, and additional private-listener hosts must be listed explicitly with `CONTENTBOX_PRIVATE_ALLOWED_HOSTS`, for example:
+
+```text
+CONTENTBOX_PRIVATE_BIND=public
+CONTENTBOX_PRIVATE_ALLOWED_HOSTS=192.168.178.143,contentbox.local
+```
+
+`CONTENTBOX_PRIVATE_ALLOWED_HOSTS` is an exact host allowlist. Entries are comma-separated, whitespace-trimmed, lowercased for DNS names, and matched after request ports are stripped. It does not support wildcards, suffix matching, substring matching, or prefix matching.
+
+Do not point a public Cloudflare hostname at `:4000`. If a public hostname is accidentally routed to the private API, non-public routes fail closed with `404` unless `CONTENTBOX_ALLOW_PRIVATE_API_PUBLIC_HOST=1` is explicitly set. `CONTENTBOX_ALLOW_PRIVATE_API_PUBLIC_HOST=1` is a broad override that accepts arbitrary hosts on the private listener; prefer `CONTENTBOX_PRIVATE_ALLOWED_HOSTS` for normal LAN dashboard access. If remote dashboard access is required, put that hostname behind Cloudflare Access, VPN, or another private ingress control before exposing it.
 
 The public API binds to `127.0.0.1` unless `CONTENTBOX_BIND=public` is set for direct public serving. Public Cloudflare tunnels should forward public creator hostnames to:
 
