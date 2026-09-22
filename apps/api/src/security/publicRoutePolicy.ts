@@ -123,8 +123,10 @@ export function getPublicRoutePolicy(method: string, pathOrUrl: string): PublicR
     return { method: "OPTIONS", pattern: "*", classification: "public-health", note: "CORS preflight" };
   }
   const path = normalizePath(pathOrUrl);
+  // Fastify serves HEAD through GET handlers; apply the same public boundary.
+  const policyMethod = normalizedMethod === "HEAD" ? "GET" : normalizedMethod;
   return (
-    COMPILED_PUBLIC_ROUTE_ALLOWLIST.find((entry) => entry.method === normalizedMethod && entry.regex.test(path)) || null
+    COMPILED_PUBLIC_ROUTE_ALLOWLIST.find((entry) => entry.method === policyMethod && entry.regex.test(path)) || null
   );
 }
 

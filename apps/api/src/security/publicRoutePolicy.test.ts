@@ -79,3 +79,42 @@ test("every declared public route has a classification and matchable policy", ()
     assert.deepEqual(getPublicRoutePolicy(entry.method, entry.pattern)?.classification, entry.classification, entry.pattern);
   }
 });
+
+test("public HEAD uses GET permissions without exposing private or POST-only routes", async () => {
+  const routes = [
+    "/buy/c_123",
+    "/buy/content/c_123/offer",
+    "/public/content/c_123/cover",
+    "/public/content/c_123/preview-file",
+    "/public/discoverable-content?limit=24"
+  ];
+  const app = createPublicServer((publicApp: any) => {
+    for (const route of routes) {
+      publicApp.get(route.split("?")[0], async (req: any, reply: any) => {
+        assert.equal(req.headers.authorization, undefined);
+        return reply.header("accept-ranges", "bytes").type("text/plain").send("public body");
+      });
+    }
+    // Even accidentally registered GET handlers must not expose these routes.
+    publicApp.get("/api/provider/payment-intents", async () => "private");
+    publicApp.get("/buy/payments/intents", async () => "POST-only policy");
+  });
+  try {
+    for (const url of routes) {
+      const get = await app.inject({ method: "GET", url });
+      const head = await app.inject({ method: "HEAD", url, headers: { authorization: "Bearer test" } });
+      assert.equal(get.statusCode, 200, url);
+      assert.equal(head.statusCode, 200, url);
+      assert.equal(head.payload, "", url);
+      for (const header of ["content-type", "content-length", "accept-ranges"]) {
+        assert.equal(head.headers[header], get.headers[header], `${url}: ${header}`);
+      }
+      assert.match(String(head.headers["access-control-allow-methods"]), /\bHEAD\b/);
+    }
+    for (const url of ["/api/provider/payment-intents", "/buy/payments/intents", "/unknown"]) {
+      assert.equal((await app.inject({ method: "HEAD", url })).statusCode, 404, url);
+    }
+  } finally {
+    await app.close();
+  }
+});

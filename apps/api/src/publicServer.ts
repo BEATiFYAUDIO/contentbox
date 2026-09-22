@@ -38,7 +38,7 @@ export function createPublicServer(registerPublicRoutes: RegisterFn) {
     if (allowOrigin !== "*") {
       reply.header("access-control-allow-credentials", "true");
     }
-    reply.header("access-control-allow-methods", "GET,POST,OPTIONS");
+    reply.header("access-control-allow-methods", "GET,HEAD,POST,OPTIONS");
     reply.header("access-control-allow-headers", "Content-Type, Authorization, Range");
     reply.header("access-control-expose-headers", "Content-Length, Content-Range, Accept-Ranges, Content-Type");
     reply.header("referrer-policy", "no-referrer");
