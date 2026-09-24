@@ -9,6 +9,17 @@ function Fail($msg) {
   exit 1
 }
 
+function Invoke-CheckedNative {
+  param(
+    [Parameter(Mandatory=$true)][string]$Command,
+    [Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments
+  )
+  & $Command @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    Fail "$Command $($Arguments -join ' ') failed with exit code $LASTEXITCODE"
+  }
+}
+
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Fail "Missing required command: node" }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Fail "Missing required command: npm" }
 
@@ -100,6 +111,7 @@ $sqlitePath = (Join-Path $rootVal "contentbox.db") -replace "\\", "/"
 $sqliteUrl = "file:$sqlitePath"
 Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
 Write-Output "[install] Using SQLite for basic mode."
+if (-not (Test-Path $rootVal)) { New-Item -ItemType Directory -Force -Path $rootVal | Out-Null }
 
 Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
 
@@ -111,6 +123,7 @@ function Prompt-InstallCloudflared {
     $rootVal = Join-Path $HOME "contentbox-data"
     Set-EnvLine $apiEnv "CONTENTBOX_ROOT" "`"$rootVal`""
   }
+  if (-not (Test-Path $rootVal)) { New-Item -ItemType Directory -Force -Path $rootVal | Out-Null }
 
   $binDir = Join-Path $rootVal ".bin"
   $dest = Join-Path $binDir "cloudflared.exe"
@@ -226,27 +239,28 @@ if ((Get-Command cloudflared -ErrorAction SilentlyContinue) -or (Test-Path $clou
 
 Push-Location $apiDir
 Write-Output "[install] Installing API dependencies"
-npm install
+Invoke-CheckedNative npm install
 $schemaPath = "prisma/schema.prisma"
-npx prisma validate --schema $schemaPath
+Invoke-CheckedNative npx --no-install prisma validate --schema $schemaPath
 Write-Output "[install] Generating Prisma client"
-npx prisma generate --schema $schemaPath
+Invoke-CheckedNative npx --no-install prisma generate --schema $schemaPath
 if (-not (Test-Path (Join-Path $apiDir "node_modules/.prisma/client"))) {
   Fail "Prisma client generation failed. Run: npx prisma generate"
 }
 Write-Output "[install] Syncing database schema"
-npx prisma db push --schema $schemaPath
+Invoke-CheckedNative npx --no-install prisma db push --schema $schemaPath
 Pop-Location
 
 Push-Location $dashDir
 Write-Output "[install] Installing dashboard dependencies"
-npm install
+Invoke-CheckedNative npm install
+Write-Output "[install] Building integrated dashboard for http://localhost:4000"
+Invoke-CheckedNative npm run build
 Pop-Location
 
 Write-Output "[install] Next steps:"
-Write-Output "  Terminal 1: cd apps/api && npm run dev"
-Write-Output "  Terminal 2: cd apps/dashboard && npm run dev"
-Write-Output "  API: http://127.0.0.1:4000"
-Write-Output "  Dashboard: http://127.0.0.1:5173"
+Write-Output "  npm run dev:up"
+Write-Output "  Core dashboard: http://localhost:4000"
+Write-Output "  API health: http://127.0.0.1:4000/health"
 Write-Output "  Public server: http://127.0.0.1:4010 (PUBLIC_PORT)"
 Write-Output "  Quickstart: docs/QUICKSTART.md"

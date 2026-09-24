@@ -11,6 +11,8 @@ const dashPidFile = path.join(stateDir, "dev-dashboard.pid");
 const apiLog = path.join(logDir, "api-dev.log");
 const dashLog = path.join(logDir, "dashboard-dev.log");
 const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+const dashboardDistDir = path.join(root, "apps", "dashboard", "dist");
+const dashboardIndexFile = path.join(dashboardDistDir, "index.html");
 const action = process.argv[2] || "status";
 const managedPorts = [4000, 4010, 5173];
 
@@ -157,7 +159,9 @@ async function waitFor(url, label, timeoutMs = 45000) {
 
 function spawnLogged(args, logFile) {
   const out = fs.openSync(logFile, "a");
-  const child = spawn(npmCmd, args, {
+  const command = process.platform === "win32" ? "cmd.exe" : npmCmd;
+  const commandArgs = process.platform === "win32" ? ["/d", "/s", "/c", npmCmd, ...args] : args;
+  const child = spawn(command, commandArgs, {
     cwd: root,
     detached: true,
     stdio: ["ignore", out, out],
@@ -168,7 +172,29 @@ function spawnLogged(args, logFile) {
   return child.pid;
 }
 
+function isDashboardBuilt() {
+  return fs.existsSync(dashboardDistDir) && fs.existsSync(dashboardIndexFile);
+}
+
+function ensureDashboardBuild() {
+  if (isDashboardBuilt()) return true;
+  console.log("[dev-runtime] Integrated dashboard build missing; building apps/dashboard/dist for :4000.");
+  const result = spawnSync(npmCmd, ["--prefix", "apps/dashboard", "run", "build"], {
+    cwd: root,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    env: process.env
+  });
+  if (result.status === 0 && isDashboardBuilt()) return true;
+  console.error("[dev-runtime] Dashboard build failed; refusing to start API-only :4000.");
+  return false;
+}
+
 async function startApi() {
+  if (!ensureDashboardBuild()) {
+    process.exitCode = 1;
+    return;
+  }
   const existing = readPid(apiPidFile);
   if (existing && isAlive(existing)) {
     console.log(`[dev-runtime] API already running (pid ${existing})`);

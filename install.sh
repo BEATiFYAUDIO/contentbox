@@ -112,6 +112,7 @@ echo "[install] Using DB_MODE=basic."
 
 ROOT_VAL="$(ensure_contentbox_root)"
 ROOT_VAL="$REAL_HOME/contentbox-data"
+mkdir -p "$ROOT_VAL"
 if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
   sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$ROOT_VAL\"#" "$API_ENV" && rm -f "$API_ENV.bak"
 else
@@ -145,6 +146,7 @@ prompt_install_cloudflared() {
       echo "CONTENTBOX_ROOT=\"$root_val\"" >> "$API_ENV"
     fi
   fi
+  mkdir -p "$root_val"
   if echo "$root_val" | grep -q "^/root/"; then
     root_val="$REAL_HOME/contentbox-data"
     sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$root_val\"#" "$API_ENV" && rm -f "$API_ENV.bak"
@@ -291,10 +293,12 @@ if [ ! -x "$DASH_DIR/node_modules/.bin/vite" ]; then
   (cd "$DASH_DIR" && npm install)
 fi
 
+echo "[install] Building integrated dashboard for http://localhost:4000"
+(cd "$DASH_DIR" && npm run build)
+
 echo "[install] Next steps:"
-echo "  Terminal 1: cd apps/api && npm run dev"
-echo "  Terminal 2: cd apps/dashboard && npm run dev"
-echo "  API: http://127.0.0.1:4000"
-echo "  Dashboard: http://127.0.0.1:5173"
+echo "  npm run dev:up"
+echo "  Core dashboard: http://localhost:4000"
+echo "  API health: http://127.0.0.1:4000/health"
 echo "  Public server: http://127.0.0.1:${PUBLIC_PORT:-4010} (PUBLIC_PORT)"
 echo "  Quickstart: docs/QUICKSTART.md"

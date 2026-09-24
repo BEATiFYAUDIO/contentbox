@@ -60,7 +60,7 @@ git clone https://github.com/BEATiFYAUDIO/contentbox.git
 cd contentbox
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 npm run dev:up
-start http://localhost:5173
+start http://localhost:4000
 ```
 
 ### macOS / Linux
@@ -78,7 +78,7 @@ npm run dev:up
 
 Then open:
 
-- Dashboard: `http://localhost:5173`
+- Core dashboard: `http://localhost:4000`
 - API health: `http://localhost:4000/health`
 
 `npm run dev` is acceptable, but `npm run dev:up` is the preferred beta start command.
@@ -127,12 +127,12 @@ Dashboard:
 ```bash
 cd apps/dashboard
 npm install
-npm run dev
+npm run build
 ```
 
 Open:
 
-- Dashboard: `http://localhost:5173`
+- Core dashboard: `http://localhost:4000`
 - API health: `http://localhost:4000/health`
 
 ## Tester feedback
