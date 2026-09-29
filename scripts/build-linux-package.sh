@@ -106,10 +106,34 @@ cp "$repo_root/packaging/linux/install-desktop.sh" "$app_stage/install-desktop.s
 cp "$repo_root/packaging/linux/README.md" "$app_stage/README.md"
 chmod +x "$app_stage/start.sh" "$app_stage/stop.sh" "$app_stage/status.sh" "$app_stage/install-desktop.sh"
 
-if [[ -f "$repo_root/apps/dashboard/public/certifyd-icon.png" ]]; then
-  cp "$repo_root/apps/dashboard/public/certifyd-icon.png" "$assets_stage/certifyd-core.png"
-elif [[ -f "$repo_root/apps/dashboard/public/favicon.ico" ]]; then
-  cp "$repo_root/apps/dashboard/public/favicon.ico" "$assets_stage/certifyd-core.ico"
+icon_source="$repo_root/apps/dashboard/src/assets/certifyd_icon_logo_only.svg"
+icon_png="$assets_stage/certifyd-core.png"
+if [[ ! -f "$icon_source" ]]; then
+  echo "[linux-package] Missing Certifyd package icon source: $icon_source" >&2
+  exit 1
+fi
+cp "$icon_source" "$assets_stage/certifyd-core.svg"
+if "$node_bin" - "$icon_source" "$icon_png" <<'NODE'
+const fs = require('fs');
+const [, , source, output] = process.argv;
+const svg = fs.readFileSync(source, 'utf8');
+const match = svg.match(/data:image\/png;base64,([^"']+)/);
+if (!match) {
+  process.exit(1);
+}
+fs.writeFileSync(output, Buffer.from(match[1], 'base64'));
+NODE
+then
+  :
+elif command -v rsvg-convert >/dev/null 2>&1; then
+  rsvg-convert -w 512 -h 512 "$icon_source" -o "$icon_png"
+elif command -v magick >/dev/null 2>&1; then
+  magick -background none "$icon_source" -resize 512x512 "$icon_png"
+elif command -v convert >/dev/null 2>&1; then
+  convert -background none "$icon_source" -resize 512x512 "$icon_png"
+else
+  echo "[linux-package] Need rsvg-convert or ImageMagick to generate Linux package icon from SVG." >&2
+  exit 1
 fi
 
 echo "[linux-package] Installing API dependencies into staging..."
