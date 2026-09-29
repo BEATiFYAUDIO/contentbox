@@ -10,20 +10,20 @@ if (-not (Test-Path $pidFile)) {
 }
 
 $rawPid = (Get-Content $pidFile -Raw).Trim()
-$pid = 0
-if (-not [int]::TryParse($rawPid, [ref]$pid) -or $pid -le 0) {
+$processId = 0
+if (-not [int]::TryParse($rawPid, [ref]$processId) -or $processId -le 0) {
   Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
   Write-Host "[Certifyd Core] Removed invalid pid file."
   exit 0
 }
 
-$process = Get-Process -Id $pid -ErrorAction SilentlyContinue
+$process = Get-Process -Id $processId -ErrorAction SilentlyContinue
 if ($null -eq $process) {
   Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
   Write-Host "[Certifyd Core] Runtime is not running."
   exit 0
 }
 
-& taskkill.exe /PID $pid /T /F | Out-Null
+& taskkill.exe /PID $processId /T /F | Out-Null
 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 Write-Host "[Certifyd Core] Stopped."

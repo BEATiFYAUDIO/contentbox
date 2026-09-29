@@ -13,20 +13,20 @@ function Test-Health {
   }
 }
 
-$pid = "none"
+$displayPid = "none"
 $alive = $false
 if (Test-Path $pidFile) {
   $rawPid = (Get-Content $pidFile -Raw).Trim()
   $parsed = 0
   if ([int]::TryParse($rawPid, [ref]$parsed) -and $parsed -gt 0) {
-    $pid = [string]$parsed
+    $displayPid = [string]$parsed
     $alive = $null -ne (Get-Process -Id $parsed -ErrorAction SilentlyContinue)
   }
 }
 
 Write-Host "Certifyd Core"
 Write-Host "  Data:   $dataRoot"
-Write-Host "  PID:    $pid"
+Write-Host "  PID:    $displayPid"
 Write-Host "  Alive:  $alive"
 Write-Host "  Health: $(Test-Health)"
 Write-Host "  URL:    http://127.0.0.1:4000"
