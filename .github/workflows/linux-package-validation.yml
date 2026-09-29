@@ -1,0 +1,132 @@
+name: Linux Package Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-validate:
+    name: Build and validate Linux ${{ matrix.arch }} package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+            port: 4570
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            port: 4571
+
+    steps:
+      - name: Check out temporary branch
+        uses: actions/checkout@v4
+
+      - name: Record Linux runner environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Linux runner environment"
+            uname -a
+            ldd --version | sed -n '1p'
+            echo "machine=$(uname -m)"
+            echo "runner=${{ matrix.runner }}"
+          } | tee "linux-${{ matrix.arch }}-validation-summary.md"
+
+      - name: Build Linux package
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/build-linux-package.sh --arch "${{ matrix.arch }}" --version "0.1.0-beta.${{ github.run_number }}"
+
+      - name: Inspect packaged output
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find ".dist/linux-${{ matrix.arch }}/package" -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$archive"
+          size="$(stat -c '%s' "$archive")"
+          hash="$(sha256sum "$archive" | awk '{print $1}')"
+          echo "PACKAGE_PATH=$archive" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=$(basename "$archive")" >> "$GITHUB_ENV"
+          echo "PACKAGE_SIZE=$size" >> "$GITHUB_ENV"
+          echo "PACKAGE_SHA256=$hash" >> "$GITHUB_ENV"
+          {
+            echo "## Packaged output"
+            echo "Package=$(basename "$archive")"
+            echo "Package size=$size"
+            echo "SHA-256=$hash"
+          } | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+
+      - name: Extract and validate runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_root="$(mktemp -d)"
+          data_root="$(mktemp -d)"
+          move_root="$(mktemp -d)"
+          tar -xzf "$PACKAGE_PATH" -C "$test_root"
+          app="$(find "$test_root" -mindepth 1 -maxdepth 1 -type d -name 'Certifyd-Core-*' -print -quit)"
+          test -n "$app"
+          node_bin="$app/runtime/node/bin/node"
+          blocked_bin="$(mktemp -d)"
+          for blocked in git node npm; do
+            cat >"$blocked_bin/$blocked" <<'EOF'
+#!/usr/bin/env bash
+echo "blocked system command was invoked: $(basename "$0")" >&2
+exit 127
+EOF
+            chmod +x "$blocked_bin/$blocked"
+          done
+          export PATH="$blocked_bin:/usr/bin:/bin"
+          "$node_bin" --version | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+          file "$node_bin" | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+          find "$app/apps/api/node_modules/@prisma/engines" -maxdepth 1 -type f -printf '%f\n' | sort | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+
+          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/start.sh"
+          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/status.sh" | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+          "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/health"
+          "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("dashboard", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/"
+          test -f "$data_root/contentbox.db"
+          db_hash_before="$(sha256sum "$data_root/contentbox.db" | awk '{print $1}')"
+          db_size_before="$(stat -c '%s' "$data_root/contentbox.db")"
+
+          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/stop.sh"
+          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/start.sh"
+          db_hash_restart="$(sha256sum "$data_root/contentbox.db" | awk '{print $1}')"
+          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/stop.sh"
+          mv "$app" "$move_root/$(basename "$app")"
+          moved_app="$move_root/$(basename "$app")"
+          moved_node_bin="$moved_app/runtime/node/bin/node"
+          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/start.sh"
+          "$moved_node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health-after-move", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/health"
+          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/stop.sh"
+          db_hash_after="$(sha256sum "$data_root/contentbox.db" | awk '{print $1}')"
+          db_size_after="$(stat -c '%s' "$data_root/contentbox.db")"
+          test "$db_hash_before" = "$db_hash_restart"
+          test "$db_hash_before" = "$db_hash_after"
+          test "$db_size_before" = "$db_size_after"
+          {
+            echo "Runtime start=PASS"
+            echo "Health=PASS"
+            echo "Dashboard=PASS"
+            echo "Stop/status=PASS"
+            echo "Restart/persistence=PASS"
+            echo "Moved package=PASS"
+            echo "Existing data preserved=PASS"
+            echo "System git/node/npm shims not invoked=PASS"
+            echo "DB size before=$db_size_before"
+            echo "DB size after=$db_size_after"
+          } | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+
+      - name: Upload Linux package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: certifyd-core-linux-${{ matrix.arch }}-${{ github.run_number }}
+          path: |
+            .dist/linux-${{ matrix.arch }}/package/*.tar.gz
+            .dist/linux-${{ matrix.arch }}/package/*.sha256
+            linux-${{ matrix.arch }}-validation-summary.md
+          if-no-files-found: error
