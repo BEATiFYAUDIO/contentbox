@@ -165,8 +165,13 @@ jobs:
           Assert-Path (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
           Assert-Path (Join-Path $installDir "launcher\CertifydCore.Stop.ps1")
           Assert-Path (Join-Path $installDir "launcher\CertifydCore.Status.ps1")
+          Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core.lnk")
+          Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Stop Certifyd Core.lnk")
+          Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core Status.lnk")
+          Assert-Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "Certifyd Core.lnk")
 
           "Silent install=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Desktop and Start Menu shortcuts=PASS" | Tee-Object -Append windows-validation-summary.md
           "Install dir=$installDir" | Tee-Object -Append windows-validation-summary.md
           "CI LOCALAPPDATA=$ciLocalAppData" | Tee-Object -Append windows-validation-summary.md
 
@@ -190,6 +195,13 @@ jobs:
           "/health=PASS" | Tee-Object -Append windows-validation-summary.md
           "Dashboard=PASS" | Tee-Object -Append windows-validation-summary.md
           "Database exists=PASS" | Tee-Object -Append windows-validation-summary.md
+
+          $statusOutput = "`n" | powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Status.ps1") 2>&1 | Out-String
+          if ($statusOutput -notmatch "Alive:\s+True" -or $statusOutput -notmatch "Health:\s+True") {
+            $statusOutput
+            throw "Status helper did not report the running Core state."
+          }
+          "Status=PASS" | Tee-Object -Append windows-validation-summary.md
 
           Set-Content -Path (Join-Path $dataRoot "ci-preservation-marker.txt") -Value "preserve user data" -Encoding UTF8
           $dbSizeBefore = (Get-Item $dbPath).Length
@@ -223,6 +235,12 @@ jobs:
 
           if (Test-Path (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")) {
             throw "Application files were not removed by uninstall."
+          }
+          if (Test-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core")) {
+            throw "Start Menu shortcuts were not removed by uninstall."
+          }
+          if (Test-Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "Certifyd Core.lnk")) {
+            throw "Desktop shortcut was not removed by uninstall."
           }
           Assert-Path $dataRoot
           Assert-Path $dbPath
