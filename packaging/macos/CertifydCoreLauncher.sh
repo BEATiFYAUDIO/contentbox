@@ -2,13 +2,15 @@
 set -euo pipefail
 
 fail() {
-  osascript -e "display alert \"Certifyd Core\" message \"$*\" as critical" >/dev/null 2>&1 || true
+  if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]]; then
+    osascript -e "display alert \"Certifyd Core\" message \"$*\" as critical" >/dev/null 2>&1 || true
+  fi
   echo "[Certifyd Core] $*" >&2
   exit 1
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-resources_dir="$(cd -- "$script_dir/.." && pwd)"
+resources_dir="$(cd -- "$script_dir/../Resources" && pwd)"
 app_dir="$resources_dir/app"
 node_bin="$resources_dir/runtime/node/bin/node"
 api_dir="$app_dir/apps/api"
