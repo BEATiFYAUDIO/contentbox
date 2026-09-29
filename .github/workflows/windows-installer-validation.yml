@@ -1,0 +1,284 @@
+name: Windows Installer Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "temp/windows-installer-validation-*"
+
+jobs:
+  build-and-validate:
+    name: Build and validate Windows x64 installer
+    runs-on: windows-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out temporary branch
+        uses: actions/checkout@v4
+
+      - name: Record Windows runner environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          "## Windows runner environment" | Out-File windows-validation-summary.md
+          $computerInfo = Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture, OsHardwareAbstractionLayer
+          $computerInfo | Format-List | Tee-Object -Append windows-validation-summary.md
+          "" | Tee-Object -Append windows-validation-summary.md
+          "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE" | Tee-Object -Append windows-validation-summary.md
+          "Runner Node=$(node --version)" | Tee-Object -Append windows-validation-summary.md
+          "Runner npm=$(npm --version)" | Tee-Object -Append windows-validation-summary.md
+          "PowerShell=$($PSVersionTable.PSVersion)" | Tee-Object -Append windows-validation-summary.md
+
+      - name: Install Inno Setup if needed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+          }
+
+          $candidates = @(
+            (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source,
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { $_ -and (Test-Path $_) }
+
+          if (-not $candidates -or -not $candidates[0]) {
+            throw "Inno Setup compiler not found after installation."
+          }
+
+          $isccPath = $candidates[0]
+          Split-Path -Parent $isccPath | Out-File -FilePath $env:GITHUB_PATH -Append
+          "Inno Setup compiler=$isccPath" | Tee-Object -Append windows-validation-summary.md
+
+      - name: Install ImageMagick if needed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $magick = Get-Command magick.exe -ErrorAction SilentlyContinue
+          if (-not $magick) {
+            choco install imagemagick.app --no-progress -y
+          }
+
+          $magick = Get-Command magick.exe -ErrorAction SilentlyContinue
+          if (-not $magick) {
+            throw "ImageMagick magick.exe not found after installation."
+          }
+
+          Split-Path -Parent $magick.Source | Out-File -FilePath $env:GITHUB_PATH -Append
+          "ImageMagick=$($magick.Source)" | Tee-Object -Append windows-validation-summary.md
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "0.1.0-beta.${{ github.run_number }}"
+          .\scripts\build-windows-installer.ps1 -Version $version
+
+      - name: Inspect packaged output
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Get-ChildItem ".dist\windows-x64\installer" -Filter "*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $installer) {
+            throw "Expected installer artifact was not produced."
+          }
+
+          $stage = Resolve-Path ".dist\windows-x64\stage"
+          $nodeExe = Join-Path $stage "runtime\node\node.exe"
+          $npmCmd = Join-Path $stage "runtime\node\npm.cmd"
+          $apiDir = Join-Path $stage "app\apps\api"
+          $dashboardIndex = Join-Path $stage "app\apps\dashboard\dist\index.html"
+          $prismaClient = Join-Path $apiDir "node_modules\.prisma\client"
+          $prismaEngines = Join-Path $apiDir "node_modules\@prisma\engines"
+
+          foreach ($path in @($nodeExe, $npmCmd, $apiDir, $dashboardIndex, $prismaClient, $prismaEngines)) {
+            if (-not (Test-Path $path)) {
+              throw "Missing expected packaged path: $path"
+            }
+          }
+
+          $windowsEngines = Get-ChildItem $prismaEngines -Recurse | Where-Object { $_.Name -match "windows|query_engine|schema-engine" }
+          if (-not $windowsEngines) {
+            throw "No Prisma engine artifacts found in packaged API dependencies."
+          }
+
+          $nodeVersion = (& $nodeExe --version).Trim()
+          $prismaVersion = (& $npmCmd --prefix $apiDir exec -- prisma --version) -join "`n"
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash
+          $size = $installer.Length
+
+          "INSTALLER_PATH=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "INSTALLER_NAME=$($installer.Name)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "INSTALLER_SIZE=$size" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "INSTALLER_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BUNDLED_NODE=$nodeVersion" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          "## Packaged output" | Tee-Object -Append windows-validation-summary.md
+          "Installer=$($installer.Name)" | Tee-Object -Append windows-validation-summary.md
+          "Installer size=$size" | Tee-Object -Append windows-validation-summary.md
+          "SHA-256=$hash" | Tee-Object -Append windows-validation-summary.md
+          "Bundled Node=$nodeVersion" | Tee-Object -Append windows-validation-summary.md
+          "Prisma version:" | Tee-Object -Append windows-validation-summary.md
+          $prismaVersion | Tee-Object -Append windows-validation-summary.md
+
+      - name: Silent install and runtime validation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Wait-ForHealth {
+            param([int]$Seconds = 60)
+            $deadline = (Get-Date).AddSeconds($Seconds)
+            do {
+              try {
+                $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:4000/health" -TimeoutSec 2
+                if ($response.StatusCode -eq 200) { return $true }
+              } catch {
+                Start-Sleep -Milliseconds 750
+              }
+            } while ((Get-Date) -lt $deadline)
+            return $false
+          }
+
+          function Assert-Path {
+            param([string]$Path)
+            if (-not (Test-Path $Path)) {
+              throw "Missing expected path: $Path"
+            }
+          }
+
+          function Invoke-ExeChecked {
+            param(
+              [Parameter(Mandatory = $true)][string]$FilePath,
+              [Parameter(Mandatory = $true)][string[]]$Arguments,
+              [Parameter(Mandatory = $true)][string]$Label
+            )
+            $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -PassThru
+            "$Label exit code=$($process.ExitCode)" | Tee-Object -Append windows-validation-summary.md
+            if ($process.ExitCode -ne 0) {
+              throw "$Label failed with exit code $($process.ExitCode)"
+            }
+          }
+
+          $originalLocalAppData = $env:LOCALAPPDATA
+          $ciLocalAppData = Join-Path $env:RUNNER_TEMP "CertifydCoreLocalAppData"
+          $installDir = Join-Path $env:RUNNER_TEMP "Certifyd Core App"
+          $installer = $env:INSTALLER_PATH
+          New-Item -ItemType Directory -Force -Path $ciLocalAppData | Out-Null
+
+          $env:LOCALAPPDATA = $ciLocalAppData
+          $dataRoot = Join-Path $ciLocalAppData "ContentBox"
+          $dbPath = Join-Path $dataRoot "contentbox.db"
+
+          "## Silent install and runtime validation" | Tee-Object -Append windows-validation-summary.md
+          Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Silent install"
+
+          Assert-Path (Join-Path $installDir "runtime\node\node.exe")
+          Assert-Path (Join-Path $installDir "apps\api\src\server.ts")
+          Assert-Path (Join-Path $installDir "apps\dashboard\dist\index.html")
+          Assert-Path (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
+          Assert-Path (Join-Path $installDir "launcher\CertifydCore.Stop.ps1")
+          Assert-Path (Join-Path $installDir "launcher\CertifydCore.Status.ps1")
+          Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core.lnk")
+          Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Stop Certifyd Core.lnk")
+          Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core Status.lnk")
+          Assert-Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "Certifyd Core.lnk")
+
+          "Silent install=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Desktop and Start Menu shortcuts=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Install dir=$installDir" | Tee-Object -Append windows-validation-summary.md
+          "CI LOCALAPPDATA=$ciLocalAppData" | Tee-Object -Append windows-validation-summary.md
+
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
+          if (-not (Wait-ForHealth -Seconds 75)) {
+            Get-Content (Join-Path $dataRoot "logs\certifyd-core.err.log") -ErrorAction SilentlyContinue
+            throw "Core did not pass /health after launch."
+          }
+
+          Assert-Path $dbPath
+          $health = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:4000/health" -TimeoutSec 5
+          if ($health.StatusCode -ne 200) {
+            throw "/health returned $($health.StatusCode)"
+          }
+          $dashboard = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:4000/" -TimeoutSec 5
+          if ($dashboard.StatusCode -ne 200) {
+            throw "Dashboard returned $($dashboard.StatusCode)"
+          }
+
+          "Core start=PASS" | Tee-Object -Append windows-validation-summary.md
+          "/health=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Dashboard=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Database exists=PASS" | Tee-Object -Append windows-validation-summary.md
+
+          $statusOutput = "`n" | powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Status.ps1") 2>&1 | Out-String
+          if ($statusOutput -notmatch "Alive:\s+True" -or $statusOutput -notmatch "Health:\s+True") {
+            $statusOutput
+            throw "Status helper did not report the running Core state."
+          }
+          "Status=PASS" | Tee-Object -Append windows-validation-summary.md
+
+          Set-Content -Path (Join-Path $dataRoot "ci-preservation-marker.txt") -Value "preserve user data" -Encoding UTF8
+          $dbSizeBefore = (Get-Item $dbPath).Length
+
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Stop.ps1")
+          Start-Sleep -Seconds 2
+          try {
+            Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:4000/health" -TimeoutSec 2 | Out-Null
+            throw "Core still responded after stop."
+          } catch {
+            if ($_.Exception.Message -eq "Core still responded after stop.") { throw }
+          }
+          "Stop=PASS" | Tee-Object -Append windows-validation-summary.md
+
+          Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Silent reinstall"
+          Assert-Path (Join-Path $dataRoot "ci-preservation-marker.txt")
+          Assert-Path $dbPath
+          "Reinstall=PASS" | Tee-Object -Append windows-validation-summary.md
+
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
+          if (-not (Wait-ForHealth -Seconds 75)) {
+            throw "Core did not pass /health after reinstall launch."
+          }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Stop.ps1")
+          "Restart persistence=PASS" | Tee-Object -Append windows-validation-summary.md
+
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          Assert-Path $uninstaller
+          Invoke-ExeChecked $uninstaller @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") "Silent uninstall"
+          Start-Sleep -Seconds 2
+
+          if (Test-Path (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")) {
+            throw "Application files were not removed by uninstall."
+          }
+          if (Test-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core")) {
+            throw "Start Menu shortcuts were not removed by uninstall."
+          }
+          if (Test-Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "Certifyd Core.lnk")) {
+            throw "Desktop shortcut was not removed by uninstall."
+          }
+          Assert-Path $dataRoot
+          Assert-Path $dbPath
+          Assert-Path (Join-Path $dataRoot "ci-preservation-marker.txt")
+          $dbSizeAfter = (Get-Item $dbPath).Length
+          if ($dbSizeAfter -le 0 -or $dbSizeBefore -le 0) {
+            throw "Database size was unexpectedly empty."
+          }
+
+          "Uninstall=PASS" | Tee-Object -Append windows-validation-summary.md
+          "User data preserved=PASS" | Tee-Object -Append windows-validation-summary.md
+          "DB size before reinstall=$dbSizeBefore" | Tee-Object -Append windows-validation-summary.md
+          "DB size after uninstall=$dbSizeAfter" | Tee-Object -Append windows-validation-summary.md
+
+          $env:LOCALAPPDATA = $originalLocalAppData
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: certifyd-core-windows-installer-${{ github.run_number }}
+          path: |
+            .dist/windows-x64/installer/*.exe
+            windows-validation-summary.md
+          if-no-files-found: error
