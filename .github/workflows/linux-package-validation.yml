@@ -2,6 +2,9 @@ name: Linux Package Validation
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "temp/linux-package-validation-*"
 
 jobs:
   build-and-validate:
