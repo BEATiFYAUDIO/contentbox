@@ -99,6 +99,9 @@ check_health() {
 }
 
 open_dashboard() {
+  if [[ "${CERTIFYD_NO_BROWSER:-}" == "1" ]]; then
+    return 0
+  fi
   open "$app_url" >/dev/null 2>&1 || true
 }
 

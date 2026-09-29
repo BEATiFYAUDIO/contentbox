@@ -101,7 +101,7 @@ jobs:
           spctl -a -vv "$app" 2>&1 || true
           xattr -l "$app" 2>&1 || true
 
-          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/MacOS/CertifydCoreLauncher"
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/MacOS/CertifydCoreLauncher"
           CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/Resources/status.sh" | tee -a "macos-${{ matrix.arch }}-validation-summary.md"
           "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/health"
           "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("dashboard", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/"
@@ -110,14 +110,14 @@ jobs:
           db_size_before="$(stat -f '%z' "$data_root/contentbox.db")"
 
           CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/Resources/stop.sh"
-          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/MacOS/CertifydCoreLauncher"
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/MacOS/CertifydCoreLauncher"
           db_hash_restart="$(shasum -a 256 "$data_root/contentbox.db" | awk '{print $1}')"
           CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/Resources/stop.sh"
 
           mv "$app" "$move_root/Certifyd Core.app"
           moved_app="$move_root/Certifyd Core.app"
           moved_node_bin="$moved_app/Contents/Resources/runtime/node/bin/node"
-          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/Contents/MacOS/CertifydCoreLauncher"
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/Contents/MacOS/CertifydCoreLauncher"
           "$moved_node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health-after-move", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/health"
           CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/Contents/Resources/stop.sh"
           db_hash_after="$(shasum -a 256 "$data_root/contentbox.db" | awk '{print $1}')"
