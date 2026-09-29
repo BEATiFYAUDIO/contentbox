@@ -115,22 +115,25 @@ cp "$repo_root/packaging/macos/status.sh" "$resources_dir/status.sh"
 cp "$repo_root/packaging/macos/README.txt" "$resources_dir/README.txt"
 chmod +x "$macos_dir/CertifydCoreLauncher" "$resources_dir/stop.sh" "$resources_dir/status.sh"
 
-icon_source="$repo_root/apps/dashboard/public/certifyd-icon.png"
+icon_source="$repo_root/apps/dashboard/src/assets/certifyd_icon_logo_only.svg"
 icon_icns="$resources_dir/CertifydCore.icns"
 if [[ -f "$icon_source" ]]; then
   iconset="$dist_root/CertifydCore.iconset"
+  icon_png="$dist_root/CertifydCore.source.png"
   rm -rf "$iconset"
   mkdir -p "$iconset"
-  sips -z 16 16 "$icon_source" --out "$iconset/icon_16x16.png" >/dev/null
-  sips -z 32 32 "$icon_source" --out "$iconset/icon_16x16@2x.png" >/dev/null
-  sips -z 32 32 "$icon_source" --out "$iconset/icon_32x32.png" >/dev/null
-  sips -z 64 64 "$icon_source" --out "$iconset/icon_32x32@2x.png" >/dev/null
-  sips -z 128 128 "$icon_source" --out "$iconset/icon_128x128.png" >/dev/null
-  sips -z 256 256 "$icon_source" --out "$iconset/icon_128x128@2x.png" >/dev/null
-  sips -z 256 256 "$icon_source" --out "$iconset/icon_256x256.png" >/dev/null
-  sips -z 512 512 "$icon_source" --out "$iconset/icon_256x256@2x.png" >/dev/null
-  sips -z 512 512 "$icon_source" --out "$iconset/icon_512x512.png" >/dev/null
-  cp "$icon_source" "$assets_stage/certifyd-core.png"
+  sips -s format png "$icon_source" --out "$icon_png" >/dev/null
+  sips -z 16 16 "$icon_png" --out "$iconset/icon_16x16.png" >/dev/null
+  sips -z 32 32 "$icon_png" --out "$iconset/icon_16x16@2x.png" >/dev/null
+  sips -z 32 32 "$icon_png" --out "$iconset/icon_32x32.png" >/dev/null
+  sips -z 64 64 "$icon_png" --out "$iconset/icon_32x32@2x.png" >/dev/null
+  sips -z 128 128 "$icon_png" --out "$iconset/icon_128x128.png" >/dev/null
+  sips -z 256 256 "$icon_png" --out "$iconset/icon_128x128@2x.png" >/dev/null
+  sips -z 256 256 "$icon_png" --out "$iconset/icon_256x256.png" >/dev/null
+  sips -z 512 512 "$icon_png" --out "$iconset/icon_256x256@2x.png" >/dev/null
+  sips -z 512 512 "$icon_png" --out "$iconset/icon_512x512.png" >/dev/null
+  cp "$icon_png" "$assets_stage/certifyd-core.png"
+  cp "$icon_source" "$assets_stage/certifyd-core.svg"
   iconutil -c icns "$iconset" -o "$icon_icns"
 fi
 
