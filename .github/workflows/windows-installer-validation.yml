@@ -52,6 +52,23 @@ jobs:
           Split-Path -Parent $isccPath | Out-File -FilePath $env:GITHUB_PATH -Append
           "Inno Setup compiler=$isccPath" | Tee-Object -Append windows-validation-summary.md
 
+      - name: Install ImageMagick if needed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $magick = Get-Command magick.exe -ErrorAction SilentlyContinue
+          if (-not $magick) {
+            choco install imagemagick.app --no-progress -y
+          }
+
+          $magick = Get-Command magick.exe -ErrorAction SilentlyContinue
+          if (-not $magick) {
+            throw "ImageMagick magick.exe not found after installation."
+          }
+
+          Split-Path -Parent $magick.Source | Out-File -FilePath $env:GITHUB_PATH -Append
+          "ImageMagick=$($magick.Source)" | Tee-Object -Append windows-validation-summary.md
+
       - name: Build Windows installer
         shell: pwsh
         run: |

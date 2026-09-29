@@ -37,6 +37,32 @@ function Resolve-Iscc($explicit) {
   Fail "Inno Setup 6 compiler not found. Install Inno Setup or pass -InnoSetupCompiler."
 }
 
+function Resolve-Magick {
+  $cmd = Get-Command magick.exe -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  $candidates = @(
+    "$env:ProgramFiles\ImageMagick-7.1.2-Q16-HDRI\magick.exe",
+    "$env:ProgramFiles\ImageMagick-7.1.1-Q16-HDRI\magick.exe",
+    "$env:ProgramFiles\ImageMagick-7.1.0-Q16-HDRI\magick.exe"
+  )
+  foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-Path $candidate)) { return $candidate }
+  }
+  Fail "ImageMagick magick.exe not found. Install ImageMagick so the Certifyd SVG can be converted to a Windows .ico package icon."
+}
+
+function Export-EmbeddedPngFromSvg {
+  param(
+    [Parameter(Mandatory=$true)][string]$SvgPath,
+    [Parameter(Mandatory=$true)][string]$PngPath
+  )
+  $svg = Get-Content -Raw -Path $SvgPath
+  if ($svg -notmatch 'data:image/png;base64,([^"'']+)') {
+    Fail "Certifyd package icon SVG does not contain an embedded PNG image."
+  }
+  [System.IO.File]::WriteAllBytes($PngPath, [System.Convert]::FromBase64String($Matches[1]))
+}
+
 if ($env:OS -notmatch "Windows") {
   Fail "Build the Windows x64 installer on Windows so native dependencies and Prisma engines are Windows-compatible."
 }
@@ -56,10 +82,12 @@ $nodeDir = Join-Path $runtimeStage "node"
 $nodeZip = Join-Path $cacheDir "node-v$NodeVersion-win-x64.zip"
 $nodeUrl = "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip"
 $iscc = Resolve-Iscc $InnoSetupCompiler
+$magick = Resolve-Magick
 
 Write-Host "[windows-package] Repo: $repoRoot"
 Write-Host "[windows-package] Node: $NodeVersion"
 Write-Host "[windows-package] Inno Setup: $iscc"
+Write-Host "[windows-package] ImageMagick: $magick"
 
 Remove-Item $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $cacheDir, $installerDir, $appStage, $runtimeStage, $assetsStage | Out-Null
@@ -111,7 +139,17 @@ foreach ($item in @("package.json", "package-lock.json", "tsconfig.json", "tscon
 Copy-Item (Join-Path $repoRoot "packaging\windows\CertifydCore.Launcher.ps1") (Join-Path $appStage "launcher\CertifydCore.Launcher.ps1") -Force
 Copy-Item (Join-Path $repoRoot "packaging\windows\CertifydCore.Stop.ps1") (Join-Path $appStage "launcher\CertifydCore.Stop.ps1") -Force
 Copy-Item (Join-Path $repoRoot "packaging\windows\CertifydCore.Status.ps1") (Join-Path $appStage "launcher\CertifydCore.Status.ps1") -Force
-Copy-Item (Join-Path $repoRoot "apps\dashboard\public\favicon.ico") (Join-Path $assetsStage "certifyd-core.ico") -Force
+
+$iconSource = Join-Path $repoRoot "apps\dashboard\src\assets\certifyd_icon_logo_only.svg"
+$iconIco = Join-Path $assetsStage "certifyd-core.ico"
+$iconPng = Join-Path $assetsStage "certifyd-core.png"
+$iconSvg = Join-Path $assetsStage "certifyd-core.svg"
+if (-not (Test-Path $iconSource)) {
+  Fail "Missing Certifyd package icon source: $iconSource"
+}
+Copy-Item $iconSource $iconSvg -Force
+Export-EmbeddedPngFromSvg $iconSource $iconPng
+Invoke-Checked $magick $iconPng "-resize" "256x256" "-define" "icon:auto-resize=256,128,64,48,32,16" $iconIco
 
 Write-Host "[windows-package] Installing API dependencies into staging..."
 Invoke-Checked $npmCmd "--prefix" $apiTarget "ci"
