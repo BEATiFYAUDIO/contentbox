@@ -117,8 +117,9 @@ Write-Host "[windows-package] Installing API dependencies into staging..."
 Invoke-Checked $npmCmd "--prefix" $apiTarget "ci"
 
 Write-Host "[windows-package] Generating Windows Prisma client..."
-Invoke-Checked $npmCmd "--prefix" $apiTarget "exec" "--" "prisma" "validate" "--schema" "prisma\schema.prisma"
-Invoke-Checked $npmCmd "--prefix" $apiTarget "exec" "--" "prisma" "generate" "--schema" "prisma\schema.prisma"
+$apiSchema = Join-Path $apiTarget "prisma\schema.prisma"
+Invoke-Checked $npmCmd "--prefix" $apiTarget "exec" "--" "prisma" "validate" "--schema" $apiSchema
+Invoke-Checked $npmCmd "--prefix" $apiTarget "exec" "--" "prisma" "generate" "--schema" $apiSchema
 
 Write-Host "[windows-package] Installing dashboard dependencies into staging..."
 Invoke-Checked $npmCmd "--prefix" $dashboardTarget "ci"
