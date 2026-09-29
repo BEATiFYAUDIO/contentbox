@@ -133,6 +133,19 @@ jobs:
             }
           }
 
+          function Invoke-ExeChecked {
+            param(
+              [Parameter(Mandatory = $true)][string]$FilePath,
+              [Parameter(Mandatory = $true)][string[]]$Arguments,
+              [Parameter(Mandatory = $true)][string]$Label
+            )
+            $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -PassThru
+            "$Label exit code=$($process.ExitCode)" | Tee-Object -Append windows-validation-summary.md
+            if ($process.ExitCode -ne 0) {
+              throw "$Label failed with exit code $($process.ExitCode)"
+            }
+          }
+
           $originalLocalAppData = $env:LOCALAPPDATA
           $ciLocalAppData = Join-Path $env:RUNNER_TEMP "CertifydCoreLocalAppData"
           $installDir = Join-Path $env:RUNNER_TEMP "Certifyd Core App"
@@ -144,10 +157,7 @@ jobs:
           $dbPath = Join-Path $dataRoot "contentbox.db"
 
           "## Silent install and runtime validation" | Tee-Object -Append windows-validation-summary.md
-          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR="$installDir" /TASKS=desktopicon
-          if ($LASTEXITCODE -ne 0) {
-            throw "Silent install failed with exit code $LASTEXITCODE"
-          }
+          Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Silent install"
 
           Assert-Path (Join-Path $installDir "runtime\node\node.exe")
           Assert-Path (Join-Path $installDir "apps\api\src\server.ts")
@@ -194,10 +204,7 @@ jobs:
           }
           "Stop=PASS" | Tee-Object -Append windows-validation-summary.md
 
-          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR="$installDir" /TASKS=desktopicon
-          if ($LASTEXITCODE -ne 0) {
-            throw "Silent reinstall failed with exit code $LASTEXITCODE"
-          }
+          Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Silent reinstall"
           Assert-Path (Join-Path $dataRoot "ci-preservation-marker.txt")
           Assert-Path $dbPath
           "Reinstall=PASS" | Tee-Object -Append windows-validation-summary.md
@@ -211,10 +218,7 @@ jobs:
 
           $uninstaller = Join-Path $installDir "unins000.exe"
           Assert-Path $uninstaller
-          & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) {
-            throw "Silent uninstall failed with exit code $LASTEXITCODE"
-          }
+          Invoke-ExeChecked $uninstaller @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") "Silent uninstall"
           Start-Sleep -Seconds 2
 
           if (Test-Path (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")) {
