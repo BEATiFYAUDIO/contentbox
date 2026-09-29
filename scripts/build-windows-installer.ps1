@@ -1,11 +1,11 @@
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-
 Param(
   [string]$Version = "0.1.0-beta",
   [string]$NodeVersion = "20.19.0",
   [string]$InnoSetupCompiler = ""
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 function Fail($message) {
   Write-Error "[windows-package] $message"
