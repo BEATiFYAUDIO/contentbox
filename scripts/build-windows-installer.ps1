@@ -118,8 +118,11 @@ Invoke-Checked $npmCmd "--prefix" $apiTarget "ci"
 
 Write-Host "[windows-package] Generating Windows Prisma client..."
 $apiSchema = Join-Path $apiTarget "prisma\schema.prisma"
+$packageDb = Join-Path $apiTarget "contentbox-package-build.db"
+$env:DATABASE_URL = "file:$(($packageDb -replace "\\", "/"))"
 Invoke-Checked $npmCmd "--prefix" $apiTarget "exec" "--" "prisma" "validate" "--schema" $apiSchema
 Invoke-Checked $npmCmd "--prefix" $apiTarget "exec" "--" "prisma" "generate" "--schema" $apiSchema
+Remove-Item $packageDb -Force -ErrorAction SilentlyContinue
 
 Write-Host "[windows-package] Installing dashboard dependencies into staging..."
 Invoke-Checked $npmCmd "--prefix" $dashboardTarget "ci"
