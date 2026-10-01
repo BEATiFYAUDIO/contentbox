@@ -1,5 +1,6 @@
 state.json
 .local/
+.dist/
 
 # Local env files
 **/.env

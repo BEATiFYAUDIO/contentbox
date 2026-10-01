@@ -98,6 +98,12 @@ set_env "DATABASE_URL" "\"${DATABASE_URL}\""
 echo "[bootstrap] DATABASE_URL: ${DATABASE_URL}"
 
 mkdir -p "$CONTENTBOX_ROOT"
+SQLITE_DB_PATH="${DATABASE_URL#file:}"
+SQLITE_DB_PATH="${SQLITE_DB_PATH%%\?*}"
+if [ ! -e "$SQLITE_DB_PATH" ]; then
+  : > "$SQLITE_DB_PATH"
+  echo "[bootstrap] Created empty SQLite database file."
+fi
 
 if [ "$INSTALL_MODE" = "force" ] || { [ "$INSTALL_MODE" = "auto" ] && [ ! -d "$ROOT_DIR/node_modules" ]; }; then
   echo "[bootstrap] Installing API dependencies..."

@@ -125,6 +125,12 @@ else
   echo "DATABASE_URL=\"${SQLITE_URL}\"" >> "$API_ENV"
 fi
 echo "[install] Using SQLite for basic mode."
+SQLITE_DB_PATH="${SQLITE_URL#file:}"
+SQLITE_DB_PATH="${SQLITE_DB_PATH%%\?*}"
+if [ ! -e "$SQLITE_DB_PATH" ]; then
+  : > "$SQLITE_DB_PATH"
+  echo "[install] Created empty SQLite database file."
+fi
 
 if grep -q '^VITE_API_URL=' "$DASH_ENV"; then
   sed -i.bak 's#^VITE_API_URL=.*#VITE_API_URL=http://127.0.0.1:4000#' "$DASH_ENV" && rm -f "$DASH_ENV.bak"

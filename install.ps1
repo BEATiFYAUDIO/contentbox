@@ -112,6 +112,10 @@ $sqliteUrl = "file:$sqlitePath"
 Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
 Write-Output "[install] Using SQLite for basic mode."
 if (-not (Test-Path $rootVal)) { New-Item -ItemType Directory -Force -Path $rootVal | Out-Null }
+if (-not (Test-Path $sqlitePath)) {
+  New-Item -ItemType File -Path $sqlitePath | Out-Null
+  Write-Output "[install] Created empty SQLite database file."
+}
 
 Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
 
