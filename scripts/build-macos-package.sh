@@ -215,6 +215,25 @@ mkdir -p "$dmg_root"
 cp -R "$bundle_root" "$dmg_root/$app_name"
 ln -s /Applications "$dmg_root/Applications"
 cp "$repo_root/packaging/macos/README.txt" "$dmg_root/README.txt"
+cat >"$dmg_root/Start Certifyd Core with LAN Access.command" <<'COMMAND'
+#!/bin/bash
+set -euo pipefail
+
+app_path="/Applications/Certifyd Core.app"
+if [[ ! -x "$app_path/Contents/MacOS/CertifydCoreLauncher" ]]; then
+  script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
+  app_path="$script_dir/Certifyd Core.app"
+fi
+
+if [[ ! -x "$app_path/Contents/MacOS/CertifydCoreLauncher" ]]; then
+  osascript -e 'display alert "Certifyd Core" message "Install Certifyd Core in Applications, or run this helper from the Certifyd Core disk image." as critical' >/dev/null 2>&1 || true
+  echo "Certifyd Core.app was not found." >&2
+  exit 1
+fi
+
+"$app_path/Contents/MacOS/CertifydCoreLauncher" --lan
+COMMAND
+chmod +x "$dmg_root/Start Certifyd Core with LAN Access.command"
 
 dmg_name="Certifyd-Core-$version-macos-$target_arch.dmg"
 dmg_path="$package_dir/$dmg_name"

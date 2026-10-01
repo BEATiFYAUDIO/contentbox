@@ -30,18 +30,92 @@ function Set-EnvLine($path, $key, $value) {
   }
 }
 
+function Get-EnvValue($path, $key) {
+  if (-not (Test-Path $path)) { return "" }
+  $line = Get-Content $path | Where-Object { $_ -match "^$key=" } | Select-Object -Last 1
+  if (-not $line) { return "" }
+  $value = ($line -split "=", 2)[1].Trim()
+  if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+    $value = $value.Substring(1, $value.Length - 2)
+  }
+  return $value
+}
+
+function Test-PrivateIpv4($ip) {
+  return ($ip -match '^10\.' -or $ip -match '^192\.168\.' -or $ip -match '^172\.(1[6-9]|2[0-9]|3[0-1])\.')
+}
+
+function Test-VirtualInterface($name) {
+  if (-not $name) { return $false }
+  return ($name -match '^(vEthernet|Docker|Loopback|Tailscale|ZeroTier|WireGuard|Hyper-V|VirtualBox|VMware|TAP|VPN)')
+}
+
+function Normalize-HostList($values) {
+  $seen = @{}
+  $result = @()
+  foreach ($value in $values) {
+    if (-not $value) { continue }
+    foreach ($part in ([string]$value -split '[,\s]+')) {
+      $host = $part.Trim().Trim('"').Trim("'")
+      if (-not $host -or $seen.ContainsKey($host)) { continue }
+      $seen[$host] = $true
+      $result += $host
+    }
+  }
+  return @($result)
+}
+
+function Merge-HostLists($existing, $detected) {
+  $combined = @()
+  $combined += $existing
+  $combined += $detected
+  return @(Normalize-HostList $combined)
+}
+
+function Get-PrimaryLanHost {
+  if (Get-Command Get-NetRoute -ErrorAction SilentlyContinue) {
+    $route = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+      Sort-Object RouteMetric, InterfaceMetric |
+      Select-Object -First 1
+    if ($route -and (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue)) {
+      $ip = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue |
+        Where-Object {
+          (Test-PrivateIpv4 $_.IPAddress) -and
+          $_.IPAddress -notmatch '^169\.254\.' -and
+          -not (Test-VirtualInterface $_.InterfaceAlias)
+        } |
+        Select-Object -ExpandProperty IPAddress -First 1
+      if ($ip) { return $ip }
+    }
+  }
+  if (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) {
+    $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object {
+        (Test-PrivateIpv4 $_.IPAddress) -and
+        $_.IPAddress -notmatch '^169\.254\.' -and
+        -not (Test-VirtualInterface $_.InterfaceAlias)
+      } |
+      Select-Object -ExpandProperty IPAddress -First 1
+    if ($ip) { return $ip }
+  }
+  return ""
+}
+
 function Get-LanHosts {
   $hosts = @()
+  $primary = Get-PrimaryLanHost
+  if ($primary) { $hosts += $primary }
   if (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) {
-    $hosts = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    $hosts += Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
       Where-Object {
+        (Test-PrivateIpv4 $_.IPAddress) -and
         $_.IPAddress -notmatch '^127\.' -and
         $_.IPAddress -notmatch '^169\.254\.' -and
-        ($_.IPAddress -match '^10\.' -or $_.IPAddress -match '^192\.168\.' -or $_.IPAddress -match '^172\.(1[6-9]|2[0-9]|3[0-1])\.')
+        -not (Test-VirtualInterface $_.InterfaceAlias)
       } |
       Select-Object -ExpandProperty IPAddress
   }
-  return @($hosts | Select-Object -Unique)
+  return @(Normalize-HostList $hosts)
 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Fail "Missing required command: node" }
@@ -82,10 +156,11 @@ if (-not (Test-Path $dashEnv)) {
 if ($Lan) {
   $lanHosts = Get-LanHosts
   $lanPrimaryHost = if ($lanHosts.Count -gt 0) { $lanHosts[0] } else { "" }
-  Set-EnvLine $apiEnv "CONTENTBOX_BIND" "public"
   Set-EnvLine $apiEnv "CONTENTBOX_PRIVATE_BIND" "public"
   if ($lanHosts.Count -gt 0) {
-    Set-EnvLine $apiEnv "CONTENTBOX_PRIVATE_ALLOWED_HOSTS" ($lanHosts -join ",")
+    $existingAllowedHosts = Get-EnvValue $apiEnv "CONTENTBOX_PRIVATE_ALLOWED_HOSTS"
+    $mergedAllowedHosts = Merge-HostLists $existingAllowedHosts $lanHosts
+    Set-EnvLine $apiEnv "CONTENTBOX_PRIVATE_ALLOWED_HOSTS" ($mergedAllowedHosts -join ",")
     Set-EnvLine $apiEnv "APP_BASE_URL" "http://$lanPrimaryHost`:4000"
   }
   Write-Output "[install] LAN mode enabled (private dashboard/API binds to LAN)."
@@ -119,8 +194,13 @@ if (-not ($envText -match "^PUBLIC_MODE=")) {
   Write-Output "[install] Set PUBLIC_MODE=off (local only)."
 }
 
-Set-EnvLine $apiEnv "DB_MODE" "basic"
-Write-Output "[install] Using DB_MODE=basic."
+$existingDbMode = Get-EnvValue $apiEnv "DB_MODE"
+if (-not $existingDbMode -or $existingDbMode -match "<user>") {
+  Set-EnvLine $apiEnv "DB_MODE" "basic"
+  Write-Output "[install] Using DB_MODE=basic."
+} else {
+  Write-Output "[install] Preserving existing DB_MODE=$existingDbMode."
+}
 
 $envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
 $rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
@@ -129,8 +209,13 @@ $rootVal = $rootVal.Trim('"')
 if (-not $rootVal) { $rootVal = Join-Path $HOME "contentbox-data" }
 $sqlitePath = (Join-Path $rootVal "contentbox.db") -replace "\\", "/"
 $sqliteUrl = "file:$sqlitePath"
-Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
-Write-Output "[install] Using SQLite for basic mode."
+$existingDatabaseUrl = Get-EnvValue $apiEnv "DATABASE_URL"
+if (-not $existingDatabaseUrl -or $existingDatabaseUrl -eq "file:./contentbox.db" -or $existingDatabaseUrl -match "<user>") {
+  Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
+  Write-Output "[install] Using SQLite for basic mode."
+} else {
+  Write-Output "[install] Preserving existing DATABASE_URL."
+}
 if (-not (Test-Path $rootVal)) { New-Item -ItemType Directory -Force -Path $rootVal | Out-Null }
 
 if ($Lan -and $lanPrimaryHost) {

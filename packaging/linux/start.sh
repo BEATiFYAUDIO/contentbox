@@ -17,12 +17,64 @@ fail() {
   exit 1
 }
 
-detect_lan_hosts() {
-  local hosts
-  hosts="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' | paste -sd, -)"
-  if [[ -z "$hosts" ]]; then
-    hosts="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' | paste -sd, -)"
+is_private_ipv4() {
+  echo "$1" | grep -Eq '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'
+}
+
+is_virtual_interface() {
+  echo "$1" | grep -Eiq '^(docker|br-|veth|virbr|zt|tailscale|tun|tap|wg|podman|cni|lo)'
+}
+
+normalize_host_list() {
+  tr ',[:space:]' '\n' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//" | awk 'NF && !seen[$0]++' | paste -sd, -
+}
+
+merge_host_lists() {
+  printf '%s\n%s\n' "${1:-}" "${2:-}" | normalize_host_list
+}
+
+detect_primary_lan_host() {
+  local host iface
+  if command -v ip >/dev/null 2>&1; then
+    host="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+    iface="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')"
+    if [[ -n "$host" ]] && is_private_ipv4 "$host" && ! is_virtual_interface "$iface"; then
+      echo "$host"
+      return 0
+    fi
+    host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2 " " $4}' | while read -r dev cidr; do
+      ip_addr="${cidr%/*}"
+      if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+        echo "$ip_addr"
+        break
+      fi
+    done)"
+    if [[ -n "$host" ]]; then
+      echo "$host"
+      return 0
+    fi
   fi
+  hostname -I 2>/dev/null | tr ' ' '\n' | while read -r ip_addr; do
+    if is_private_ipv4 "$ip_addr"; then
+      echo "$ip_addr"
+      break
+    fi
+  done
+}
+
+detect_lan_hosts() {
+  local primary hosts
+  primary="$(detect_primary_lan_host)"
+  hosts="$primary"
+  if command -v ip >/dev/null 2>&1; then
+    hosts="$(printf '%s\n%s\n' "$hosts" "$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2 " " $4}' | while read -r dev cidr; do
+      ip_addr="${cidr%/*}"
+      if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+        echo "$ip_addr"
+      fi
+    done)" | normalize_host_list)"
+  fi
+  hosts="$(printf '%s\n%s\n' "$hosts" "$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' || true)" | normalize_host_list)"
   echo "$hosts"
 }
 
@@ -72,7 +124,7 @@ if [[ "$LAN_MODE" -eq 1 ]]; then
   lan_primary_host="${lan_hosts%%,*}"
   export CONTENTBOX_PRIVATE_BIND="public"
   if [[ -n "$lan_hosts" ]]; then
-    export CONTENTBOX_PRIVATE_ALLOWED_HOSTS="$lan_hosts"
+    export CONTENTBOX_PRIVATE_ALLOWED_HOSTS="$(merge_host_lists "${CONTENTBOX_PRIVATE_ALLOWED_HOSTS:-}" "$lan_hosts")"
     export APP_BASE_URL="http://$lan_primary_host:$PORT"
     echo "[Certifyd Core] LAN dashboard: $APP_BASE_URL"
   else

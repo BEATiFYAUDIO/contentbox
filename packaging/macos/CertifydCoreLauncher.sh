@@ -20,12 +20,54 @@ fail() {
   exit 1
 }
 
-detect_lan_hosts() {
-  local hosts
-  hosts="$(ipconfig getifaddr en0 2>/dev/null || true)"
-  if [[ -z "$hosts" ]]; then
-    hosts="$(ifconfig 2>/dev/null | awk '/inet / {print $2}' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' | paste -sd, -)"
+is_private_ipv4() {
+  echo "$1" | grep -Eq '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'
+}
+
+is_virtual_interface() {
+  echo "$1" | grep -Eiq '^(lo|utun|awdl|llw|bridge|gif|stf|anpi|zt|tun|tap|wg|tailscale)'
+}
+
+normalize_host_list() {
+  tr ',[:space:]' '\n' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//" | awk 'NF && !seen[$0]++' | paste -sd, -
+}
+
+merge_host_lists() {
+  printf '%s\n%s\n' "${1:-}" "${2:-}" | normalize_host_list
+}
+
+detect_primary_lan_host() {
+  local iface host
+  iface="$(route -n get default 2>/dev/null | awk '/interface:/ {print $2; exit}')"
+  if [[ -n "$iface" ]] && ! is_virtual_interface "$iface"; then
+    host="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+    if [[ -n "$host" ]] && is_private_ipv4 "$host"; then
+      echo "$host"
+      return 0
+    fi
   fi
+  ifconfig 2>/dev/null | awk '
+    /^[a-zA-Z0-9]/ { iface=$1; sub(":", "", iface) }
+    /inet / { print iface " " $2 }
+  ' | while read -r dev ip_addr; do
+    if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+      echo "$ip_addr"
+      break
+    fi
+  done
+}
+
+detect_lan_hosts() {
+  local primary hosts
+  primary="$(detect_primary_lan_host)"
+  hosts="$(printf '%s\n%s\n' "$primary" "$(ifconfig 2>/dev/null | awk '
+    /^[a-zA-Z0-9]/ { iface=$1; sub(":", "", iface) }
+    /inet / { print iface " " $2 }
+  ' | while read -r dev ip_addr; do
+    if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+      echo "$ip_addr"
+    fi
+  done)" | normalize_host_list)"
   echo "$hosts"
 }
 
@@ -76,7 +118,7 @@ if [[ "$LAN_MODE" -eq 1 ]]; then
   lan_primary_host="${lan_hosts%%,*}"
   export CONTENTBOX_PRIVATE_BIND="public"
   if [[ -n "$lan_hosts" ]]; then
-    export CONTENTBOX_PRIVATE_ALLOWED_HOSTS="$lan_hosts"
+    export CONTENTBOX_PRIVATE_ALLOWED_HOSTS="$(merge_host_lists "${CONTENTBOX_PRIVATE_ALLOWED_HOSTS:-}" "$lan_hosts")"
     export APP_BASE_URL="http://$lan_primary_host:$PORT"
     echo "[Certifyd Core] LAN dashboard: $APP_BASE_URL"
   else

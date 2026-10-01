@@ -40,9 +40,11 @@ Source: "{#SourceDir}\assets\certifyd-core.ico"; DestDir: "{app}\assets"; Flags:
 
 [Icons]
 Name: "{autoprograms}\Certifyd Core\Certifyd Core"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
+Name: "{autoprograms}\Certifyd Core\Certifyd Core (LAN Access)"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"" -Lan"; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
 Name: "{autoprograms}\Certifyd Core\Stop Certifyd Core"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\launcher\CertifydCore.Stop.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
 Name: "{autoprograms}\Certifyd Core\Certifyd Core Status"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\launcher\CertifydCore.Status.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
 Name: "{autodesktop}\Certifyd Core"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"; Tasks: desktopicon
+Name: "{autodesktop}\Certifyd Core (LAN Access)"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"" -Lan"; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
