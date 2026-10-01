@@ -20,6 +20,30 @@ function Invoke-CheckedNative {
   }
 }
 
+function Set-EnvLine($path, $key, $value) {
+  $lines = Get-Content $path
+  if ($lines -match "^$key=") {
+    $lines = $lines -replace "^$key=.*", "$key=$value"
+    Set-Content -Path $path -Value $lines
+  } else {
+    Add-Content -Path $path -Value "$key=$value"
+  }
+}
+
+function Get-LanHosts {
+  $hosts = @()
+  if (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) {
+    $hosts = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.IPAddress -notmatch '^127\.' -and
+        $_.IPAddress -notmatch '^169\.254\.' -and
+        ($_.IPAddress -match '^10\.' -or $_.IPAddress -match '^192\.168\.' -or $_.IPAddress -match '^172\.(1[6-9]|2[0-9]|3[0-1])\.')
+      } |
+      Select-Object -ExpandProperty IPAddress
+  }
+  return @($hosts | Select-Object -Unique)
+}
+
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Fail "Missing required command: node" }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Fail "Missing required command: npm" }
 
@@ -56,25 +80,21 @@ if (-not (Test-Path $dashEnv)) {
 }
 
 if ($Lan) {
-  $content = Get-Content $apiEnv -ErrorAction SilentlyContinue
-  if ($content -match "^CONTENTBOX_BIND=") {
-    $content = $content -replace "^CONTENTBOX_BIND=.*", "CONTENTBOX_BIND=public"
-    Set-Content -Path $apiEnv -Value $content
-  } else {
-    Add-Content -Path $apiEnv -Value "CONTENTBOX_BIND=public"
+  $lanHosts = Get-LanHosts
+  $lanPrimaryHost = if ($lanHosts.Count -gt 0) { $lanHosts[0] } else { "" }
+  Set-EnvLine $apiEnv "CONTENTBOX_BIND" "public"
+  Set-EnvLine $apiEnv "CONTENTBOX_PRIVATE_BIND" "public"
+  if ($lanHosts.Count -gt 0) {
+    Set-EnvLine $apiEnv "CONTENTBOX_PRIVATE_ALLOWED_HOSTS" ($lanHosts -join ",")
+    Set-EnvLine $apiEnv "APP_BASE_URL" "http://$lanPrimaryHost`:4000"
   }
-  Write-Output "[install] LAN mode enabled (CONTENTBOX_BIND=public)."
+  Write-Output "[install] LAN mode enabled (private dashboard/API binds to LAN)."
+  if ($lanPrimaryHost) {
+    Write-Output "[install] LAN dashboard: http://$lanPrimaryHost`:4000"
+  } else {
+    Write-Output "[install] WARNING: no LAN IP detected; set CONTENTBOX_PRIVATE_ALLOWED_HOSTS manually if needed."
+  }
   Write-Output "[install] If LAN access fails, allow tcp/4000 in your firewall."
-}
-
-function Set-EnvLine($path, $key, $value) {
-  $lines = Get-Content $path
-  if ($lines -match "^$key=") {
-    $lines = $lines -replace "^$key=.*", "$key=$value"
-    Set-Content -Path $path -Value $lines
-  } else {
-    Add-Content -Path $path -Value "$key=$value"
-  }
 }
 
 $envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
@@ -113,7 +133,12 @@ Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
 Write-Output "[install] Using SQLite for basic mode."
 if (-not (Test-Path $rootVal)) { New-Item -ItemType Directory -Force -Path $rootVal | Out-Null }
 
-Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
+if ($Lan -and $lanPrimaryHost) {
+  Set-EnvLine $dashEnv "VITE_API_BASE_URL" "http://$lanPrimaryHost`:4000"
+  Set-EnvLine $dashEnv "VITE_API_URL" "http://$lanPrimaryHost`:4000"
+} else {
+  Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
+}
 
 function Prompt-InstallCloudflared {
   $rootLine = (Get-Content $apiEnv | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)

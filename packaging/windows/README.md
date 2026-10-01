@@ -58,6 +58,10 @@ The Start Menu/Desktop launcher:
 
 Existing databases and user data are never truncated, overwritten, replaced, or deleted by the launcher.
 
+For a dedicated LAN machine, the launcher also accepts `-Lan`. LAN mode binds
+the private dashboard/API to the local network, records detected LAN addresses
+in the private host allowlist, and opens the LAN dashboard URL.
+
 ## Optional External Tools
 
 Cloudflared remains optional and managed by existing Core behavior when public sharing is enabled. FFmpeg is not bundled in this first Windows packaging pass; media flows that shell out to `ffmpeg` still require it when those optional transformations are used.

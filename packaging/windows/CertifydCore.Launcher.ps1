@@ -1,3 +1,7 @@
+Param(
+  [switch]$Lan
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -21,6 +25,20 @@ function New-SecretHex {
   $bytes = New-Object byte[] 32
   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
   return ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+}
+
+function Get-LanHosts {
+  $hosts = @()
+  if (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) {
+    $hosts = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.IPAddress -notmatch '^127\.' -and
+        $_.IPAddress -notmatch '^169\.254\.' -and
+        ($_.IPAddress -match '^10\.' -or $_.IPAddress -match '^192\.168\.' -or $_.IPAddress -match '^172\.(1[6-9]|2[0-9]|3[0-1])\.')
+      } |
+      Select-Object -ExpandProperty IPAddress
+  }
+  return @($hosts | Select-Object -Unique)
 }
 
 function Normalize-FileUrlPath($path) {
@@ -49,6 +67,8 @@ function Write-EnvFile($path, $values) {
     "CONTENTBOX_ROOT",
     "DATABASE_URL",
     "JWT_SECRET",
+    "CONTENTBOX_PRIVATE_BIND",
+    "CONTENTBOX_PRIVATE_ALLOWED_HOSTS",
     "CONTENTBOX_BIND",
     "PUBLIC_MODE",
     "PORT",
@@ -136,10 +156,20 @@ $dbPath = Join-Path $dataRoot "contentbox.db"
 $envValues["DB_MODE"] = "basic"
 $envValues["CONTENTBOX_ROOT"] = $dataRoot
 $envValues["DATABASE_URL"] = "file:$(Normalize-FileUrlPath $dbPath)"
+$envValues["CONTENTBOX_PRIVATE_BIND"] = if ($envValues.ContainsKey("CONTENTBOX_PRIVATE_BIND")) { $envValues["CONTENTBOX_PRIVATE_BIND"] } else { "local" }
 $envValues["CONTENTBOX_BIND"] = if ($envValues.ContainsKey("CONTENTBOX_BIND")) { $envValues["CONTENTBOX_BIND"] } else { "local" }
 $envValues["PUBLIC_MODE"] = if ($envValues.ContainsKey("PUBLIC_MODE")) { $envValues["PUBLIC_MODE"] } else { "off" }
 $envValues["PORT"] = if ($envValues.ContainsKey("PORT")) { $envValues["PORT"] } else { "4000" }
 $envValues["APP_BASE_URL"] = if ($envValues.ContainsKey("APP_BASE_URL")) { $envValues["APP_BASE_URL"] } else { "http://127.0.0.1:4000" }
+if ($Lan) {
+  $lanHosts = Get-LanHosts
+  $lanPrimaryHost = if ($lanHosts.Count -gt 0) { $lanHosts[0] } else { "" }
+  $envValues["CONTENTBOX_PRIVATE_BIND"] = "public"
+  if ($lanHosts.Count -gt 0) {
+    $envValues["CONTENTBOX_PRIVATE_ALLOWED_HOSTS"] = ($lanHosts -join ",")
+    $envValues["APP_BASE_URL"] = "http://$lanPrimaryHost`:$($envValues["PORT"])"
+  }
+}
 if (-not $envValues.ContainsKey("JWT_SECRET") -or -not $envValues["JWT_SECRET"] -or $envValues["JWT_SECRET"] -eq "change-me") {
   $envValues["JWT_SECRET"] = New-SecretHex
 }
@@ -158,7 +188,7 @@ if (-not (Test-Path (Join-Path $apiDir "node_modules\.prisma\client"))) {
 Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "db", "push", "--schema", $schemaPath)
 
 if (Test-Health) {
-  Start-Process "http://127.0.0.1:4000"
+  Start-Process ([string]$envValues["APP_BASE_URL"])
   exit 0
 }
 
@@ -168,7 +198,7 @@ if (Test-Path $pidFile) {
   if ([int]::TryParse($rawPid, [ref]$existingPid)) {
     $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
     if ($null -ne $existing) {
-      Start-Process "http://127.0.0.1:4000"
+      Start-Process ([string]$envValues["APP_BASE_URL"])
       exit 0
     }
   }
@@ -188,7 +218,7 @@ Set-Content -Path $pidFile -Value "$($process.Id)" -Encoding ASCII
 $deadline = (Get-Date).AddSeconds(45)
 while ((Get-Date) -lt $deadline) {
   if (Test-Health) {
-    Start-Process "http://127.0.0.1:4000"
+    Start-Process ([string]$envValues["APP_BASE_URL"])
     exit 0
   }
   Start-Sleep -Milliseconds 750

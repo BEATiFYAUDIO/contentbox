@@ -38,6 +38,26 @@ require_cmd() {
 require_cmd node
 require_cmd npm
 
+set_env_line() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  if grep -q "^${key}=" "$file"; then
+    sed -i.bak "s#^${key}=.*#${key}=${value}#" "$file" && rm -f "$file.bak"
+  else
+    echo "${key}=${value}" >> "$file"
+  fi
+}
+
+detect_lan_hosts() {
+  local hosts
+  hosts="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' | paste -sd, -)"
+  if [ -z "$hosts" ]; then
+    hosts="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' | paste -sd, -)"
+  fi
+  echo "$hosts"
+}
+
 echo "[install] Node: $(node -v)"
 echo "[install] npm:  $(npm -v)"
 
@@ -71,12 +91,20 @@ if [ ! -f "$DASH_ENV" ]; then
 fi
 
 if [ "$LAN_MODE" -eq 1 ]; then
-  if grep -q '^CONTENTBOX_BIND=' "$API_ENV"; then
-    sed -i.bak 's/^CONTENTBOX_BIND=.*/CONTENTBOX_BIND=public/' "$API_ENV" && rm -f "$API_ENV.bak"
-  else
-    echo "CONTENTBOX_BIND=public" >> "$API_ENV"
+  LAN_HOSTS="$(detect_lan_hosts)"
+  LAN_PRIMARY_HOST="${LAN_HOSTS%%,*}"
+  set_env_line "$API_ENV" "CONTENTBOX_BIND" "public"
+  set_env_line "$API_ENV" "CONTENTBOX_PRIVATE_BIND" "public"
+  if [ -n "$LAN_HOSTS" ]; then
+    set_env_line "$API_ENV" "CONTENTBOX_PRIVATE_ALLOWED_HOSTS" "$LAN_HOSTS"
+    set_env_line "$API_ENV" "APP_BASE_URL" "http://${LAN_PRIMARY_HOST}:4000"
   fi
-  echo "[install] LAN mode enabled (CONTENTBOX_BIND=public)."
+  echo "[install] LAN mode enabled (private dashboard/API binds to LAN)."
+  if [ -n "$LAN_HOSTS" ]; then
+    echo "[install] LAN dashboard: http://${LAN_PRIMARY_HOST}:4000"
+  else
+    echo "[install] WARNING: no LAN IP detected; set CONTENTBOX_PRIVATE_ALLOWED_HOSTS manually if needed."
+  fi
   echo "[install] If LAN access fails, allow tcp/4000 in your firewall."
 fi
 
@@ -126,10 +154,11 @@ else
 fi
 echo "[install] Using SQLite for basic mode."
 
-if grep -q '^VITE_API_URL=' "$DASH_ENV"; then
-  sed -i.bak 's#^VITE_API_URL=.*#VITE_API_URL=http://127.0.0.1:4000#' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
+if [ "$LAN_MODE" -eq 1 ] && [ -n "${LAN_PRIMARY_HOST:-}" ]; then
+  set_env_line "$DASH_ENV" "VITE_API_BASE_URL" "http://${LAN_PRIMARY_HOST}:4000"
+  set_env_line "$DASH_ENV" "VITE_API_URL" "http://${LAN_PRIMARY_HOST}:4000"
 else
-  echo "VITE_API_URL=http://127.0.0.1:4000" >> "$DASH_ENV"
+  set_env_line "$DASH_ENV" "VITE_API_URL" "http://127.0.0.1:4000"
 fi
 if grep -q '^CONTENTBOX_ROOT=' "$DASH_ENV"; then
   sed -i.bak '/^CONTENTBOX_ROOT=/d' "$DASH_ENV" && rm -f "$DASH_ENV.bak"

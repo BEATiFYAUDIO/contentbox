@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+LAN_MODE=0
+for arg in "$@"; do
+  case "$arg" in
+    --lan) LAN_MODE=1 ;;
+    --help|-h)
+      echo "Usage: $0 [--lan]"
+      exit 0
+      ;;
+  esac
+done
+
 fail() {
   if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]]; then
     osascript -e "display alert \"Certifyd Core\" message \"$*\" as critical" >/dev/null 2>&1 || true
   fi
   echo "[Certifyd Core] $*" >&2
   exit 1
+}
+
+detect_lan_hosts() {
+  local hosts
+  hosts="$(ipconfig getifaddr en0 2>/dev/null || true)"
+  if [[ -z "$hosts" ]]; then
+    hosts="$(ifconfig 2>/dev/null | awk '/inet / {print $2}' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' | paste -sd, -)"
+  fi
+  echo "$hosts"
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,6 +71,19 @@ export PUBLIC_MODE="${PUBLIC_MODE:-off}"
 export PORT="${PORT:-4000}"
 export APP_BASE_URL="${APP_BASE_URL:-"http://127.0.0.1:$PORT"}"
 
+if [[ "$LAN_MODE" -eq 1 ]]; then
+  lan_hosts="$(detect_lan_hosts)"
+  lan_primary_host="${lan_hosts%%,*}"
+  export CONTENTBOX_PRIVATE_BIND="public"
+  if [[ -n "$lan_hosts" ]]; then
+    export CONTENTBOX_PRIVATE_ALLOWED_HOSTS="$lan_hosts"
+    export APP_BASE_URL="http://$lan_primary_host:$PORT"
+    echo "[Certifyd Core] LAN dashboard: $APP_BASE_URL"
+  else
+    echo "[Certifyd Core] WARNING: no LAN IP detected; set CONTENTBOX_PRIVATE_ALLOWED_HOSTS manually if needed." >&2
+  fi
+fi
+
 if [[ -z "${JWT_SECRET:-}" || "${JWT_SECRET:-}" == "change-me" ]]; then
   export JWT_SECRET="$("$node_bin" -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
 fi
@@ -59,6 +92,16 @@ append_config_if_missing() {
   local key="$1"
   local value="$2"
   if [[ ! -f "$env_file" ]] || ! grep -Eq "^${key}=" "$env_file"; then
+    printf '%s="%s"\n' "$key" "$value" >>"$env_file"
+  fi
+}
+
+set_config_line() {
+  local key="$1"
+  local value="$2"
+  if [[ -f "$env_file" ]] && grep -Eq "^${key}=" "$env_file"; then
+    sed -i.bak "s#^${key}=.*#${key}=\"$value\"#" "$env_file" && rm -f "$env_file.bak"
+  else
     printf '%s="%s"\n' "$key" "$value" >>"$env_file"
   fi
 }
@@ -75,6 +118,13 @@ append_config_if_missing "CONTENTBOX_ROOT" "$CONTENTBOX_ROOT"
 append_config_if_missing "DATABASE_URL" "$DATABASE_URL"
 append_config_if_missing "JWT_SECRET" "$JWT_SECRET"
 append_config_if_missing "CONTENTBOX_PRIVATE_BIND" "$CONTENTBOX_PRIVATE_BIND"
+if [[ "$LAN_MODE" -eq 1 ]]; then
+  set_config_line "CONTENTBOX_PRIVATE_BIND" "$CONTENTBOX_PRIVATE_BIND"
+  if [[ -n "${CONTENTBOX_PRIVATE_ALLOWED_HOSTS:-}" ]]; then
+    set_config_line "CONTENTBOX_PRIVATE_ALLOWED_HOSTS" "$CONTENTBOX_PRIVATE_ALLOWED_HOSTS"
+  fi
+  set_config_line "APP_BASE_URL" "$APP_BASE_URL"
+fi
 append_config_if_missing "CONTENTBOX_BIND" "$CONTENTBOX_BIND"
 append_config_if_missing "PUBLIC_MODE" "$PUBLIC_MODE"
 append_config_if_missing "PORT" "$PORT"
@@ -85,7 +135,7 @@ if [[ ! -f "$db_path" ]]; then
 fi
 
 health_url="http://127.0.0.1:$PORT/health"
-app_url="http://127.0.0.1:$PORT"
+app_url="$APP_BASE_URL"
 
 check_health() {
   "$node_bin" -e '
