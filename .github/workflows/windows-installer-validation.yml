@@ -74,7 +74,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "0.1.0-beta.7"
+          $version = "0.1.0-beta.8"
           .\scripts\build-windows-installer.ps1 -Version $version
 
       - name: Inspect packaged output
@@ -278,7 +278,7 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: certifyd-core-windows-installer-0.1.0-beta.7
+          name: certifyd-core-windows-installer-0.1.0-beta.8
           path: |
             .dist/windows-x64/installer/*.exe
             windows-validation-summary.md
