@@ -1,22 +1,107 @@
-# Certifyd Creator Quickstart
+# Certifyd Core Quickstart
 
-Authoritative first-run setup for technical beta testers.
+This guide separates normal packaged installation from source/developer installation.
 
-## Prerequisites
+## Packaged Install
 
-- Git (manual install)
-- Node.js 20+ (manual install, includes npm)
+Use the public downloads page unless you are developing Core itself:
 
-Installer scripts do not install Git or Node:
+- https://certifyd.me/downloads/
 
-- `install.sh`
-- `install.ps1`
+Supported beta packages:
 
-Cloudflare Tunnel is optional and not required for local setup.
+- Windows x64 installer
+- Linux x64 archive
+- Linux ARM64 / Raspberry Pi 64-bit archive
+- macOS Apple Silicon DMG
+- macOS Intel DMG
 
-## Recommended install path
+Packaged installs include the Core runtime, dashboard, Node runtime, production dependencies, Prisma client/engines, and database bootstrap. Users should not need Git, system Node.js, npm, or manual Prisma commands.
 
-### Windows (PowerShell)
+### Windows
+
+1. Download the Windows x64 installer.
+2. Run the installer.
+3. Launch `Certifyd Core` from the Start Menu or Desktop.
+4. Open `http://127.0.0.1:4000` if the browser does not open automatically.
+
+For a dedicated LAN machine, use `Certifyd Core (LAN Access)`.
+
+### Linux
+
+```sh
+tar -xzf Certifyd-Core-<version>-linux-x64.tar.gz
+cd Certifyd-Core-<version>-linux-x64
+./start.sh
+```
+
+For Linux ARM64 / Raspberry Pi 64-bit, use the ARM64 archive and matching extracted directory.
+
+For a dedicated LAN machine:
+
+```sh
+./start.sh --lan
+```
+
+Optional desktop launchers:
+
+```sh
+./install-desktop.sh
+```
+
+This installs both `Certifyd Core` and `Certifyd Core (LAN Access)`.
+
+### macOS
+
+1. Download the DMG for Apple Silicon or Intel.
+2. Open the DMG.
+3. Drag `Certifyd Core.app` to Applications.
+4. Open the app.
+
+For a dedicated LAN machine, open `Start Certifyd Core with LAN Access.command` from the disk image.
+
+Current beta macOS packages are unsigned and not notarized. macOS Gatekeeper may require Finder -> right-click -> Open.
+
+## LAN Appliance Mode
+
+LAN mode is for a trusted local network where Core runs on one machine and is administered from another device on the same LAN.
+
+LAN mode:
+
+- enables LAN access to the private/operator dashboard on `:4000`
+- sets `CONTENTBOX_PRIVATE_BIND=public`
+- preserves and extends `CONTENTBOX_PRIVATE_ALLOWED_HOSTS`
+- sets `APP_BASE_URL` to the selected LAN address when detected
+- does not set `CONTENTBOX_BIND=public`
+- does not broaden the public/tunnel listener on `:4010`
+
+If LAN access fails, allow TCP port `4000` through the Core machine's firewall.
+
+## Public Cloudflare / Tunnel Exposure
+
+Public sharing is separate from LAN administration.
+
+- Private/operator dashboard: `:4000`
+- Public/tunnel listener: `:4010`
+
+Do not expose `:4000` publicly without a private ingress control such as Cloudflare Access or VPN. Public creator/fan routes should use the public listener and public route allowlist.
+
+See:
+
+- [public-origin.md](public-origin.md)
+- [../README_DEV.md#publicprivate-api-boundary](../README_DEV.md#publicprivate-api-boundary)
+
+## Source / Developer Install
+
+Use this path only when running from the repository.
+
+Prerequisites:
+
+- Git
+- Node.js 20+
+- npm
+
+### Windows PowerShell
 
 ```powershell
 git --version
@@ -29,9 +114,16 @@ npm run dev:up
 start http://localhost:4000
 ```
 
+For LAN setup during source install:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Lan
+npm run dev:up
+```
+
 ### macOS / Linux
 
-```bash
+```sh
 git --version
 node -v
 npm -v
@@ -42,20 +134,26 @@ chmod +x ./install.sh
 npm run dev:up
 ```
 
+For LAN setup during source install:
+
+```sh
+./install.sh --lan
+npm run dev:up
+```
+
 Open:
 
 - Core dashboard: `http://localhost:4000`
 - API health: `http://localhost:4000/health`
+- Public listener health/routes: `http://127.0.0.1:4010` where applicable
 
-`npm run dev` is acceptable, but `npm run dev:up` is preferred for beta.
+## Manual Developer Fallback
 
-## Manual fallback (secondary)
-
-If the recommended install path fails, run API and dashboard directly.
+If the source installer fails, run API and dashboard setup directly.
 
 API:
 
-```bash
+```sh
 cd apps/api
 npm install
 npm run prisma:generate
@@ -65,90 +163,44 @@ npm run dev
 
 Dashboard:
 
-```bash
+```sh
 cd apps/dashboard
 npm install
 npm run build
 ```
 
-Open:
-
-- Core dashboard: `http://localhost:4000`
-- API health: `http://localhost:4000/health`
-
-## Three-mode progression
-
-1. Basic Creator
-2. Sovereign Creator
-3. Sovereign Node
-
-### Basic Creator
-
-- local-only is the default
-- temporary tunnel is valid only when `PUBLIC_MODE=quick`
-- publish, preview, tips
-- no durable paid-commerce posture
-
-Public test URLs are opt-in. Set `PUBLIC_MODE=off` for local-only, or `PUBLIC_MODE=quick` to create a temporary public test URL while dev is running.
-
-### Sovereign Creator
-
-- named/stable tunnel required
-- storefront remains creator-hosted
-- provider connection is optional and adds commerce services only
-
-### Sovereign Node
-
-- named/stable tunnel required
-- local BTC + local LND + local invoice readiness required
-
-## Product rules to keep in mind
-
-- Creators host storefronts.
-- Nodes provide commerce services.
-- Provider connection does not make the provider the storefront host.
-
 ## Troubleshooting
 
 - Node below 20:
   - install Node.js 20+ and retry
-- Git not found:
-  - install Git and restart terminal
-- npm not found:
-  - reinstall Node.js 20+ and restart terminal
+- Git not found during source install:
+  - install Git and restart the terminal
+- npm not found during source install:
+  - reinstall Node.js 20+ and restart the terminal
 - Windows PATH not refreshed:
   - close/reopen PowerShell, re-run `node -v` and `npm -v`
-- Port `4000` or `5173` already in use:
+- Port `4000` already in use:
   - stop old processes, then re-run `npm run dev:up`
-- macOS/Linux install script permission issue:
-  - `chmod +x ./install.sh` then `./install.sh`
 - PowerShell execution policy issue:
-  - run:
-    - `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`
-- Dashboard cannot reach API:
-  - set `VITE_API_BASE_URL=http://localhost:4000` in `apps/dashboard/.env.local`
+  - run with `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`
+- Prisma client/schema drift during source development:
+  - run `cd apps/api`
+  - run `npx prisma generate --schema prisma/schema.prisma`
+  - run `npx prisma db push --schema prisma/schema.prisma`
 
-If Prisma client/schema drift appears:
+## Product Rules
 
-```bash
-cd apps/api
-npx prisma generate --schema prisma/schema.prisma
-npx prisma db push --schema prisma/schema.prisma
-```
+- Creators host storefronts.
+- Nodes provide commerce services.
+- Provider connection does not make the provider the storefront host.
+- LAN administration and public exposure are different operating modes.
 
-If mode/commerce posture looks inconsistent:
+## Reporting Install Issues
 
-1. restart API
-2. hard refresh dashboard
-3. verify:
-   - `/api/node/mode`
-   - `/api/network/summary`
+Include:
 
-## Tester feedback
-
-When reporting install issues, include:
-
-- OS
-- step number where you got stuck
+- operating system and architecture
+- package filename or source commit
+- step where you got stuck
 - full error output
 - what you expected to happen

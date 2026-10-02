@@ -13,9 +13,6 @@ for arg in "$@"; do
 done
 
 fail() {
-  if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]]; then
-    osascript -e "display alert \"Certifyd Core\" message \"$*\" as critical" >/dev/null 2>&1 || true
-  fi
   echo "[Certifyd Core] $*" >&2
   exit 1
 }
@@ -25,7 +22,7 @@ is_private_ipv4() {
 }
 
 is_virtual_interface() {
-  echo "$1" | grep -Eiq '^(lo|utun|awdl|llw|bridge|gif|stf|anpi|zt|tun|tap|wg|tailscale)'
+  echo "$1" | grep -Eiq '^(docker|br-|veth|virbr|zt|tailscale|tun|tap|wg|podman|cni|lo)'
 }
 
 normalize_host_list() {
@@ -37,20 +34,28 @@ merge_host_lists() {
 }
 
 detect_primary_lan_host() {
-  local iface host
-  iface="$(route -n get default 2>/dev/null | awk '/interface:/ {print $2; exit}')"
-  if [[ -n "$iface" ]] && ! is_virtual_interface "$iface"; then
-    host="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
-    if [[ -n "$host" ]] && is_private_ipv4 "$host"; then
+  local host iface
+  if command -v ip >/dev/null 2>&1; then
+    host="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+    iface="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')"
+    if [[ -n "$host" ]] && is_private_ipv4 "$host" && ! is_virtual_interface "$iface"; then
+      echo "$host"
+      return 0
+    fi
+    host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2 " " $4}' | while read -r dev cidr; do
+      ip_addr="${cidr%/*}"
+      if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+        echo "$ip_addr"
+        break
+      fi
+    done)"
+    if [[ -n "$host" ]]; then
       echo "$host"
       return 0
     fi
   fi
-  ifconfig 2>/dev/null | awk '
-    /^[a-zA-Z0-9]/ { iface=$1; sub(":", "", iface) }
-    /inet / { print iface " " $2 }
-  ' | while read -r dev ip_addr; do
-    if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+  hostname -I 2>/dev/null | tr ' ' '\n' | while read -r ip_addr; do
+    if is_private_ipv4 "$ip_addr"; then
       echo "$ip_addr"
       break
     fi
@@ -60,21 +65,22 @@ detect_primary_lan_host() {
 detect_lan_hosts() {
   local primary hosts
   primary="$(detect_primary_lan_host)"
-  hosts="$(printf '%s\n%s\n' "$primary" "$(ifconfig 2>/dev/null | awk '
-    /^[a-zA-Z0-9]/ { iface=$1; sub(":", "", iface) }
-    /inet / { print iface " " $2 }
-  ' | while read -r dev ip_addr; do
-    if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
-      echo "$ip_addr"
-    fi
-  done)" | normalize_host_list)"
+  hosts="$primary"
+  if command -v ip >/dev/null 2>&1; then
+    hosts="$(printf '%s\n%s\n' "$hosts" "$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2 " " $4}' | while read -r dev cidr; do
+      ip_addr="${cidr%/*}"
+      if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+        echo "$ip_addr"
+      fi
+    done)" | normalize_host_list)"
+  fi
+  hosts="$(printf '%s\n%s\n' "$hosts" "$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' || true)" | normalize_host_list)"
   echo "$hosts"
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-resources_dir="$(cd -- "$script_dir/../Resources" && pwd)"
-app_dir="$resources_dir/app"
-node_bin="$resources_dir/runtime/node/bin/node"
+app_dir="$script_dir"
+node_bin="$app_dir/runtime/node/bin/node"
 api_dir="$app_dir/apps/api"
 schema_path="$api_dir/prisma/schema.prisma"
 prisma_cli="$api_dir/node_modules/prisma/build/index.js"
@@ -84,7 +90,7 @@ prisma_cli="$api_dir/node_modules/prisma/build/index.js"
 [[ -f "$schema_path" ]] || fail "Prisma schema missing: $schema_path"
 [[ -f "$prisma_cli" ]] || fail "Bundled Prisma CLI missing: $prisma_cli"
 
-default_data_root="$HOME/Library/Application Support/ContentBox"
+default_data_root="${XDG_DATA_HOME:-"$HOME/.local/share"}/contentbox"
 data_root="${CONTENTBOX_ROOT:-"$default_data_root"}"
 config_dir="$data_root/config"
 state_dir="$data_root/state"
@@ -127,7 +133,11 @@ if [[ "$LAN_MODE" -eq 1 ]]; then
 fi
 
 if [[ -z "${JWT_SECRET:-}" || "${JWT_SECRET:-}" == "change-me" ]]; then
-  export JWT_SECRET="$("$node_bin" -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+  if command -v openssl >/dev/null 2>&1; then
+    export JWT_SECRET="$(openssl rand -hex 32)"
+  else
+    export JWT_SECRET="$("$node_bin" -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+  fi
 fi
 
 append_config_if_missing() {
@@ -151,7 +161,7 @@ set_config_line() {
 if [[ ! -f "$env_file" ]]; then
   {
     echo "# Certifyd Core local runtime configuration"
-    echo "# This file is user data. App updates must not overwrite it."
+    echo "# This file is user data. Package updates must not overwrite it."
   } >"$env_file"
 fi
 
@@ -182,7 +192,8 @@ app_url="$APP_BASE_URL"
 check_health() {
   "$node_bin" -e '
     const http = require("http");
-    const req = http.get(process.argv[1], { timeout: 1500 }, (res) => {
+    const url = process.argv[1];
+    const req = http.get(url, { timeout: 1500 }, (res) => {
       const ok = res.statusCode >= 200 && res.statusCode < 300;
       res.resume();
       res.on("end", () => process.exit(ok ? 0 : 1));
@@ -192,11 +203,12 @@ check_health() {
   ' "$health_url" >/dev/null 2>&1
 }
 
-open_dashboard() {
-  if [[ "${CERTIFYD_NO_BROWSER:-}" == "1" ]]; then
-    return 0
+open_browser() {
+  if command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$app_url" >/dev/null 2>&1 || true
+  elif command -v sensible-browser >/dev/null 2>&1; then
+    sensible-browser "$app_url" >/dev/null 2>&1 || true
   fi
-  open "$app_url" >/dev/null 2>&1 || true
 }
 
 (
@@ -209,14 +221,14 @@ open_dashboard() {
 )
 
 if check_health; then
-  open_dashboard
+  open_browser
   exit 0
 fi
 
 if [[ -f "$pid_file" ]]; then
   existing_pid="$(tr -dc '0-9' <"$pid_file" || true)"
   if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
-    open_dashboard
+    open_browser
     exit 0
   fi
 fi
@@ -230,11 +242,14 @@ fi
 deadline=$((SECONDS + 45))
 while (( SECONDS < deadline )); do
   if check_health; then
-    open_dashboard
+    open_browser
     exit 0
   fi
   sleep 0.75
 done
 
+echo "[Certifyd Core] Core did not become ready. Logs:" >&2
+echo "  $stdout_log" >&2
+echo "  $stderr_log" >&2
 tail -n 80 "$stderr_log" >&2 || true
-fail "Core did not become ready. Logs are in $log_dir"
+exit 1

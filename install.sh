@@ -38,6 +38,92 @@ require_cmd() {
 require_cmd node
 require_cmd npm
 
+set_env_line() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  if grep -q "^${key}=" "$file"; then
+    sed -i.bak "s#^${key}=.*#${key}=${value}#" "$file" && rm -f "$file.bak"
+  else
+    echo "${key}=${value}" >> "$file"
+  fi
+}
+
+get_env_value() {
+  local file="$1"
+  local key="$2"
+  local line
+  if [ ! -f "$file" ]; then
+    return 0
+  fi
+  line="$(grep -E "^${key}=" "$file" | tail -n 1 || true)"
+  if [ -z "$line" ]; then
+    return 0
+  fi
+  printf '%s\n' "$line" | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+is_private_ipv4() {
+  echo "$1" | grep -Eq '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'
+}
+
+is_virtual_interface() {
+  echo "$1" | grep -Eiq '^(docker|br-|veth|virbr|zt|tailscale|tun|tap|wg|podman|cni|lo)'
+}
+
+normalize_host_list() {
+  tr ',[:space:]' '\n' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//" | awk 'NF && !seen[$0]++' | paste -sd, -
+}
+
+merge_host_lists() {
+  printf '%s\n%s\n' "${1:-}" "${2:-}" | normalize_host_list
+}
+
+detect_primary_lan_host() {
+  local host iface
+  if command -v ip >/dev/null 2>&1; then
+    host="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+    iface="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')"
+    if [ -n "$host" ] && is_private_ipv4 "$host" && ! is_virtual_interface "$iface"; then
+      echo "$host"
+      return 0
+    fi
+    host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2 " " $4}' | while read -r dev cidr; do
+      ip_addr="${cidr%/*}"
+      if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+        echo "$ip_addr"
+        break
+      fi
+    done)"
+    if [ -n "$host" ]; then
+      echo "$host"
+      return 0
+    fi
+  fi
+  hostname -I 2>/dev/null | tr ' ' '\n' | while read -r ip_addr; do
+    if is_private_ipv4 "$ip_addr"; then
+      echo "$ip_addr"
+      break
+    fi
+  done
+}
+
+detect_lan_hosts() {
+  local primary hosts
+  primary="$(detect_primary_lan_host)"
+  hosts="$primary"
+  if command -v ip >/dev/null 2>&1; then
+    hosts="$(printf '%s\n%s\n' "$hosts" "$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2 " " $4}' | while read -r dev cidr; do
+      ip_addr="${cidr%/*}"
+      if is_private_ipv4 "$ip_addr" && ! is_virtual_interface "$dev"; then
+        echo "$ip_addr"
+      fi
+    done)" | normalize_host_list)"
+  fi
+  hosts="$(printf '%s\n%s\n' "$hosts" "$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' || true)" | normalize_host_list)"
+  echo "$hosts"
+}
+
 echo "[install] Node: $(node -v)"
 echo "[install] npm:  $(npm -v)"
 
@@ -71,12 +157,21 @@ if [ ! -f "$DASH_ENV" ]; then
 fi
 
 if [ "$LAN_MODE" -eq 1 ]; then
-  if grep -q '^CONTENTBOX_BIND=' "$API_ENV"; then
-    sed -i.bak 's/^CONTENTBOX_BIND=.*/CONTENTBOX_BIND=public/' "$API_ENV" && rm -f "$API_ENV.bak"
-  else
-    echo "CONTENTBOX_BIND=public" >> "$API_ENV"
+  LAN_HOSTS="$(detect_lan_hosts)"
+  LAN_PRIMARY_HOST="${LAN_HOSTS%%,*}"
+  set_env_line "$API_ENV" "CONTENTBOX_PRIVATE_BIND" "public"
+  if [ -n "$LAN_HOSTS" ]; then
+    EXISTING_ALLOWED_HOSTS="$(get_env_value "$API_ENV" "CONTENTBOX_PRIVATE_ALLOWED_HOSTS")"
+    MERGED_ALLOWED_HOSTS="$(merge_host_lists "$EXISTING_ALLOWED_HOSTS" "$LAN_HOSTS")"
+    set_env_line "$API_ENV" "CONTENTBOX_PRIVATE_ALLOWED_HOSTS" "$MERGED_ALLOWED_HOSTS"
+    set_env_line "$API_ENV" "APP_BASE_URL" "http://${LAN_PRIMARY_HOST}:4000"
   fi
-  echo "[install] LAN mode enabled (CONTENTBOX_BIND=public)."
+  echo "[install] LAN mode enabled (private dashboard/API binds to LAN)."
+  if [ -n "$LAN_HOSTS" ]; then
+    echo "[install] LAN dashboard: http://${LAN_PRIMARY_HOST}:4000"
+  else
+    echo "[install] WARNING: no LAN IP detected; set CONTENTBOX_PRIVATE_ALLOWED_HOSTS manually if needed."
+  fi
   echo "[install] If LAN access fails, allow tcp/4000 in your firewall."
 fi
 
@@ -103,39 +198,40 @@ ensure_contentbox_root() {
   echo "$root_val"
 }
 
-if grep -q '^DB_MODE=' "$API_ENV"; then
-  sed -i.bak "s#^DB_MODE=.*#DB_MODE=basic#" "$API_ENV" && rm -f "$API_ENV.bak"
+EXISTING_DB_MODE="$(get_env_value "$API_ENV" "DB_MODE")"
+if [ -z "$EXISTING_DB_MODE" ] || echo "$EXISTING_DB_MODE" | grep -q "<user>"; then
+  set_env_line "$API_ENV" "DB_MODE" "basic"
+  echo "[install] Using DB_MODE=basic."
 else
-  echo "DB_MODE=basic" >> "$API_ENV"
+  echo "[install] Preserving existing DB_MODE=$EXISTING_DB_MODE."
 fi
-echo "[install] Using DB_MODE=basic."
 
 ROOT_VAL="$(ensure_contentbox_root)"
-ROOT_VAL="$REAL_HOME/contentbox-data"
 mkdir -p "$ROOT_VAL"
-if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
-  sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$ROOT_VAL\"#" "$API_ENV" && rm -f "$API_ENV.bak"
-else
-  echo "CONTENTBOX_ROOT=\"$ROOT_VAL\"" >> "$API_ENV"
-fi
 SQLITE_URL="file:${ROOT_VAL}/contentbox.db"
-if grep -q '^DATABASE_URL=' "$API_ENV"; then
-  sed -i.bak "s#^DATABASE_URL=.*#DATABASE_URL=\"${SQLITE_URL}\"#" "$API_ENV" && rm -f "$API_ENV.bak"
+EXISTING_DATABASE_URL="$(get_env_value "$API_ENV" "DATABASE_URL")"
+if [ -z "$EXISTING_DATABASE_URL" ] || [ "$EXISTING_DATABASE_URL" = "file:./contentbox.db" ] || echo "$EXISTING_DATABASE_URL" | grep -q "<user>"; then
+  set_env_line "$API_ENV" "DATABASE_URL" "\"${SQLITE_URL}\""
+  echo "[install] Using SQLite for basic mode."
 else
-  echo "DATABASE_URL=\"${SQLITE_URL}\"" >> "$API_ENV"
+  echo "[install] Preserving existing DATABASE_URL."
 fi
-echo "[install] Using SQLite for basic mode."
-SQLITE_DB_PATH="${SQLITE_URL#file:}"
-SQLITE_DB_PATH="${SQLITE_DB_PATH%%\?*}"
-if [ ! -e "$SQLITE_DB_PATH" ]; then
-  : > "$SQLITE_DB_PATH"
-  echo "[install] Created empty SQLite database file."
+EFFECTIVE_DATABASE_URL="$(get_env_value "$API_ENV" "DATABASE_URL")"
+if [[ "$EFFECTIVE_DATABASE_URL" == file:/* ]]; then
+  SQLITE_DB_PATH="${EFFECTIVE_DATABASE_URL#file:}"
+  SQLITE_DB_PATH="${SQLITE_DB_PATH%%\?*}"
+  mkdir -p "$(dirname "$SQLITE_DB_PATH")"
+  if [ ! -e "$SQLITE_DB_PATH" ]; then
+    : > "$SQLITE_DB_PATH"
+    echo "[install] Created empty SQLite database file."
+  fi
 fi
 
-if grep -q '^VITE_API_URL=' "$DASH_ENV"; then
-  sed -i.bak 's#^VITE_API_URL=.*#VITE_API_URL=http://127.0.0.1:4000#' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
+if [ "$LAN_MODE" -eq 1 ] && [ -n "${LAN_PRIMARY_HOST:-}" ]; then
+  set_env_line "$DASH_ENV" "VITE_API_BASE_URL" "http://${LAN_PRIMARY_HOST}:4000"
+  set_env_line "$DASH_ENV" "VITE_API_URL" "http://${LAN_PRIMARY_HOST}:4000"
 else
-  echo "VITE_API_URL=http://127.0.0.1:4000" >> "$DASH_ENV"
+  set_env_line "$DASH_ENV" "VITE_API_URL" "http://127.0.0.1:4000"
 fi
 if grep -q '^CONTENTBOX_ROOT=' "$DASH_ENV"; then
   sed -i.bak '/^CONTENTBOX_ROOT=/d' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
