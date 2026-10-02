@@ -162,6 +162,7 @@ import {
   type ReceiptType
 } from "./lib/receipts.js";
 import { registerWitnessRoutes } from "./modules/witness/witness.routes.js";
+import { getPublicCertifydArConnections, registerCertifydArRoutes } from "./modules/witness/certifydAr.routes.js";
 import {
   assertCanPublish as assertLifecycleCanPublish,
   assertCanUpload as assertLifecycleCanUpload,
@@ -18583,6 +18584,7 @@ app.get("/api/me/creator-signal", { preHandler: requireAuth }, async (req: any, 
 });
 
 registerWitnessRoutes(app, { prisma, requireAuth });
+registerCertifydArRoutes(app, { prisma, requireAuth });
 
 // Public exposure control
 app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -36541,6 +36543,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
     .sort((a, b) => a.pubkey.localeCompare(b.pubkey));
 
   const activeWitness = user.witnessIdentity && !user.witnessIdentity.revokedAt ? user.witnessIdentity : null;
+  const arConnections = await getPublicCertifydArConnections(prisma, user.id, activeWitness);
   const witnessHistory = activeWitness && Array.isArray((activeWitness as any).keys)
     ? (activeWitness as any).keys.map((key: any) => ({
         algorithm: asString(key.algorithm || ""),
@@ -36572,12 +36575,14 @@ async function handlePublicProofBundle(req: any, reply: any) {
       social,
       nostr
     },
+    connectedApps: { certifydAr: arConnections },
     creatorSignal,
     generatedAt: new Date().toISOString(),
     signature: null
   };
 
   reply.type("application/json; charset=utf-8");
+  reply.header("Cache-Control", "no-store");
   return reply.send(bundle);
 }
 

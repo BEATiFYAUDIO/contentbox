@@ -12,7 +12,7 @@
     "prisma:check": "prisma validate && prisma generate",
     "prisma:seed": "prisma db seed",
     "upgrade:advanced": "powershell -NoProfile -ExecutionPolicy Bypass -File ./upgrade-advanced.ps1",
-    "test": "npm run smoke:mode && npm run test:fan-handoff && npm run test:lightning-onboarding && npm run test:public-boundary && npm run test:public-playback && npm run test:delivery-security && npm run test:delivery-security-integration && npm run test:witness-recovery",
+    "test": "npm run smoke:mode && npm run test:fan-handoff && npm run test:lightning-onboarding && npm run test:public-boundary && npm run test:public-playback && npm run test:delivery-security && npm run test:delivery-security-integration && npm run test:witness-recovery && npm run test:certifyd-ar",
     "smoke:mode": "tsx src/scripts/node_mode_test.ts",
     "smoke:basic": "npm run smoke:mode",
     "smoke:advanced": "tsx src/scripts/node_mode_persist_test.ts && cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/single_identity_guard_test.ts",
@@ -34,6 +34,7 @@
     "test:delivery-security": "npx tsx --test src/lib/deliverySecurity.test.ts",
     "test:delivery-security-integration": "npx tsx --test src/lib/deliverySecurity.integration.test.ts",
     "test:witness-recovery": "npx tsx --test src/modules/witness/witness.service.test.ts",
+    "test:certifyd-ar": "npx tsx --test src/modules/witness/certifydAr.routes.test.ts",
     "test:derivative-accounting-regression": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/derivative_accounting_regression_checks.ts",
     "smoke:stage1a-miniplayer": "tsx src/scripts/stage1a_miniplayer_qa.ts"
   },

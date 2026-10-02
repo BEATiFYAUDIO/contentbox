@@ -172,6 +172,7 @@ model User {
   witnessIdentityEvents WitnessIdentityEvent[]
   witnessIdentityRecoveryChallenges WitnessIdentityRecoveryChallenge[]
   proofRecords         ProofRecord[]
+  certifydArConnections CertifydArConnection[]
 
   @@index([email])
 }
@@ -1017,8 +1018,27 @@ model WitnessIdentity {
   keys WitnessIdentityKey[]
   events WitnessIdentityEvent[]
   recoveryChallenges WitnessIdentityRecoveryChallenge[]
+  certifydArConnections CertifydArConnection[]
 
   @@index([fingerprint])
+}
+
+model CertifydArConnection {
+  id                String    @id @default(cuid())
+  userId            String
+  witnessIdentityId String
+  witnessPublicKey  String
+  publicKey         String    @unique
+  authorizationText String
+  signature         String
+  createdAt         DateTime  @default(now())
+  revokedAt         DateTime?
+
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  witnessIdentity WitnessIdentity @relation(fields: [witnessIdentityId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([witnessIdentityId, revokedAt])
 }
 
 model WitnessIdentityKey {
