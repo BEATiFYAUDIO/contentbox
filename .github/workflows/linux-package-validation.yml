@@ -2,10 +2,23 @@ name: Linux Package Validation
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Certifyd Core package version to build
+        required: true
+        default: 0.1.0-beta.10
+      source_ref:
+        description: Exact source commit/ref to package
+        required: true
+        default: 1f496f486fa1dee499f567388bf6accde8e04e83
   push:
     branches:
       - "temp/linux-package-validation-*"
       - "temp/release-assembly-*"
+
+env:
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '0.1.0-beta.10' }}
+  RELEASE_SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
 
 jobs:
   build-and-validate:
@@ -24,8 +37,27 @@ jobs:
             port: 4571
 
     steps:
-      - name: Check out temporary branch
+      - name: Check out release source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE_REF }}
+
+      - name: Verify release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          echo "RELEASE_SOURCE_COMMIT=$actual" >> "$GITHUB_ENV"
+          {
+            echo "## Release source"
+            echo "Requested source=${RELEASE_SOURCE_REF}"
+            echo "Checked out source=$actual"
+            echo "Version=${RELEASE_VERSION}"
+          } | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+          if [[ "$RELEASE_SOURCE_REF" =~ ^[0-9a-fA-F]{40}$ ]] && [[ "${actual,,}" != "${RELEASE_SOURCE_REF,,}" ]]; then
+            echo "Checked out HEAD does not match requested source commit" >&2
+            exit 1
+          fi
 
       - name: Record Linux runner environment
         shell: bash
@@ -43,14 +75,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          scripts/build-linux-package.sh --arch "${{ matrix.arch }}" --version "0.1.0-beta.9"
+          scripts/build-linux-package.sh --arch "${{ matrix.arch }}" --version "$RELEASE_VERSION"
 
       - name: Inspect packaged output
         shell: bash
         run: |
           set -euo pipefail
+          expected=".dist/linux-${{ matrix.arch }}/package/Certifyd-Core-${RELEASE_VERSION}-linux-${{ matrix.arch }}.tar.gz"
           archive="$(find ".dist/linux-${{ matrix.arch }}/package" -maxdepth 1 -name '*.tar.gz' -print -quit)"
           test -n "$archive"
+          test "$archive" = "$expected"
           size="$(stat -c '%s' "$archive")"
           hash="$(sha256sum "$archive" | awk '{print $1}')"
           echo "PACKAGE_PATH=$archive" >> "$GITHUB_ENV"
@@ -62,6 +96,7 @@ jobs:
             echo "Package=$(basename "$archive")"
             echo "Package size=$size"
             echo "SHA-256=$hash"
+            echo "Source commit=$RELEASE_SOURCE_COMMIT"
           } | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
 
       - name: Extract and validate runtime
@@ -74,6 +109,14 @@ jobs:
           tar -xzf "$PACKAGE_PATH" -C "$test_root"
           app="$(find "$test_root" -mindepth 1 -maxdepth 1 -type d -name 'Certifyd-Core-*' -print -quit)"
           test -n "$app"
+          case "$(basename "$app")" in
+            "Certifyd-Core-${RELEASE_VERSION}-linux-${{ matrix.arch }}") ;;
+            *) echo "Unexpected package root: $(basename "$app")" >&2; exit 1 ;;
+          esac
+          if find "$app" -name '.env' -o -name '.env.*' | grep -q .; then
+            echo "Packaged .env file found" >&2
+            exit 1
+          fi
           node_bin="$app/runtime/node/bin/node"
           blocked_bin="$(mktemp -d)"
           for blocked in git node npm; do
@@ -126,7 +169,7 @@ jobs:
       - name: Upload Linux package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: certifyd-core-linux-${{ matrix.arch }}-0.1.0-beta.9
+          name: certifyd-core-linux-${{ matrix.arch }}-${{ env.RELEASE_VERSION }}
           path: |
             .dist/linux-${{ matrix.arch }}/package/*.tar.gz
             .dist/linux-${{ matrix.arch }}/package/*.sha256

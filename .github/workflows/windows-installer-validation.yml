@@ -2,10 +2,23 @@ name: Windows Installer Validation
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Certifyd Core package version to build
+        required: true
+        default: 0.1.0-beta.10
+      source_ref:
+        description: Exact source commit/ref to package
+        required: true
+        default: 1f496f486fa1dee499f567388bf6accde8e04e83
   push:
     branches:
       - "temp/windows-installer-validation-*"
       - "temp/release-assembly-*"
+
+env:
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '0.1.0-beta.10' }}
+  RELEASE_SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
 
 jobs:
   build-and-validate:
@@ -14,14 +27,30 @@ jobs:
     timeout-minutes: 75
 
     steps:
-      - name: Check out temporary branch
+      - name: Check out release source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SOURCE_REF }}
+
+      - name: Verify release source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $actual = (git rev-parse HEAD).Trim()
+          "RELEASE_SOURCE_COMMIT=$actual" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "## Release source" | Tee-Object windows-validation-summary.md
+          "Requested source=$env:RELEASE_SOURCE_REF" | Tee-Object -Append windows-validation-summary.md
+          "Checked out source=$actual" | Tee-Object -Append windows-validation-summary.md
+          "Version=$env:RELEASE_VERSION" | Tee-Object -Append windows-validation-summary.md
+          if ($env:RELEASE_SOURCE_REF -match '^[0-9a-fA-F]{40}$' -and $actual.ToLowerInvariant() -ne $env:RELEASE_SOURCE_REF.ToLowerInvariant()) {
+            throw "Checked out HEAD does not match requested source commit."
+          }
 
       - name: Record Windows runner environment
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          "## Windows runner environment" | Out-File windows-validation-summary.md
+          "## Windows runner environment" | Tee-Object -Append windows-validation-summary.md
           $computerInfo = Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture, OsHardwareAbstractionLayer
           $computerInfo | Format-List | Tee-Object -Append windows-validation-summary.md
           "" | Tee-Object -Append windows-validation-summary.md
@@ -74,17 +103,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "0.1.0-beta.9"
-          .\scripts\build-windows-installer.ps1 -Version $version
+          .\scripts\build-windows-installer.ps1 -Version $env:RELEASE_VERSION
 
       - name: Inspect packaged output
         id: package
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $expectedName = "Certifyd-Core-Setup-$env:RELEASE_VERSION-win-x64.exe"
           $installer = Get-ChildItem ".dist\windows-x64\installer" -Filter "*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $installer) {
             throw "Expected installer artifact was not produced."
+          }
+          if ($installer.Name -ne $expectedName) {
+            throw "Unexpected installer name: $($installer.Name); expected $expectedName"
           }
 
           $stage = Resolve-Path ".dist\windows-x64\stage"
@@ -94,6 +126,10 @@ jobs:
           $dashboardIndex = Join-Path $stage "app\apps\dashboard\dist\index.html"
           $prismaClient = Join-Path $apiDir "node_modules\.prisma\client"
           $prismaEngines = Join-Path $apiDir "node_modules\@prisma\engines"
+          $envFiles = Get-ChildItem $stage -Recurse -Force -File -Include ".env", ".env.*" -ErrorAction SilentlyContinue
+          if ($envFiles) {
+            throw "Packaged .env file found: $($envFiles[0].FullName)"
+          }
 
           foreach ($path in @($nodeExe, $npmCmd, $apiDir, $dashboardIndex, $prismaClient, $prismaEngines)) {
             if (-not (Test-Path $path)) {
@@ -121,6 +157,7 @@ jobs:
           "Installer=$($installer.Name)" | Tee-Object -Append windows-validation-summary.md
           "Installer size=$size" | Tee-Object -Append windows-validation-summary.md
           "SHA-256=$hash" | Tee-Object -Append windows-validation-summary.md
+          "Source commit=$env:RELEASE_SOURCE_COMMIT" | Tee-Object -Append windows-validation-summary.md
           "Bundled Node=$nodeVersion" | Tee-Object -Append windows-validation-summary.md
           "Prisma version:" | Tee-Object -Append windows-validation-summary.md
           $prismaVersion | Tee-Object -Append windows-validation-summary.md
@@ -278,7 +315,7 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: certifyd-core-windows-installer-0.1.0-beta.9
+          name: certifyd-core-windows-installer-${{ env.RELEASE_VERSION }}
           path: |
             .dist/windows-x64/installer/*.exe
             windows-validation-summary.md
