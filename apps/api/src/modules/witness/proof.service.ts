@@ -203,15 +203,35 @@ function socialSubject(provider: string, account: string): string {
 const SOCIAL_PROOF_PREFIX_CERTIFYD = "certifyd-proof";
 const SOCIAL_PROOF_PREFIX_LEGACY = "contentbox-social-verify";
 const SOCIAL_PROOF_PATTERN = /^(certifyd-proof|contentbox-social-verify)\s+provider=([^\s]+)\s+account=([^\s]+)\s+nonce=([^\s]+)$/i;
+const TIKTOK_SHORT_SOCIAL_PROOF_PATTERN = /^certifyd-proof\s+account=([^\s]+)\s+nonce=([^\s]+)$/i;
 
 function buildSocialChallengeMessage(provider: SocialProvider, account: string, nonce: string): string {
   if (provider === "spotify") return `Certifyd proof: ${nonce}`;
+  if (provider === "tiktok") return `${SOCIAL_PROOF_PREFIX_CERTIFYD} account=${account} nonce=${nonce}`;
   return `${SOCIAL_PROOF_PREFIX_CERTIFYD} provider=${provider} account=${account} nonce=${nonce}`;
 }
 
-function socialChallengeCandidates(challengeText: string): string[] {
+function containsSocialChallenge(text: string, challenge: string): boolean {
+  const haystack = String(text || "");
+  const needle = String(challenge || "");
+  if (!haystack || !needle) return false;
+  if (haystack.includes(needle)) return true;
+  const compactHaystack = haystack.replace(/\s+/g, " ").trim();
+  const compactNeedle = needle.replace(/\s+/g, " ").trim();
+  return Boolean(compactHaystack && compactNeedle && compactHaystack.includes(compactNeedle));
+}
+
+function socialChallengeCandidates(challengeText: string, providerHint?: SocialProvider): string[] {
   const normalized = String(challengeText || "").trim();
   if (!normalized) return [];
+
+  const shortTikTok = normalized.match(TIKTOK_SHORT_SOCIAL_PROOF_PATTERN);
+  if (shortTikTok) {
+    const account = String(shortTikTok[1] || "").trim();
+    const nonce = String(shortTikTok[2] || "").trim();
+    if (!account || !nonce) return [normalized];
+    return providerHint === "tiktok" ? [`${SOCIAL_PROOF_PREFIX_CERTIFYD} account=${account} nonce=${nonce}`] : [normalized];
+  }
 
   const match = normalized.match(SOCIAL_PROOF_PATTERN);
   if (!match) return [normalized];
@@ -221,10 +241,14 @@ function socialChallengeCandidates(challengeText: string): string[] {
   const nonce = String(match[4] || "").trim();
   if (!provider || !account || !nonce) return [normalized];
 
-  return [
+  const candidates = [
     `${SOCIAL_PROOF_PREFIX_CERTIFYD} provider=${provider} account=${account} nonce=${nonce}`,
     `${SOCIAL_PROOF_PREFIX_LEGACY} provider=${provider} account=${account} nonce=${nonce}`
   ];
+  if (providerHint === "tiktok" && provider.toLowerCase() === "tiktok") {
+    candidates.push(`${SOCIAL_PROOF_PREFIX_CERTIFYD} account=${account} nonce=${nonce}`);
+  }
+  return candidates;
 }
 
 function parseSocialClaim(claim: unknown): {
@@ -1392,7 +1416,7 @@ export async function verifySocialProof(
     }
   }
 
-  const acceptedChallenges = socialChallengeCandidates(claim.challengeText);
+  const acceptedChallenges = socialChallengeCandidates(claim.challengeText, provider);
   const candidateUrls = providerProfileUrlCandidates(provider, requestAccount, rawLocation, {
     channelUrl: claim.channelUrl,
     profileUrl: claim.profileUrl
@@ -1410,14 +1434,16 @@ export async function verifySocialProof(
     attemptedUrls.push(candidateUrl);
     try {
       const fetched = await fetchUrlText(candidateUrl, provider);
+      const fetchedAccount = accountFromProviderUrl(provider, fetched.finalUrl || candidateUrl);
+      const finalUrlMatchesAccount = Boolean(fetchedAccount) && normalizeStoredSocialAccount(provider, fetchedAccount || "") === requestAccount;
       const evidence = buildSocialEvidence(provider, fetched.text);
-      const candidateMatched = acceptedChallenges.find((c) => {
-        if (evidence.searchableText.includes(c)) return true;
+      const candidateMatched = finalUrlMatchesAccount ? acceptedChallenges.find((c) => {
+        if (containsSocialChallenge(evidence.searchableText, c)) return true;
         // Regression guard: previous behavior matched against raw fetched HTML.
         // Keep strict exact challenge matching while allowing Instagram HTML path.
-        if (provider === "instagram" && fetched.text.includes(c)) return true;
+        if (provider === "instagram" && containsSocialChallenge(fetched.text, c)) return true;
         return false;
-      });
+      }) : undefined;
       if (fetched.ok && candidateMatched) {
         verified = true;
         matchedUrl = fetched.finalUrl || candidateUrl;
@@ -1429,6 +1455,8 @@ export async function verifySocialProof(
 
       if (!fetched.ok) {
         failureReason = `url-fetch-http-${fetched.status}`;
+      } else if (!finalUrlMatchesAccount) {
+        failureReason = "social-location-redirect-mismatch";
       } else {
         const issue = classifySocialFetchIssue(provider, fetched);
         if (provider === "spotify" && !evidence.bioText) {
@@ -1464,6 +1492,7 @@ export async function verifySocialProof(
         attemptedUrl: candidateUrl,
         finalUrl: fetched.finalUrl,
         redirected: fetched.redirected,
+        finalUrlMatchesAccount,
         status: fetched.status,
         contentType: fetched.contentType,
         matchedChallengePrefix: candidateMatched
