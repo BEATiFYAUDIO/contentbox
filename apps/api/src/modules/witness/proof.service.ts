@@ -1344,6 +1344,46 @@ export async function createSocialChallenge(
   return toDto(row);
 }
 
+export async function verifySocialProofDryRun(
+  prisma: PrismaClient,
+  userId: string,
+  inputProvider: string,
+  inputUsername: string,
+  inputLocation: string
+): Promise<ProofRecordDto> {
+  const baseModel = proofModel(prisma);
+  const readOnlyPrisma = {
+    ...(prisma as any),
+    proofRecord: {
+      findUnique: baseModel.findUnique.bind(baseModel),
+      update: async ({ where, data }: any) => {
+        const existing = await baseModel.findUnique({
+          where: { id: where?.id },
+          select: {
+            id: true,
+            proofType: true,
+            subject: true,
+            claimJson: true,
+            signature: true,
+            status: true,
+            verificationMethod: true,
+            location: true,
+            createdAt: true,
+            updatedAt: true,
+            verifiedAt: true,
+            revokedAt: true,
+            failureReason: true
+          }
+        });
+        if (!existing) throw new Error("PROOF_CHALLENGE_NOT_FOUND");
+        return { ...existing, ...data };
+      }
+    }
+  } as any;
+
+  return verifySocialProof(readOnlyPrisma, userId, inputProvider, inputUsername, inputLocation);
+}
+
 export async function verifySocialProof(
   prisma: PrismaClient,
   userId: string,
