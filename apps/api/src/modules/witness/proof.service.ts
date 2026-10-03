@@ -383,7 +383,7 @@ function normalizeRedditProfileUrl(input: string): { canonicalUrl: string; accou
   const url = normalizeHttpsUrl(trimmed);
   if (!url) return null;
   const host = String(url.hostname || "").toLowerCase();
-  if (host !== "www.reddit.com" && host !== "reddit.com") return null;
+  if (host !== "www.reddit.com" && host !== "reddit.com" && host !== "old.reddit.com") return null;
   const pathname = String(url.pathname || "").replace(/\/+$/, "");
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length < 2) return null;
@@ -1484,7 +1484,7 @@ export async function verifySocialProof(
         if (provider === "instagram" && containsSocialChallenge(fetched.text, c)) return true;
         return false;
       }) : undefined;
-      if (fetched.ok && candidateMatched) {
+      if ((fetched.ok || (provider === "reddit" && Boolean(candidateMatched))) && candidateMatched) {
         verified = true;
         matchedUrl = fetched.finalUrl || candidateUrl;
         matchedChallengePrefix = candidateMatched.startsWith(SOCIAL_PROOF_PREFIX_CERTIFYD)

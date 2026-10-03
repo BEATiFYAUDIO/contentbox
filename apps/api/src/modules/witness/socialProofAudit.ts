@@ -109,6 +109,17 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+
+function usesLegacyProofLocation(provider: string, location: string | null): boolean {
+  if (!location) return false;
+  try {
+    const url = new URL(location);
+    return provider === "reddit" && url.hostname.toLowerCase() === "old.reddit.com";
+  } catch {
+    return false;
+  }
+}
+
 function classifyFailure(reason: string | null): SocialProofAuditClassification {
   const r = asString(reason).toLowerCase();
   if (!r) return "UNREACHABLE_PLATFORM_GATED";
@@ -217,6 +228,7 @@ export async function auditSocialProofRows(
     const normalizedAccount = normalizeAccount(provider, claim.account);
     const canonical = challengeIsCanonical(provider, normalizedAccount, claim.challengeText);
     const location = row.location || claim.profileUrl || claim.channelUrl || "";
+    const legacyProofLocation = usesLegacyProofLocation(provider, location || null);
     let verificationSucceeds = false;
     let failureReason: string | null = null;
     let publicProofStillResolves = false;
@@ -233,7 +245,7 @@ export async function auditSocialProofRows(
     }
 
     const finalClassification: SocialProofAuditClassification = verificationSucceeds
-      ? canonical ? "PASS" : "LEGACY_PASS"
+      ? canonical && !legacyProofLocation ? "PASS" : "LEGACY_PASS"
       : classifyFailure(failureReason);
 
     results.push({
@@ -250,7 +262,7 @@ export async function auditSocialProofRows(
       currentCanonicalFormat: canonicalFormat(provider),
       publicProofStillResolves,
       verificationSucceeds,
-      successRequiredLegacyCompatibility: verificationSucceeds && !canonical,
+      successRequiredLegacyCompatibility: verificationSucceeds && (!canonical || legacyProofLocation),
       failureReason: verificationSucceeds ? null : failureReason,
       finalClassification,
       recommendedHumanAction: recommendedAction(finalClassification, provider, failureReason)

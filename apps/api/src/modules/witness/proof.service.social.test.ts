@@ -220,3 +220,83 @@ test("Core generates canonical social proof markers by provider", async () => {
     if (provider === "tiktok") assert.equal(challengeText.length <= 80, true);
   }
 });
+
+const redditAccount = "lopsided_horror_9957";
+const redditMarker = `certifyd-proof provider=reddit account=${redditAccount} nonce=${nonce}`;
+const redditMarkerSplit = `certifyd-proof provider=reddit\naccount=${redditAccount}\nnonce=${nonce}`;
+const redditCanonicalLocation = "https://www.reddit.com/user/Lopsided_Horror_9957/";
+const redditLegacyLocation = "https://old.reddit.com/user/lopsided_horror_9957/";
+
+async function verifyReddit(inputLocation: string, body: string, fixture: Partial<FetchFixture> = {}, inputAccount = redditAccount) {
+  const prisma = new ProofPrismaStub({
+    ...proofRow("reddit", redditAccount, redditMarker),
+    claimJson: { provider: "reddit", account: redditAccount, profileUrl: redditCanonicalLocation, challengeText: redditMarker }
+  });
+  const proof = await withFetch({ body, finalUrl: inputLocation, ...fixture }, () => verifySocialProof(prisma as any, "user-1", "reddit", inputAccount, inputLocation));
+  return { proof, row: prisma.row };
+}
+
+test("Reddit canonical www user proof verifies", async () => {
+  const { proof } = await verifyReddit(redditCanonicalLocation, html(redditMarkerSplit), { finalUrl: redditCanonicalLocation });
+  assert.equal(proof.status, "verified");
+  assert.equal(proof.failureReason, null);
+});
+
+test("Reddit legacy old.reddit.com user proof verifies", async () => {
+  const { proof } = await verifyReddit(redditLegacyLocation, html(redditMarkerSplit), { finalUrl: redditLegacyLocation });
+  assert.equal(proof.status, "verified");
+  assert.equal(proof.failureReason, null);
+});
+
+test("Reddit username case differences normalize correctly", async () => {
+  const { proof } = await verifyReddit(redditCanonicalLocation, html(redditMarkerSplit), { finalUrl: redditCanonicalLocation }, "Lopsided_Horror_9957");
+  assert.equal(proof.status, "verified");
+});
+
+test("Reddit wrong username location fails", async () => {
+  await assert.rejects(
+    () => verifyReddit("https://www.reddit.com/user/other_user/", html(redditMarker), { finalUrl: "https://www.reddit.com/user/other_user/" }),
+    /SOCIAL_LOCATION_MISMATCH/
+  );
+});
+
+test("Reddit wrong or stale nonce fails", async () => {
+  const wrong = await verifyReddit(redditCanonicalLocation, html(`certifyd-proof provider=reddit account=${redditAccount} nonce=0000${nonce.slice(4)}`), { finalUrl: redditCanonicalLocation });
+  assert.equal(wrong.proof.status, "pending");
+  const stale = await verifyReddit(redditCanonicalLocation, html(`certifyd-proof provider=reddit account=${redditAccount} nonce=stale${nonce}`), { finalUrl: redditCanonicalLocation });
+  assert.equal(stale.proof.status, "pending");
+});
+
+test("Reddit redirect to different user fails", async () => {
+  const { proof } = await verifyReddit(redditLegacyLocation, html(redditMarker), {
+    finalUrl: "https://www.reddit.com/user/other_user/",
+    redirected: true
+  });
+  assert.equal(proof.status, "pending");
+  assert.equal(proof.failureReason, "social-location-redirect-mismatch");
+});
+
+test("Reddit redirect off Reddit fails", async () => {
+  const { proof } = await verifyReddit(redditLegacyLocation, html(redditMarker), {
+    finalUrl: "https://example.com/user/lopsided_horror_9957/",
+    redirected: true
+  });
+  assert.equal(proof.status, "pending");
+  assert.equal(proof.failureReason, "social-location-redirect-mismatch");
+});
+
+test("malformed old.reddit.com URL fails", async () => {
+  await assert.rejects(
+    () => verifyReddit("https://old.reddit.com/r/lopsided_horror_9957/", html(redditMarker), { finalUrl: "https://old.reddit.com/r/lopsided_horror_9957/" }),
+    /INVALID_SOCIAL_LOCATION/
+  );
+});
+
+test("Reddit profile content with marker can verify despite Reddit about 404", async () => {
+  const { proof } = await verifyReddit(redditLegacyLocation, html(redditMarkerSplit), {
+    status: 404,
+    finalUrl: "https://www.reddit.com/user/lopsided_horror_9957/about/",
+    redirected: true
+  });
+  assert.equal(proof.status, "verified");
+});

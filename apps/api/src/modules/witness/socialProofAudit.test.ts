@@ -50,6 +50,7 @@ function row(id: string, provider: string, proofAccount: string, challengeText: 
 function profileUrl(provider: string, proofAccount: string) {
   if (provider === "github") return `https://github.com/${proofAccount}`;
   if (provider === "youtube") return `https://www.youtube.com/@${proofAccount}`;
+  if (provider === "reddit") return `https://www.reddit.com/user/${proofAccount}`;
   return `https://www.tiktok.com/@${proofAccount}`;
 }
 
@@ -130,4 +131,17 @@ test("audit reuses production verifier behavior and does not mutate proof record
   assert.equal(result.finalClassification, "PASS");
   assert.equal(rows[0].status, "verified");
   assert.equal(rows[0].failureReason, null);
+});
+
+
+test("legacy old.reddit.com path is classified LEGACY_PASS in audit", async () => {
+  const redditAccount = "lopsided_horror_9957";
+  const redditMarker = `certifyd-proof provider=reddit account=${redditAccount} nonce=${nonce}`;
+  const result = await runAuditWithFetch(
+    [row("p1", "reddit", redditAccount, redditMarker, `https://old.reddit.com/user/${redditAccount}/`)],
+    { body: html(redditMarker), finalUrl: `https://www.reddit.com/user/Lopsided_Horror_9957/`, redirected: true }
+  );
+  assert.equal(result.finalClassification, "LEGACY_PASS");
+  assert.equal(result.verificationSucceeds, true);
+  assert.equal(result.successRequiredLegacyCompatibility, true);
 });
