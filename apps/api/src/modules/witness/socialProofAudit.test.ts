@@ -8,7 +8,7 @@ const account = "certifydofficial";
 const shortTikTok = `certifyd-proof account=${account} nonce=${nonce}`;
 const fullTikTok = `certifyd-proof provider=tiktok account=${account} nonce=${nonce}`;
 const legacyGithub = `contentbox-social-verify provider=github account=beatifyaudio nonce=${nonce}`;
-const canonicalGithub = `certifyd-proof provider=github account=beatifyaudio nonce=${nonce}`;
+const canonicalGithub = `certifyd-proof provider=github account=beatifyaudio nonce=${nonce} profile=https://certifyd.example/u/beatify-group`;
 
 type Fixture = { body: string; status?: number; finalUrl?: string; redirected?: boolean; contentType?: string };
 
@@ -86,11 +86,11 @@ async function runAuditWithFetch(rows: any[], fixture: Fixture) {
   }
 }
 
-test("PASS classification works for canonical TikTok short marker", async () => {
+test("LEGACY_PASS classification works for old TikTok short marker", async () => {
   const result = await runAuditWithFetch([row("p1", "tiktok", account, shortTikTok)], { body: html(shortTikTok) });
-  assert.equal(result.finalClassification, "PASS");
+  assert.equal(result.finalClassification, "LEGACY_PASS");
   assert.equal(result.verificationSucceeds, true);
-  assert.equal(result.successRequiredLegacyCompatibility, false);
+  assert.equal(result.successRequiredLegacyCompatibility, true);
 });
 
 test("LEGACY_PASS classification works for old full TikTok marker", async () => {
@@ -125,10 +125,12 @@ test("wrong account and redirected account mismatch are classified correctly", a
   assert.equal(wrong.finalClassification, "BROKEN");
 });
 
-test("audit reuses production verifier behavior and does not mutate proof records", async () => {
+test("PASS classification works for canonical V2 envelope", async () => {
   const rows = [row("p1", "github", "beatifyaudio", canonicalGithub)];
   const result = await runAuditWithFetch(rows, { body: html(canonicalGithub), finalUrl: "https://github.com/beatifyaudio" });
   assert.equal(result.finalClassification, "PASS");
+  assert.equal(result.successRequiredLegacyCompatibility, false);
+  assert.equal(result.currentCanonicalFormat, "certifyd-proof provider=<provider> account=<account> nonce=<nonce> profile=<canonical-certifyd-profile-url>");
   assert.equal(rows[0].status, "verified");
   assert.equal(rows[0].failureReason, null);
 });

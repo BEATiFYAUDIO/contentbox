@@ -32,13 +32,21 @@ function makeFetch({ body, status = 200, finalUrl = location, contentType = "tex
   }) as any;
 }
 
+function providerProfileUrl(provider: string, proofAccount: string) {
+  if (provider === "tiktok") return `https://www.tiktok.com/@${proofAccount}`;
+  if (provider === "spotify") return `https://open.spotify.com/artist/${proofAccount}`;
+  if (provider === "youtube") return `https://www.youtube.com/@${proofAccount}`;
+  if (provider === "reddit") return `https://www.reddit.com/user/${proofAccount}`;
+  return `https://github.com/${proofAccount}`;
+}
+
 function proofRow(provider: string, proofAccount: string, challengeText: string) {
   return {
     id: "proof-1",
     userId: "user-1",
     proofType: "social",
     subject: `${provider}:${proofAccount}`,
-    claimJson: { provider, account: proofAccount, profileUrl: provider === "tiktok" ? `https://www.tiktok.com/@${proofAccount}` : `https://github.com/${proofAccount}`, challengeText },
+    claimJson: { provider, account: proofAccount, profileUrl: providerProfileUrl(provider, proofAccount), challengeText },
     signature: null,
     status: "pending",
     verificationMethod: "url_text",
@@ -157,6 +165,11 @@ import { createSocialChallenge } from "./proof.service.js";
 
 class ChallengePrismaStub {
   rows: any[] = [];
+  userResult: any;
+  constructor(userResult: any = { displayName: "Beatify Group", email: "beatify@example.com" }) { this.userResult = userResult; }
+  user = {
+    findUnique: async ({ where }: any) => where.id === "user-1" ? this.userResult : null
+  };
   witness = {
     id: "witness-1",
     userId: "user-1",
@@ -204,20 +217,78 @@ class ChallengePrismaStub {
   };
 }
 
-test("Core generates canonical social proof markers by provider", async () => {
+test("Core generates one canonical social proof envelope for every provider", async () => {
+  const previousOrigin = process.env.CONTENTBOX_PUBLIC_ORIGIN;
+  process.env.CONTENTBOX_PUBLIC_ORIGIN = "https://certifyd.beatifygroup.com";
   const cases = [
-    ["spotify", "https://open.spotify.com/artist/1pKR6nU0QhMlbouug8OPtD", /^Certifyd proof: [0-9a-f]{32}$/],
-    ["youtube", "https://www.youtube.com/@BeatifyGroup", /^certifyd-proof provider=youtube account=beatifygroup nonce=[0-9a-f]{32}$/],
-    ["github", "BEATiFYAUDIO", /^certifyd-proof provider=github account=beatifyaudio nonce=[0-9a-f]{32}$/],
-    ["tiktok", "https://www.tiktok.com/@certifydofficial", /^certifyd-proof account=certifydofficial nonce=[0-9a-f]{32}$/]
+    ["github", "BEATiFYAUDIO", "beatifyaudio"],
+    ["youtube", "https://www.youtube.com/@BeatifyGroup", "beatifygroup"],
+    ["spotify", "https://open.spotify.com/artist/1pKR6nU0QhMlbouug8OPtD", "1pKR6nU0QhMlbouug8OPtD"],
+    ["tiktok", "https://www.tiktok.com/@certifydofficial", "certifydofficial"],
+    ["instagram", "https://www.instagram.com/beatifygroup/", "beatifygroup"],
+    ["x", "https://x.com/beatifygroup", "beatifygroup"],
+    ["rumble", "https://rumble.com/c/beatifygroup", "beatifygroup"],
+    ["reddit", "https://www.reddit.com/user/Lopsided_Horror_9957/", "lopsided_horror_9957"],
+    ["substack", "https://beatifygroup.substack.com", "beatifygroup"]
   ] as const;
 
-  for (const [provider, input, pattern] of cases) {
-    const prisma = new ChallengePrismaStub();
-    const proof = await createSocialChallenge(prisma as any, "user-1", provider, input);
-    const challengeText = String((proof.claimJson as any).challengeText || "");
-    assert.match(challengeText, pattern, provider);
-    if (provider === "tiktok") assert.equal(challengeText.length <= 80, true);
+  try {
+    for (const [provider, input, normalizedAccount] of cases) {
+      const prisma = new ChallengePrismaStub();
+      const proof = await createSocialChallenge(prisma as any, "user-1", provider, input);
+      const claim = proof.claimJson as any;
+      const challengeText = String(claim.challengeText || "");
+      assert.equal(claim.certifydProfileUrl, "https://certifyd.beatifygroup.com/u/beatify-group", provider);
+      assert.match(
+        challengeText,
+        new RegExp(`^certifyd-proof provider=${provider} account=${normalizedAccount.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} nonce=[0-9a-f]{32} profile=https://certifyd\.beatifygroup\.com/u/beatify-group$`),
+        provider
+      );
+      assert.equal(challengeText.includes("Certifyd proof:"), false, provider);
+      assert.equal(challengeText.includes("Certifyd profile:"), false, provider);
+      assert.equal(Boolean(claim.providerProfileUrl?.includes("certifyd.beatifygroup.com")), false, provider);
+    }
+  } finally {
+    if (previousOrigin === undefined) delete process.env.CONTENTBOX_PUBLIC_ORIGIN;
+    else process.env.CONTENTBOX_PUBLIC_ORIGIN = previousOrigin;
+  }
+});
+
+test("canonical social proof envelope tolerates wrapped whitespace and preserves exact checks", async () => {
+  const githubAccount = "beatifyaudio";
+  const canonical = `certifyd-proof provider=github account=${githubAccount} nonce=${nonce} profile=https://certifyd.beatifygroup.com/u/beatify-group`;
+  const wrapped = `certifyd-proof\nprovider=github\naccount=${githubAccount}\nnonce=${nonce}\nprofile=https://certifyd.beatifygroup.com/u/beatify-group`;
+  const prisma = new ProofPrismaStub(proofRow("github", githubAccount, canonical));
+  const proof = await withFetch({ body: html(wrapped), finalUrl: `https://github.com/${githubAccount}` }, () =>
+    verifySocialProof(prisma as any, "user-1", "github", githubAccount, `https://github.com/${githubAccount}`)
+  );
+  assert.equal(proof.status, "verified");
+
+  for (const bad of [
+    `certifyd-proof provider=youtube account=${githubAccount} nonce=${nonce} profile=https://certifyd.beatifygroup.com/u/beatify-group`,
+    `certifyd-proof provider=github account=other nonce=${nonce} profile=https://certifyd.beatifygroup.com/u/beatify-group`,
+    `certifyd-proof provider=github account=${githubAccount} nonce=0000${nonce.slice(4)} profile=https://certifyd.beatifygroup.com/u/beatify-group`,
+    `certifyd-proof provider=github account=${githubAccount} nonce=${nonce} profile=https://github.com/${githubAccount}`
+  ]) {
+    const row = new ProofPrismaStub(proofRow("github", githubAccount, canonical));
+    const failed = await withFetch({ body: html(bad), finalUrl: `https://github.com/${githubAccount}` }, () =>
+      verifySocialProof(row as any, "user-1", "github", githubAccount, `https://github.com/${githubAccount}`)
+    );
+    assert.equal(failed.status, "pending", bad);
+  }
+});
+
+test("social challenge creation fails safely without public profile handle", async () => {
+  const previousOrigin = process.env.CONTENTBOX_PUBLIC_ORIGIN;
+  process.env.CONTENTBOX_PUBLIC_ORIGIN = "https://certifyd.beatifygroup.com";
+  try {
+    await assert.rejects(
+      () => createSocialChallenge(new ChallengePrismaStub({ displayName: "", email: "" }) as any, "user-1", "github", "BEATiFYAUDIO"),
+      /PUBLIC_PROFILE_HANDLE_REQUIRED/
+    );
+  } finally {
+    if (previousOrigin === undefined) delete process.env.CONTENTBOX_PUBLIC_ORIGIN;
+    else process.env.CONTENTBOX_PUBLIC_ORIGIN = previousOrigin;
   }
 });
 
@@ -298,5 +369,30 @@ test("Reddit profile content with marker can verify despite Reddit about 404", a
     finalUrl: "https://www.reddit.com/user/lopsided_horror_9957/about/",
     redirected: true
   });
+  assert.equal(proof.status, "verified");
+});
+
+test("legacy GitHub full and contentbox markers still verify", async () => {
+  const githubAccount = "beatifyaudio";
+  for (const marker of [
+    `certifyd-proof provider=github account=${githubAccount} nonce=${nonce}`,
+    `contentbox-social-verify provider=github account=${githubAccount} nonce=${nonce}`
+  ]) {
+    const prisma = new ProofPrismaStub(proofRow("github", githubAccount, marker));
+    const proof = await withFetch({ body: html(marker), finalUrl: `https://github.com/${githubAccount}` }, () =>
+      verifySocialProof(prisma as any, "user-1", "github", githubAccount, `https://github.com/${githubAccount}`)
+    );
+    assert.equal(proof.status, "verified", marker);
+  }
+});
+
+test("legacy Spotify marker still verifies", async () => {
+  const spotifyAccount = "1pKR6nU0QhMlbouug8OPtD";
+  const marker = `Certifyd proof: ${nonce}`;
+  const spotifyHtml = html(`{"biography":{"text":"${marker}"}}`);
+  const prisma = new ProofPrismaStub(proofRow("spotify", spotifyAccount, marker));
+  const proof = await withFetch({ body: spotifyHtml, finalUrl: `https://open.spotify.com/artist/${spotifyAccount}` }, () =>
+    verifySocialProof(prisma as any, "user-1", "spotify", spotifyAccount, `https://open.spotify.com/artist/${spotifyAccount}`)
+  );
   assert.equal(proof.status, "verified");
 });

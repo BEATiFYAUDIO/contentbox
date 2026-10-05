@@ -91,18 +91,25 @@ function parseClaim(claimJson: unknown): Claim | null {
   };
 }
 
-function canonicalFormat(provider: string): string {
-  if (provider === "spotify") return "Certifyd proof: <nonce>";
-  if (provider === "tiktok") return "certifyd-proof account=<account> nonce=<nonce>";
-  return `certifyd-proof provider=${provider} account=<account> nonce=<nonce>`;
+function canonicalFormat(_provider: string): string {
+  return "certifyd-proof provider=<provider> account=<account> nonce=<nonce> profile=<canonical-certifyd-profile-url>";
 }
 
 function challengeIsCanonical(provider: string, account: string, challengeText: string): boolean {
   const marker = compact(challengeText);
   const normalized = normalizeAccount(provider, account);
+  return new RegExp(
+    `^certifyd-proof provider=${escapeRegExp(provider)} account=${escapeRegExp(normalized)} nonce=[0-9a-f]{32} profile=https://[^\\s]+/u/[^\\s]+$`,
+    "i"
+  ).test(marker);
+}
+
+function challengeIsLegacy(provider: string, account: string, challengeText: string): boolean {
+  const marker = compact(challengeText);
+  const normalized = normalizeAccount(provider, account);
   if (provider === "spotify") return /^Certifyd proof: [0-9a-f]{32}$/i.test(marker);
-  if (provider === "tiktok") return new RegExp(`^certifyd-proof account=${escapeRegExp(normalized)} nonce=\\S+$`, "i").test(marker);
-  return new RegExp(`^certifyd-proof provider=${escapeRegExp(provider)} account=${escapeRegExp(normalized)} nonce=\\S+$`, "i").test(marker);
+  if (provider === "tiktok" && new RegExp(`^certifyd-proof account=${escapeRegExp(normalized)} nonce=\\S+$`, "i").test(marker)) return true;
+  return new RegExp(`^(certifyd-proof|contentbox-social-verify) provider=${escapeRegExp(provider)} account=${escapeRegExp(normalized)} nonce=\\S+$`, "i").test(marker);
 }
 
 function escapeRegExp(value: string): string {
@@ -227,6 +234,7 @@ export async function auditSocialProofRows(
     const provider = claim.provider;
     const normalizedAccount = normalizeAccount(provider, claim.account);
     const canonical = challengeIsCanonical(provider, normalizedAccount, claim.challengeText);
+    const legacy = challengeIsLegacy(provider, normalizedAccount, claim.challengeText);
     const location = row.location || claim.profileUrl || claim.channelUrl || "";
     const legacyProofLocation = usesLegacyProofLocation(provider, location || null);
     let verificationSucceeds = false;
@@ -262,7 +270,7 @@ export async function auditSocialProofRows(
       currentCanonicalFormat: canonicalFormat(provider),
       publicProofStillResolves,
       verificationSucceeds,
-      successRequiredLegacyCompatibility: verificationSucceeds && (!canonical || legacyProofLocation),
+      successRequiredLegacyCompatibility: verificationSucceeds && (!canonical || legacy || legacyProofLocation),
       failureReason: verificationSucceeds ? null : failureReason,
       finalClassification,
       recommendedHumanAction: recommendedAction(finalClassification, provider, failureReason)

@@ -428,7 +428,7 @@ export default function VerificationProofsCard({ witness }: Props) {
             {showSocialBuilder && socialChallengeProof ? (
               <div className="mt-2 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
                 <div className="text-xs text-neutral-400">Post this exact text publicly:</div>
-                <div className="mt-1 font-mono text-xs break-all">{String((socialChallengeProof.claimJson as any)?.challengeText || "")}</div>
+                <div className="mt-1 font-mono text-xs break-all whitespace-pre-wrap">{String((socialChallengeProof.claimJson as any)?.challengeText || "")}</div>
                 <div className="mt-2 text-xs text-neutral-500">
                   Keep this proof text in place until verification succeeds. Some platforms cache profile updates.
                 </div>

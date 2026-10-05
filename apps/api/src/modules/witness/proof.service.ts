@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { resolveTxt } from "node:dns/promises";
+import fs from "node:fs";
+import path from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import { nip19, verifyEvent } from "nostr-tools";
 import {
@@ -16,6 +18,8 @@ import {
   type ProofRecordDto
 } from "./proof.types.js";
 import { getActiveWitnessIdentityKey } from "./witness.service.js";
+import { resolveContentboxRoot } from "../../lib/contentboxRoot.js";
+import { getPublicOriginConfig } from "../../lib/publicOriginStore.js";
 
 type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok" | "rumble" | "reddit" | "substack" | "spotify";
 
@@ -204,11 +208,161 @@ const SOCIAL_PROOF_PREFIX_CERTIFYD = "certifyd-proof";
 const SOCIAL_PROOF_PREFIX_LEGACY = "contentbox-social-verify";
 const SOCIAL_PROOF_PATTERN = /^(certifyd-proof|contentbox-social-verify)\s+provider=([^\s]+)\s+account=([^\s]+)\s+nonce=([^\s]+)$/i;
 const TIKTOK_SHORT_SOCIAL_PROOF_PATTERN = /^certifyd-proof\s+account=([^\s]+)\s+nonce=([^\s]+)$/i;
+const SOCIAL_PROOF_ENVELOPE_FORMAT = "certifyd-proof provider=<provider> account=<account> nonce=<nonce> profile=<profile-url>";
 
-function buildSocialChallengeMessage(provider: SocialProvider, account: string, nonce: string): string {
-  if (provider === "spotify") return `Certifyd proof: ${nonce}`;
-  if (provider === "tiktok") return `${SOCIAL_PROOF_PREFIX_CERTIFYD} account=${account} nonce=${nonce}`;
-  return `${SOCIAL_PROOF_PREFIX_CERTIFYD} provider=${provider} account=${account} nonce=${nonce}`;
+function asProofString(value: unknown): string {
+  return String(value || "").trim();
+}
+
+function normalizePublicOriginBase(origin: unknown): string {
+  return asProofString(origin).replace(/\/+$/, "");
+}
+
+function buildPublicUrlFromOrigin(origin: unknown, routePath: unknown): string {
+  const base = normalizePublicOriginBase(origin);
+  const route = asProofString(routePath);
+  if (!base || !route) return "";
+  return `${base}${route.startsWith("/") ? route : `/${route}`}`;
+}
+
+function normalizePublicProfileHandle(value: unknown): string | null {
+  const raw = asProofString(value).toLowerCase();
+  if (!raw) return null;
+  const collapsed = raw.replace(/\s+/g, "-");
+  const clean = collapsed.replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-").replace(/^[-._]+|[-._]+$/g, "");
+  return clean || null;
+}
+
+function looksLikeInternalUserId(value: unknown): boolean {
+  return /^c[a-z0-9]{20,}$/i.test(asProofString(value));
+}
+
+function normalizedEmailLocalPart(value: unknown): string | null {
+  const raw = asProofString(value).toLowerCase();
+  if (!raw || !raw.includes("@")) return null;
+  const handle = normalizePublicProfileHandle(raw.split("@")[0] || "");
+  return handle && !looksLikeInternalUserId(handle) ? handle : null;
+}
+
+type PublicProfileHandleMapRow = { handle?: string | null; userId?: string | null };
+
+function mappedPublicProfileHandleForUser(userId: string): string | null {
+  try {
+    const file = path.join(resolveContentboxRoot(), "state", "profile-public-handle-map.json");
+    const rows = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!Array.isArray(rows)) return null;
+    for (const row of rows as PublicProfileHandleMapRow[]) {
+      if (asProofString(row?.userId) !== userId) continue;
+      const handle = normalizePublicProfileHandle(row?.handle || "");
+      if (handle && !looksLikeInternalUserId(handle)) return handle;
+    }
+  } catch {}
+  return null;
+}
+
+function publicOriginForProofEnvelope(): string | null {
+  const config = getPublicOriginConfig();
+  return normalizePublicOriginBase(
+    process.env.CONTENTBOX_PUBLIC_ORIGIN ||
+    process.env.PUBLIC_ORIGIN ||
+    process.env.APP_PUBLIC_ORIGIN ||
+    config.publicOrigin ||
+    config.publicOriginFallback ||
+    ""
+  ) || null;
+}
+
+async function canonicalCreatorProfileUrl(prisma: PrismaClient, userId: string): Promise<string> {
+  const origin = publicOriginForProofEnvelope();
+  if (!origin) throw new Error("PUBLIC_ORIGIN_REQUIRED");
+  const mapped = mappedPublicProfileHandleForUser(userId);
+  if (mapped) return buildPublicUrlFromOrigin(origin, `/u/${encodeURIComponent(mapped)}`);
+
+  let user: { displayName?: string | null; email?: string | null } | null = null;
+  try {
+    if (typeof (prisma as any).user?.findUnique === "function") {
+      user = await (prisma as any).user.findUnique({
+        where: { id: userId },
+        select: { displayName: true, email: true }
+      });
+    }
+  } catch {
+    user = null;
+  }
+  const handle = normalizePublicProfileHandle(user?.displayName || "") || normalizedEmailLocalPart(user?.email || "");
+  if (!handle) throw new Error("PUBLIC_PROFILE_HANDLE_REQUIRED");
+  return buildPublicUrlFromOrigin(origin, `/u/${encodeURIComponent(handle)}`);
+}
+
+function parseCanonicalCertifydProfileUrl(value: unknown): string | null {
+  const raw = asProofString(value);
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) return null;
+    const match = /^\/u\/([^/]+)\/?$/.exec(url.pathname);
+    if (!match?.[1]) return null;
+    const decoded = decodeURIComponent(match[1]);
+    const handle = normalizePublicProfileHandle(decoded);
+    if (!handle || looksLikeInternalUserId(handle)) return null;
+    return `${url.origin}/u/${encodeURIComponent(handle)}`;
+  } catch {
+    return null;
+  }
+}
+
+type SocialProofEnvelope = { provider: SocialProvider; account: string; nonce: string; profileUrl: string; marker: string };
+
+function parseSocialProofEnvelope(text: string, providerHint?: SocialProvider): SocialProofEnvelope | null {
+  const source = String(text || "").replace(/\s+/g, " ").trim();
+  if (!source) return null;
+  const prefixPattern = /(?:^|\s)certifyd-proof\b/gi;
+  let prefix: RegExpExecArray | null;
+  while ((prefix = prefixPattern.exec(source))) {
+    const fields: Record<string, string> = {};
+    const rest = source.slice(prefix.index + prefix[0].length).trim().split(/\s+/);
+    for (const token of rest) {
+      const match = /^([a-z]+)=([^\s]+)$/i.exec(token);
+      if (!match) break;
+      const key = match[1].toLowerCase();
+      if (fields[key]) return null;
+      fields[key] = match[2];
+    }
+    if (!fields.provider || !fields.account || !fields.nonce || !fields.profile) continue;
+    const provider = normalizeSocialProvider(fields.provider);
+    if (!provider) return null;
+    if (providerHint && provider !== providerHint) return null;
+    const account = normalizeStoredSocialAccount(provider, normalizeSocialAccount(provider, fields.account));
+    if (!account) return null;
+    const nonce = asProofString(fields.nonce).toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(nonce)) return null;
+    const profileUrl = parseCanonicalCertifydProfileUrl(fields.profile);
+    if (!profileUrl) return null;
+    return {
+      provider,
+      account,
+      nonce,
+      profileUrl,
+      marker: `${SOCIAL_PROOF_PREFIX_CERTIFYD} provider=${provider} account=${account} nonce=${nonce} profile=${profileUrl}`
+    };
+  }
+  return null;
+}
+
+function buildSocialProofEnvelope(input: { provider: SocialProvider; account: string; nonce: string; profileUrl: string }): string {
+  const provider = normalizeSocialProvider(input.provider);
+  if (!provider) throw new Error("INVALID_SOCIAL_PROVIDER");
+  const account = normalizeStoredSocialAccount(provider, normalizeSocialAccount(provider, input.account));
+  if (!account) throw new Error("INVALID_SOCIAL_USERNAME");
+  const nonce = asProofString(input.nonce).toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(nonce)) throw new Error("INVALID_SOCIAL_NONCE");
+  const profileUrl = parseCanonicalCertifydProfileUrl(input.profileUrl);
+  if (!profileUrl) throw new Error("PUBLIC_PROFILE_URL_INVALID");
+  return `${SOCIAL_PROOF_PREFIX_CERTIFYD} provider=${provider} account=${account} nonce=${nonce} profile=${profileUrl}`;
+}
+
+function buildSocialChallengeMessage(provider: SocialProvider, account: string, nonce: string, profileUrl: string): string {
+  return buildSocialProofEnvelope({ provider, account, nonce, profileUrl });
 }
 
 function containsSocialChallenge(text: string, challenge: string): boolean {
@@ -224,6 +378,9 @@ function containsSocialChallenge(text: string, challenge: string): boolean {
 function socialChallengeCandidates(challengeText: string, providerHint?: SocialProvider): string[] {
   const normalized = String(challengeText || "").trim();
   if (!normalized) return [];
+
+  const envelope = parseSocialProofEnvelope(normalized, providerHint);
+  if (envelope) return [envelope.marker];
 
   const shortTikTok = normalized.match(TIKTOK_SHORT_SOCIAL_PROOF_PATTERN);
   if (shortTikTok) {
@@ -1256,14 +1413,18 @@ export async function createSocialChallenge(
   }
 
   const nonce = randomBytes(16).toString("hex");
-  const challengeText = buildSocialChallengeMessage(provider, account, nonce);
+  const providerProfileUrl = profileUrl;
+  const certifydProfileUrl = await canonicalCreatorProfileUrl(prisma, userId);
+  const challengeText = buildSocialChallengeMessage(provider, account, nonce, certifydProfileUrl);
   const claimJson = {
     provider,
     account,
     username: provider === "github" ? account : undefined,
     channelIdentifier: provider === "youtube" ? account : undefined,
     channelUrl,
-    profileUrl,
+    profileUrl: providerProfileUrl,
+    providerProfileUrl: providerProfileUrl || undefined,
+    certifydProfileUrl,
     platform: provider === "spotify" ? "spotify" : undefined,
     artistId: provider === "spotify" ? account : undefined,
     artistUrl: provider === "spotify" ? profileUrl : undefined,

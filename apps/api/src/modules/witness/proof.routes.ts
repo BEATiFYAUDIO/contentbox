@@ -217,6 +217,12 @@ export function registerWitnessProofRoutes(app: any, deps: {
       if (message === "WITNESS_IDENTITY_REQUIRED") {
         return reply.code(409).send({ error: "WITNESS_IDENTITY_REQUIRED", message: "Create a creator identity key before social verification." });
       }
+      if (message === "PUBLIC_ORIGIN_REQUIRED") {
+        return reply.code(409).send({ error: "PUBLIC_ORIGIN_REQUIRED", message: "Configure a public Core origin before creating social proofs." });
+      }
+      if (message === "PUBLIC_PROFILE_HANDLE_REQUIRED") {
+        return reply.code(409).send({ error: "PUBLIC_PROFILE_HANDLE_REQUIRED", message: "Set a public creator profile handle before creating social proofs." });
+      }
       if (isWitnessStoreSchemaError(e)) {
         req.log.warn({ err: e }, "witness.proofs.social.challenge.store_not_ready");
         return reply.code(503).send({
