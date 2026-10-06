@@ -1,5 +1,7 @@
 """Portable release-policy tests. These do not emulate Apple trust validation."""
 import importlib.util
+import base64
+import json
 from pathlib import Path
 import plistlib
 import os
@@ -112,6 +114,163 @@ class Signatures(unittest.TestCase):
         entitled = [c for c in calls if '--entitlements' in c]
         self.assertEqual(len(entitled), 1)
         self.assertEqual(entitled[0][-1], app / release.NODE)
+
+
+class SigningKeychain(unittest.TestCase):
+    def run_harness(self, fail_list=False):
+        # Run the real signing shell with fake Apple tools and dummy credentials.
+        # Stop at sign-app; never perform signing or contact Apple's services.
+        with tempfile.TemporaryDirectory(prefix='signing test ') as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'; scripts.mkdir()
+            source = Path(__file__).resolve().parents[1] / 'sign-notarize-macos.sh'
+            shutil.copyfile(source, scripts / source.name)
+            original = ['/Users/runner/Library/Keychains/login.keychain-db',
+                        '/Library/Keychains/System.keychain', '/tmp/keychain with spaces.keychain-db']
+            state = root / 'state.json'
+            state.write_text(json.dumps({'search': original, 'calls': []}))
+            fake_bin = root / 'bin'; fake_bin.mkdir()
+            security = fake_bin / 'security'
+            security.write_text(f'#!{sys.executable}\n' + '''
+import json, os, sys
+from pathlib import Path
+p = Path(os.environ['TEST_KEYCHAIN_STATE'])
+s = json.loads(p.read_text())
+args = sys.argv[1:]
+s['calls'].append(args[0])
+status = 0
+if args[0] == 'list-keychains':
+    if '-s' in args:
+        if os.environ['TEST_FAIL_LIST'] == '1':
+            status = 43
+        else:
+            s['search'] = args[args.index('-s') + 1:]
+    else:
+        for path in s['search']:
+            print('    ' + json.dumps(path))
+elif args[0] == 'create-keychain':
+    Path(args[-1]).touch()
+elif args[0] == 'delete-keychain':
+    s['search'] = [path for path in s['search'] if path != args[-1]]
+elif args[0] == 'find-identity':
+    print('Developer ID Application: Hwy 11 Entertainment Inc (KYAPD65KRD)')
+p.write_text(json.dumps(s))
+sys.exit(status)
+''')
+            security.chmod(0o755)
+            for name, value in [('uname', 'Darwin'), ('openssl', 'dummy-keychain-password')]:
+                tool = fake_bin / name
+                tool.write_text(f'#!/bin/sh\nprintf "%s\\n" "{value}"\n')
+                tool.chmod(0o755)
+            (scripts / 'macos-release.py').write_text('''
+import json, os, sys
+from pathlib import Path
+if sys.argv[1] == 'sign-app':
+    p = Path(os.environ['TEST_KEYCHAIN_STATE'])
+    s = json.loads(p.read_text())
+    s['at_sign'] = s['search'][:]
+    s['keychain'] = sys.argv[sys.argv.index('--keychain') + 1]
+    p.write_text(json.dumps(s))
+    sys.exit(73)  # Exercise cleanup after a signing failure.
+''')
+            dummy = base64.b64encode(b'dummy test material').decode()
+            env = {**os.environ, 'PATH': f'{fake_bin}{os.pathsep}{os.environ["PATH"]}',
+                   'RUNNER_TEMP': str(root), 'GITHUB_ENV': str(root / 'github-env'),
+                   'TEST_KEYCHAIN_STATE': str(state), 'TEST_FAIL_LIST': str(int(fail_list)),
+                   'APPLE_CERTIFICATE_P12': dummy, 'APPLE_API_KEY_P8': dummy,
+                   'APPLE_CERTIFICATE_PASSWORD': 'dummy-password', 'APPLE_API_KEY_ID': 'dummy-id',
+                   'APPLE_API_ISSUER_ID': 'dummy-issuer', 'APPLE_TEAM_ID': release.TEAM}
+            result = subprocess.run(['bash', str(scripts / source.name), 'arm64', '0.1.0-beta.12'],
+                                    env=env, capture_output=True, text=True)
+            self.assertNotIn(dummy, result.stdout + result.stderr)
+            self.assertNotIn('dummy-password', result.stdout + result.stderr)
+            data = json.loads(state.read_text())
+            self.assertEqual(data['search'], original)
+            self.assertIn('delete-keychain', data['calls'])
+            self.assertEqual(list(root.glob('certifyd-signing.*')), [])
+            return result, data, original
+
+    def test_preserves_search_list_at_signing_and_cleans_up_on_failure(self):
+        result, data, original = self.run_harness()
+        self.assertEqual(result.returncode, 73, result.stderr)
+        self.assertEqual(data['at_sign'], [data['keychain'], *original])
+
+    def test_search_list_failure_stops_before_signing(self):
+        result, data, _ = self.run_harness(fail_list=True)
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('at_sign', data)
+        self.assertNotIn('import', data['calls'])
+
+
+class PrismaLauncher(unittest.TestCase):
+    def run_launcher(self, arch, missing=None, moved=False):
+        with tempfile.TemporaryDirectory(prefix='prisma launcher ') as tmp:
+            root = Path(tmp)
+            app = root / 'Certifyd Core.app'
+            resources = app / 'Contents/Resources'
+            api = resources / 'app/apps/api'
+            engines = api / 'node_modules/@prisma/engines'
+            engines.mkdir(parents=True)
+            for name in ['prisma/schema.prisma', 'node_modules/prisma/build/index.js',
+                         'node_modules/.prisma/client/index.js']:
+                path = api / name; path.parent.mkdir(parents=True, exist_ok=True); path.touch()
+            target = 'darwin-arm64' if arch == 'arm64' else 'darwin'
+            for kind, name in [('schema', f'schema-engine-{target}'),
+                               ('query', f'libquery_engine-{target}.dylib.node')]:
+                if kind != missing:
+                    path = engines / name; path.write_bytes(b'signed-engine-fixture'); path.chmod(0o755)
+            launcher = resources / 'CertifydCoreLauncher.sh'
+            shutil.copyfile(Path(__file__).resolve().parents[2] / 'packaging/macos/CertifydCoreLauncher.sh', launcher)
+            node = resources / 'runtime/node/bin/node'; node.parent.mkdir(parents=True)
+            node.write_text(f'#!{sys.executable}\n' + '''
+import json, os, sys
+from pathlib import Path
+if sys.argv[1:] == ['-p', 'process.arch']:
+    print(os.environ['TEST_NODE_ARCH'])
+elif sys.argv[1].endswith('/prisma/build/index.js'):
+    with open(os.environ['TEST_PRISMA_CALLS'], 'a') as f:
+        f.write(json.dumps({'args': sys.argv[2:], 'schema': os.environ['PRISMA_SCHEMA_ENGINE_BINARY'],
+                            'query': os.environ['PRISMA_QUERY_ENGINE_LIBRARY']}) + '\\n')
+# Health is already ready: the launcher exits before starting a real API.
+''')
+            node.chmod(0o755)
+            data = root / 'data'; (data / 'config').mkdir(parents=True)
+            (data / 'config/api.env').write_text('PRISMA_SCHEMA_ENGINE_BINARY="/stale/schema"\nPRISMA_QUERY_ENGINE_LIBRARY="/stale/query"\n')
+            if moved:
+                destination = root / 'Moved Core.app'
+                app.rename(destination)
+                app = destination
+            resources = app / 'Contents/Resources'
+            engines = resources / 'app/apps/api/node_modules/@prisma/engines'
+            calls_file = root / 'calls.jsonl'
+            env = {**os.environ, 'CONTENTBOX_ROOT': str(data), 'CERTIFYD_NO_BROWSER': '1',
+                   'JWT_SECRET': 'test-only', 'TEST_NODE_ARCH': arch, 'TEST_PRISMA_CALLS': str(calls_file)}
+            result = subprocess.run(['bash', str(resources / 'CertifydCoreLauncher.sh')],
+                                    env=env, capture_output=True, text=True)
+            calls = [json.loads(line) for line in calls_file.read_text().splitlines()] if calls_file.exists() else []
+            return result, calls, str(engines), target
+
+    def test_prisma_uses_current_bundled_engines_for_both_architectures_and_after_move(self):
+        for arch in ['x64', 'arm64']:
+            for moved in [False, True]:
+                with self.subTest(arch=arch, moved=moved):
+                    result, calls, engines, target = self.run_launcher(arch, moved=moved)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(calls[0]['args'][0], 'validate')
+                    self.assertEqual(calls[1]['args'][:2], ['db', 'push'])
+                    self.assertIn('--skip-generate', calls[1]['args'])
+                    for call in calls:
+                        self.assertEqual(call['schema'], f'{engines}/schema-engine-{target}')
+                        self.assertEqual(call['query'], f'{engines}/libquery_engine-{target}.dylib.node')
+
+    def test_missing_bundled_engine_fails_before_prisma_can_download(self):
+        for missing in ['schema', 'query']:
+            with self.subTest(missing=missing):
+                result, calls, _, _ = self.run_launcher('arm64', missing=missing)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'Bundled Prisma {missing} engine missing', result.stderr)
+                self.assertEqual(calls, [])
 
 
 @unittest.skipUnless(shutil.which('cc'), 'C compiler required')

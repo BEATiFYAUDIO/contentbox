@@ -49,6 +49,14 @@ keychain_password="$(openssl rand -hex 32)"
 security create-keychain -p "$keychain_password" "$keychain" >/dev/null 2>&1
 security set-keychain-settings -lut 21600 "$keychain" >/dev/null 2>&1
 security unlock-keychain -p "$keychain_password" "$keychain" >/dev/null 2>&1
+# codesign needs the temporary keychain in the search list as well as --keychain.
+# Preserve login/system entries used for certificate trust-chain resolution.
+python3 - "$keychain" <<'PY'
+import shlex, subprocess, sys
+existing = shlex.split(subprocess.check_output(['security', 'list-keychains', '-d', 'user'], text=True))
+subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', sys.argv[1],
+                *(path for path in existing if path != sys.argv[1])], check=True)
+PY
 if ! security import "$private_dir/certificate.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security >/dev/null 2>&1; then
   echo "Developer ID certificate import failed" >&2
   exit 1

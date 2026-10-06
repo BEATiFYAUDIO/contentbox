@@ -103,6 +103,18 @@ if [[ -f "$env_file" ]]; then
   set +a
 fi
 
+# Pin Prisma to the signed bundled engines; cache replacement breaks the app seal.
+# Use bundled Node's architecture (also correct when running under Rosetta).
+case "$("$node_bin" -p 'process.arch')" in
+  arm64) prisma_target="darwin-arm64" ;;
+  x64) prisma_target="darwin" ;;
+  *) fail "Unsupported bundled Node architecture" ;;
+esac
+export PRISMA_SCHEMA_ENGINE_BINARY="$api_dir/node_modules/@prisma/engines/schema-engine-$prisma_target"
+export PRISMA_QUERY_ENGINE_LIBRARY="$api_dir/node_modules/@prisma/engines/libquery_engine-$prisma_target.dylib.node"
+[[ -x "$PRISMA_SCHEMA_ENGINE_BINARY" ]] || fail "Bundled Prisma schema engine missing: $PRISMA_SCHEMA_ENGINE_BINARY"
+[[ -f "$PRISMA_QUERY_ENGINE_LIBRARY" ]] || fail "Bundled Prisma query engine missing: $PRISMA_QUERY_ENGINE_LIBRARY"
+
 db_path="$data_root/contentbox.db"
 export DB_MODE="${DB_MODE:-basic}"
 export CONTENTBOX_ROOT="$data_root"
