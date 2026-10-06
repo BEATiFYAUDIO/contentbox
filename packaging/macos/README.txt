@@ -2,6 +2,11 @@ Certifyd Core for macOS
 
 Drag Certifyd Core.app to Applications, then open it.
 
+For public distribution, use a release explicitly confirmed as Developer ID
+signed and Apple-notarized. Existing beta.11 downloads do not meet that standard.
+If Gatekeeper blocks the app, stop and report the release version and warning.
+Do not disable Gatekeeper or remove quarantine attributes.
+
 For a dedicated LAN machine administered from another device on the same local
 network, open "Start Certifyd Core with LAN Access.command" from the disk image.
 LAN mode binds the private dashboard/API to the local network, records detected

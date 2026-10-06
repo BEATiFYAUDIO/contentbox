@@ -72,7 +72,7 @@ detect_lan_hosts() {
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-resources_dir="$(cd -- "$script_dir/../Resources" && pwd)"
+resources_dir="$script_dir"
 app_dir="$resources_dir/app"
 node_bin="$resources_dir/runtime/node/bin/node"
 api_dir="$app_dir/apps/api"

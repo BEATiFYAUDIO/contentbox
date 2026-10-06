@@ -2,6 +2,16 @@ state.json
 .local/
 .dist/
 
+# Private Apple signing/notarization material (never part of a release source)
+*.p12
+*.pfx
+*.p8
+*.keychain
+*.keychain-db
+*.key
+*.pem
+signing-private/
+
 # Local env files
 **/.env
 **/.env.*

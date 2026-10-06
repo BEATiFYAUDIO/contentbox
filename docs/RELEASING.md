@@ -98,6 +98,23 @@ Public/tunnel exposure:
 
 ## Publish Steps
 
+macOS public assets must pass the separate Developer ID/notarization gates in the
+[macOS signing runbook](../packaging/macos/SIGNING.md). Ordinary macOS validation
+still creates unsigned engineering artifacts and receives no Apple credentials.
+The signing workflow only uploads temporary Actions artifacts; publication
+remains a separate, explicitly approved operation. Existing beta.11 assets must
+not be replaced, and implementing this workflow does not publish beta.12.
+
+The public version/filename is unchanged by Apple metadata mapping. For example,
+`0.1.0-beta.12` produces `CFBundleShortVersionString=0.1.0` and
+`CFBundleVersion=2.0.12`. The validated deterministic mapping and supported ranges
+are documented in the runbook. Never put a hyphenated beta label into those Apple
+numeric fields.
+
+Both native architectures must independently pass signing, notarization, staple,
+Gatekeeper, and final-DMG runtime validation. Record their final **post-staple**
+SHA-256 values. Do not promote ordinary unsigned CI artifacts into public releases.
+
 1. Confirm the intended next version from existing tags and releases.
 2. Build all five platform packages from the audited source/release-build commit.
 3. Confirm filenames and internal version metadata.

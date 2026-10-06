@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-resources_dir="$(cd -- "$script_dir/.." && pwd)"
+resources_dir="$script_dir"
 node_bin="$resources_dir/runtime/node/bin/node"
 data_root="${CONTENTBOX_ROOT:-"$HOME/Library/Application Support/ContentBox"}"
 pid_file="$data_root/state/certifyd-core.pid"
