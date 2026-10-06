@@ -202,6 +202,77 @@ if sys.argv[1] == 'sign-app':
         self.assertNotIn('import', data['calls'])
 
 
+class PrismaLauncher(unittest.TestCase):
+    def run_launcher(self, arch, missing=None, moved=False):
+        with tempfile.TemporaryDirectory(prefix='prisma launcher ') as tmp:
+            root = Path(tmp)
+            app = root / 'Certifyd Core.app'
+            resources = app / 'Contents/Resources'
+            api = resources / 'app/apps/api'
+            engines = api / 'node_modules/@prisma/engines'
+            engines.mkdir(parents=True)
+            for name in ['prisma/schema.prisma', 'node_modules/prisma/build/index.js',
+                         'node_modules/.prisma/client/index.js']:
+                path = api / name; path.parent.mkdir(parents=True, exist_ok=True); path.touch()
+            target = 'darwin-arm64' if arch == 'arm64' else 'darwin'
+            for kind, name in [('schema', f'schema-engine-{target}'),
+                               ('query', f'libquery_engine-{target}.dylib.node')]:
+                if kind != missing:
+                    path = engines / name; path.write_bytes(b'signed-engine-fixture'); path.chmod(0o755)
+            launcher = resources / 'CertifydCoreLauncher.sh'
+            shutil.copyfile(Path(__file__).resolve().parents[2] / 'packaging/macos/CertifydCoreLauncher.sh', launcher)
+            node = resources / 'runtime/node/bin/node'; node.parent.mkdir(parents=True)
+            node.write_text(f'#!{sys.executable}\n' + '''
+import json, os, sys
+from pathlib import Path
+if sys.argv[1:] == ['-p', 'process.arch']:
+    print(os.environ['TEST_NODE_ARCH'])
+elif sys.argv[1].endswith('/prisma/build/index.js'):
+    with open(os.environ['TEST_PRISMA_CALLS'], 'a') as f:
+        f.write(json.dumps({'args': sys.argv[2:], 'schema': os.environ['PRISMA_SCHEMA_ENGINE_BINARY'],
+                            'query': os.environ['PRISMA_QUERY_ENGINE_LIBRARY']}) + '\\n')
+# Health is already ready: the launcher exits before starting a real API.
+''')
+            node.chmod(0o755)
+            data = root / 'data'; (data / 'config').mkdir(parents=True)
+            (data / 'config/api.env').write_text('PRISMA_SCHEMA_ENGINE_BINARY="/stale/schema"\nPRISMA_QUERY_ENGINE_LIBRARY="/stale/query"\n')
+            if moved:
+                destination = root / 'Moved Core.app'
+                app.rename(destination)
+                app = destination
+            resources = app / 'Contents/Resources'
+            engines = resources / 'app/apps/api/node_modules/@prisma/engines'
+            calls_file = root / 'calls.jsonl'
+            env = {**os.environ, 'CONTENTBOX_ROOT': str(data), 'CERTIFYD_NO_BROWSER': '1',
+                   'JWT_SECRET': 'test-only', 'TEST_NODE_ARCH': arch, 'TEST_PRISMA_CALLS': str(calls_file)}
+            result = subprocess.run(['bash', str(resources / 'CertifydCoreLauncher.sh')],
+                                    env=env, capture_output=True, text=True)
+            calls = [json.loads(line) for line in calls_file.read_text().splitlines()] if calls_file.exists() else []
+            return result, calls, str(engines), target
+
+    def test_prisma_uses_current_bundled_engines_for_both_architectures_and_after_move(self):
+        for arch in ['x64', 'arm64']:
+            for moved in [False, True]:
+                with self.subTest(arch=arch, moved=moved):
+                    result, calls, engines, target = self.run_launcher(arch, moved=moved)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(calls[0]['args'][0], 'validate')
+                    self.assertEqual(calls[1]['args'][:2], ['db', 'push'])
+                    self.assertIn('--skip-generate', calls[1]['args'])
+                    for call in calls:
+                        self.assertEqual(call['schema'], f'{engines}/schema-engine-{target}')
+                        self.assertEqual(call['query'], f'{engines}/libquery_engine-{target}.dylib.node')
+
+    def test_missing_bundled_engine_fails_before_prisma_can_download(self):
+        for missing in ['schema', 'query']:
+            with self.subTest(missing=missing):
+                result, calls, _, _ = self.run_launcher('arm64', missing=missing)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'Bundled Prisma {missing} engine missing', result.stderr)
+                self.assertEqual(calls, [])
+
+
 @unittest.skipUnless(shutil.which('cc'), 'C compiler required')
 class Launcher(unittest.TestCase):
     def test_path_arguments_and_move(self):
