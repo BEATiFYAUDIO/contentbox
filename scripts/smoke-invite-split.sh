@@ -5,8 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_DIR="$ROOT_DIR/apps/api"
 
 API_PORT="${API_PORT:-4017}"
-CONTENTBOX_ROOT="${CONTENTBOX_ROOT:-$(mktemp -d /tmp/contentbox-smoke-invite-XXXXXX)}"
-DATABASE_URL="${DATABASE_URL:-file:${CONTENTBOX_ROOT}/smoke.db}"
+CONTENTBOX_ROOT="$(mktemp -d /tmp/contentbox-smoke-invite-XXXXXX)"
+DATABASE_URL="file:${CONTENTBOX_ROOT}/smoke.db"
 API_BASE_URL="http://127.0.0.1:${API_PORT}"
 
 echo "[smoke-invite-split] CONTENTBOX_ROOT=${CONTENTBOX_ROOT}"
@@ -18,6 +18,10 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+touch "$CONTENTBOX_ROOT/smoke.db"
+(cd "$API_DIR" && DATABASE_URL="$DATABASE_URL" \
+  ./node_modules/.bin/prisma db push --schema prisma/schema.prisma --skip-generate)
 
 (cd "$API_DIR" && \
   PORT="$API_PORT" \
