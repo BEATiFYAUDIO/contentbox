@@ -1,0 +1,126 @@
+name: macOS Developer ID Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Audited public version (does not publish a release)
+        required: true
+        type: string
+      environment_protection_confirmed:
+        description: Confirm macos-release has required reviewers and exact allowed branches configured
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  sign-and-validate:
+    # No PR/push trigger, arbitrary source_ref, or reusable-workflow caller.
+    # GitHub enforces the configured environment protections BEFORE job access
+    # to Apple secrets. The input is an operator acknowledgement, not a policy audit.
+    if: inputs.environment_protection_confirmed && github.repository == 'BEATiFYAUDIO/contentbox' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/macos-developer-id-notarization')
+    environment: macos-release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-14-large
+            port: 4580
+          - arch: arm64
+            runner: macos-14-xlarge
+            port: 4581
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate source and public version
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code
+          python3 scripts/macos-release.py versions --version "$RELEASE_VERSION"
+          python3 -m unittest discover -s scripts/tests -p 'test_macos_release.py'
+          sw_vers
+          xcodebuild -version
+          xcrun --find notarytool
+          xcrun --find stapler
+
+      - name: Build completed app without credentials
+        shell: bash
+        run: bash scripts/build-macos-package.sh --arch "${{ matrix.arch }}" --version "$RELEASE_VERSION" --stage-only
+
+      - name: Sign, notarize, and staple
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: bash scripts/sign-notarize-macos.sh "${{ matrix.arch }}" "$RELEASE_VERSION"
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          if [[ -n "${CERTIFYD_SIGNING_TEMP:-}" ]]; then
+            case "$CERTIFYD_SIGNING_TEMP" in
+              "$RUNNER_TEMP"/certifyd-signing.*)
+                security delete-keychain "$CERTIFYD_SIGNING_TEMP/signing.keychain-db" >/dev/null 2>&1 || true
+                rm -rf "$CERTIFYD_SIGNING_TEMP"
+                ;;
+              *) exit 1 ;;
+            esac
+          fi
+
+      - name: Validate final DMG and contained runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg=".dist/macos-${{ matrix.arch }}/package/Certifyd-Core-$RELEASE_VERSION-macos-${{ matrix.arch }}.dmg"
+          bash scripts/validate-macos-runtime.sh "$dmg" "${{ matrix.arch }}" "${{ matrix.port }}" "$RELEASE_VERSION" signed
+          shasum -a 256 -c "$dmg.sha256"
+          {
+            echo "Source: $(git rev-parse HEAD)"
+            cat ".dist/macos-${{ matrix.arch }}/signing-logs/provenance.txt"
+            cat "macos-${{ matrix.arch }}-validation-summary.md"
+            cat "$dmg.sha256"
+            stat -f 'Bytes: %z' "$dmg"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload final validated stapled DMG
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certifyd-core-signed-macos-${{ matrix.arch }}-${{ inputs.version }}
+          path: |
+            .dist/macos-${{ matrix.arch }}/package/Certifyd-Core-${{ inputs.version }}-macos-${{ matrix.arch }}.dmg
+            .dist/macos-${{ matrix.arch }}/package/Certifyd-Core-${{ inputs.version }}-macos-${{ matrix.arch }}.dmg.sha256
+          if-no-files-found: error
+
+      - name: Upload validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certifyd-core-macos-signing-logs-${{ matrix.arch }}
+          path: |
+            .dist/macos-${{ matrix.arch }}/macho-inventory.json
+            .dist/macos-${{ matrix.arch }}/signing-logs/
+            macos-${{ matrix.arch }}-validation-summary.md
+          if-no-files-found: warn

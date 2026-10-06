@@ -4,15 +4,20 @@ set -euo pipefail
 version="0.1.0-beta"
 node_version="20.19.0"
 target_arch=""
+stage_only=0
 
 usage() {
   cat <<USAGE
-Usage: scripts/build-macos-package.sh --arch x64|arm64 [--version 0.1.0-beta] [--node-version 20.19.0]
+Usage: scripts/build-macos-package.sh --arch x64|arm64 [--version 0.1.0-beta] [--node-version 20.19.0] [--stage-only]
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --stage-only)
+      stage_only=1
+      shift
+      ;;
     --arch)
       target_arch="${2:-}"
       shift 2
@@ -57,6 +62,8 @@ case "$target_arch:$host_machine" in
 esac
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+read -r apple_short_version apple_build_version <<< "$(python3 "$repo_root/scripts/macos-release.py" versions --version "$version")"
+test -n "$apple_short_version" && test -n "$apple_build_version"
 dist_root="$repo_root/.dist/macos-$target_arch"
 stage_root="$dist_root/stage"
 cache_dir="$dist_root/cache"
@@ -109,7 +116,11 @@ for item in package.json package-lock.json tsconfig.json tsconfig.app.json tscon
   fi
 done
 
-cp "$repo_root/packaging/macos/CertifydCoreLauncher.sh" "$macos_dir/CertifydCoreLauncher"
+cp "$repo_root/packaging/macos/CertifydCoreLauncher.sh" "$resources_dir/CertifydCoreLauncher.sh"
+launcher_arch="$target_arch"
+if [[ "$target_arch" == "x64" ]]; then launcher_arch="x86_64"; fi
+xcrun clang -arch "$launcher_arch" -mmacosx-version-min=12.0 -Os -Wall -Wextra -Werror \
+  "$repo_root/packaging/macos/CertifydCoreLauncher.c" -o "$macos_dir/CertifydCoreLauncher"
 cp "$repo_root/packaging/macos/stop.sh" "$resources_dir/stop.sh"
 cp "$repo_root/packaging/macos/status.sh" "$resources_dir/status.sh"
 cp "$repo_root/packaging/macos/README.txt" "$resources_dir/README.txt"
@@ -159,9 +170,9 @@ cat >"$contents_dir/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>$version</string>
+  <string>$apple_short_version</string>
   <key>CFBundleVersion</key>
-  <string>$version</string>
+  <string>$apple_build_version</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>NSHighResolutionCapable</key>
@@ -211,35 +222,10 @@ if ! find "$api_target/node_modules/@prisma/engines" -type f -name '*darwin*' | 
   exit 1
 fi
 
-mkdir -p "$dmg_root"
-cp -R "$bundle_root" "$dmg_root/$app_name"
-ln -s /Applications "$dmg_root/Applications"
-cp "$repo_root/packaging/macos/README.txt" "$dmg_root/README.txt"
-cat >"$dmg_root/Start Certifyd Core with LAN Access.command" <<'COMMAND'
-#!/bin/bash
-set -euo pipefail
-
-app_path="/Applications/Certifyd Core.app"
-if [[ ! -x "$app_path/Contents/MacOS/CertifydCoreLauncher" ]]; then
-  script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
-  app_path="$script_dir/Certifyd Core.app"
+python3 "$repo_root/scripts/macos-release.py" inventory "$bundle_root" --arch "$target_arch" --version "$version" > "$dist_root/macho-inventory.json"
+if [[ "$stage_only" -eq 1 ]]; then
+  echo "[macos-package] Staged app: $bundle_root"
+  exit 0
 fi
 
-if [[ ! -x "$app_path/Contents/MacOS/CertifydCoreLauncher" ]]; then
-  osascript -e 'display alert "Certifyd Core" message "Install Certifyd Core in Applications, or run this helper from the Certifyd Core disk image." as critical' >/dev/null 2>&1 || true
-  echo "Certifyd Core.app was not found." >&2
-  exit 1
-fi
-
-"$app_path/Contents/MacOS/CertifydCoreLauncher" --lan
-COMMAND
-chmod +x "$dmg_root/Start Certifyd Core with LAN Access.command"
-
-dmg_name="Certifyd-Core-$version-macos-$target_arch.dmg"
-dmg_path="$package_dir/$dmg_name"
-rm -f "$dmg_path" "$dmg_path.sha256"
-hdiutil create -volname "Certifyd Core" -srcfolder "$dmg_root" -ov -format UDZO "$dmg_path"
-shasum -a 256 "$dmg_path" | tee "$dmg_path.sha256"
-
-echo "[macos-package] Done."
-echo "[macos-package] Package: $dmg_path"
+exec bash "$repo_root/scripts/create-macos-dmg.sh" "$target_arch" "$version"

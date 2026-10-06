@@ -6,19 +6,18 @@ on:
       version:
         description: Certifyd Core package version to build
         required: true
-        default: 0.1.0-beta.10
+        default: 0.1.0-beta.11
       source_ref:
-        description: Exact source commit/ref to package
-        required: true
-        default: 1f496f486fa1dee499f567388bf6accde8e04e83
+        description: Exact source commit SHA (empty uses this workflow commit)
+        required: false
   push:
     branches:
       - "temp/macos-package-validation-*"
       - "temp/release-assembly-*"
 
 env:
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '0.1.0-beta.10' }}
-  RELEASE_SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '0.1.0-beta.11' }}
+  RELEASE_SOURCE_REF: ${{ inputs.source_ref || github.sha }}
 
 jobs:
   build-and-validate:
@@ -71,7 +70,7 @@ jobs:
             uname -a
             echo "machine=$(uname -m)"
             echo "runner=${{ matrix.runner }}"
-          } | tee "macos-${{ matrix.arch }}-validation-summary.md"
+          } | tee -a "macos-${{ matrix.arch }}-validation-summary.md"
 
       - name: Build macOS package
         shell: bash
@@ -89,10 +88,12 @@ jobs:
           test "$dmg" = "$expected"
           size="$(stat -f '%z' "$dmg")"
           hash="$(shasum -a 256 "$dmg" | awk '{print $1}')"
-          echo "DMG_PATH=$dmg" >> "$GITHUB_ENV"
-          echo "DMG_NAME=$(basename "$dmg")" >> "$GITHUB_ENV"
-          echo "DMG_SIZE=$size" >> "$GITHUB_ENV"
-          echo "DMG_SHA256=$hash" >> "$GITHUB_ENV"
+          {
+            echo "DMG_PATH=$dmg"
+            echo "DMG_NAME=$(basename "$dmg")"
+            echo "DMG_SIZE=$size"
+            echo "DMG_SHA256=$hash"
+          } >> "$GITHUB_ENV"
           {
             echo "## Packaged output"
             echo "DMG=$(basename "$dmg")"
@@ -103,126 +104,7 @@ jobs:
 
       - name: Mount DMG and validate runtime
         shell: bash
-        run: |
-          set -euo pipefail
-          mount_dir="$(mktemp -d)"
-          app_install_dir="$(mktemp -d)"
-          data_root="$(mktemp -d)"
-          move_root="$(mktemp -d)"
-          attach_output="$(hdiutil attach "$DMG_PATH" -mountpoint "$mount_dir" -nobrowse -readonly)"
-          echo "$attach_output"
-          trap 'hdiutil detach "$mount_dir" -quiet || true' EXIT
-
-          cp -R "$mount_dir/Certifyd Core.app" "$app_install_dir/Certifyd Core.app"
-          app="$app_install_dir/Certifyd Core.app"
-          test -d "$app/Contents"
-          if find "$app" -name '.env' -o -name '.env.*' | grep -q .; then
-            echo "Packaged .env file found" >&2
-            exit 1
-          fi
-          test -x "$app/Contents/MacOS/CertifydCoreLauncher"
-          test -f "$app/Contents/Resources/CertifydCore.icns"
-          test -f "$app/Contents/Resources/app/apps/dashboard/dist/index.html"
-
-          node_bin="$app/Contents/Resources/runtime/node/bin/node"
-          blocked_bin="$(mktemp -d)"
-          for blocked in git node npm; do
-            printf '#!/usr/bin/env bash\n' >"$blocked_bin/$blocked"
-            printf 'echo "blocked system command was invoked: $(basename "$0")" >&2\n' >>"$blocked_bin/$blocked"
-            printf 'exit 127\n' >>"$blocked_bin/$blocked"
-            chmod +x "$blocked_bin/$blocked"
-          done
-          export PATH="$blocked_bin:/usr/bin:/bin:/usr/sbin:/sbin"
-
-          dump_runtime_diagnostics() {
-            echo "Runtime diagnostics for macOS ${{ matrix.arch }}"
-            ps aux | grep -E 'Certifyd|tsx|src/server|node' | grep -v grep || true
-            find "$data_root" -maxdepth 3 -type f -print || true
-            if [[ -f "$data_root/logs/certifyd-core.out.log" ]]; then
-              echo "--- certifyd-core.out.log ---"
-              tail -n 120 "$data_root/logs/certifyd-core.out.log" || true
-            fi
-            if [[ -f "$data_root/logs/certifyd-core.err.log" ]]; then
-              echo "--- certifyd-core.err.log ---"
-              tail -n 120 "$data_root/logs/certifyd-core.err.log" || true
-            fi
-          }
-
-          run_with_timeout() {
-            local label="$1"
-            local seconds="$2"
-            shift 2
-            echo "BEGIN: $label"
-            "$@" &
-            local command_pid="$!"
-            local deadline=$((SECONDS + seconds))
-            while kill -0 "$command_pid" >/dev/null 2>&1; do
-              if (( SECONDS >= deadline )); then
-                echo "TIMEOUT after ${seconds}s: $label" >&2
-                dump_runtime_diagnostics
-                kill "$command_pid" >/dev/null 2>&1 || true
-                sleep 2
-                kill -9 "$command_pid" >/dev/null 2>&1 || true
-                wait "$command_pid" >/dev/null 2>&1 || true
-                return 124
-              fi
-              sleep 1
-            done
-            set +e
-            wait "$command_pid"
-            local status="$?"
-            set -e
-            echo "END: $label status=$status"
-            return "$status"
-          }
-
-          "$node_bin" --version | tee -a "macos-${{ matrix.arch }}-validation-summary.md"
-          file "$node_bin" | tee -a "macos-${{ matrix.arch }}-validation-summary.md"
-          find "$app/Contents/Resources/app/apps/api/node_modules/@prisma/engines" -maxdepth 1 -type f -name '*darwin*' -print | sort | tee -a "macos-${{ matrix.arch }}-validation-summary.md"
-          file "$app/Contents/Resources/app/apps/api/node_modules/bcrypt/prebuilds/darwin-${{ matrix.arch }}/bcrypt.node" | tee -a "macos-${{ matrix.arch }}-validation-summary.md"
-          plutil -lint "$app/Contents/Info.plist"
-          codesign -dv "$app" 2>&1 || true
-          spctl -a -vv "$app" 2>&1 || true
-          xattr -l "$app" 2>&1 || true
-
-          run_with_timeout "first launch" 180 env CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/MacOS/CertifydCoreLauncher"
-          run_with_timeout "status after first launch" 30 env CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/Resources/status.sh" | tee -a "macos-${{ matrix.arch }}-validation-summary.md"
-          "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/health"
-          "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("dashboard", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/"
-          test -f "$data_root/contentbox.db"
-          db_hash_before="$(shasum -a 256 "$data_root/contentbox.db" | awk '{print $1}')"
-          db_size_before="$(stat -f '%z' "$data_root/contentbox.db")"
-
-          run_with_timeout "stop after first launch" 45 env CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/Resources/stop.sh"
-          run_with_timeout "restart" 180 env CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/MacOS/CertifydCoreLauncher"
-          db_hash_restart="$(shasum -a 256 "$data_root/contentbox.db" | awk '{print $1}')"
-          run_with_timeout "stop after restart" 45 env CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/Contents/Resources/stop.sh"
-
-          mv "$app" "$move_root/Certifyd Core.app"
-          moved_app="$move_root/Certifyd Core.app"
-          moved_node_bin="$moved_app/Contents/Resources/runtime/node/bin/node"
-          run_with_timeout "launch after move" 180 env CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/Contents/MacOS/CertifydCoreLauncher"
-          "$moved_node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health-after-move", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/health"
-          run_with_timeout "stop after move" 45 env CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/Contents/Resources/stop.sh"
-          db_hash_after="$(shasum -a 256 "$data_root/contentbox.db" | awk '{print $1}')"
-          db_size_after="$(stat -f '%z' "$data_root/contentbox.db")"
-
-          test "$db_hash_before" = "$db_hash_restart"
-          test "$db_hash_before" = "$db_hash_after"
-          test "$db_size_before" = "$db_size_after"
-          test -f "$data_root/config/api.env"
-          {
-            echo "Runtime start=PASS"
-            echo "Health=PASS"
-            echo "Dashboard=PASS"
-            echo "Stop/status=PASS"
-            echo "Restart/persistence=PASS"
-            echo "Moved app=PASS"
-            echo "Existing data preserved=PASS"
-            echo "System git/node/npm shims not invoked=PASS"
-            echo "DB size before=$db_size_before"
-            echo "DB size after=$db_size_after"
-          } | tee -a "macos-${{ matrix.arch }}-validation-summary.md"
+        run: bash scripts/validate-macos-runtime.sh "$DMG_PATH" "${{ matrix.arch }}" "${{ matrix.port }}" "$RELEASE_VERSION" unsigned
 
       - name: Upload macOS package artifact
         uses: actions/upload-artifact@v4

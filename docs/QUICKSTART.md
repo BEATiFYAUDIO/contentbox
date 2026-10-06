@@ -60,7 +60,12 @@ This installs both `Certifyd Core` and `Certifyd Core (LAN Access)`.
 
 For a dedicated LAN machine, open `Start Certifyd Core with LAN Access.command` from the disk image.
 
-Current beta macOS packages are unsigned and not notarized. macOS Gatekeeper may require Finder -> right-click -> Open.
+Public beta.11 macOS packages are unsigned and not notarized. A Developer ID and
+notarization pipeline is being prepared; its presence in source does not mean an
+existing download is signed. Use a release explicitly validated as Developer ID
+signed and Apple-notarized. If Gatekeeper blocks your download, stop and report
+the version and warning; do not disable security checks. Signed release validation
+must pass before we claim the normal drag-to-Applications/open flow works.
 
 ## LAN Appliance Mode
 
