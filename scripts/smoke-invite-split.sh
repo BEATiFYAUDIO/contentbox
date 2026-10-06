@@ -23,6 +23,7 @@ trap cleanup EXIT
   PORT="$API_PORT" \
   CONTENTBOX_ROOT="$CONTENTBOX_ROOT" \
   DATABASE_URL="$DATABASE_URL" \
+  JWT_SECRET="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')" \
   NODE_ENV=development \
   npm run start:api) >/tmp/contentbox-smoke-invite-api.log 2>&1 &
 API_PID=$!
