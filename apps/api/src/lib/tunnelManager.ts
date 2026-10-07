@@ -32,7 +32,9 @@ type TunnelManagerOptions = {
   resolveBinary?: (signal?: AbortSignal) => Promise<string>;
   readVersion?: (binPath: string, signal?: AbortSignal) => Promise<string | null>;
   spawnProcess?: typeof spawn;
-  killProcess?: (pid: number) => void;
+  killProcess?: (pid: number, signal?: NodeJS.Signals | number) => void;
+  stopTimeoutMs?: number;
+  stopEscalationTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   execFileRunner?: ExecFileRunner;
   downloadSpec?: DownloadSpec;
@@ -308,6 +310,7 @@ export class TunnelManager {
   private activeMode: "quick" | "named" | null = null;
   private lastNamedInput: { publicOrigin: string; tunnelName: string; configPath?: string | null; token?: string | null } | null = null;
   private namedRestartInFlight = false;
+  private namedRestartGeneration = 0;
 
   constructor(opts: TunnelManagerOptions) {
     this.opts = {
@@ -335,6 +338,64 @@ export class TunnelManager {
 
   setError(message: string) {
     this.state = { ...this.state, status: "ERROR", lastError: message };
+  }
+
+  invalidateNamedIntent() {
+    this.namedRestartGeneration += 1;
+    this.namedRestartInFlight = false;
+    this.lastNamedInput = null;
+  }
+
+  private waitForOwnedChildExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<boolean> {
+    if (child.exitCode !== null && child.exitCode !== undefined) return Promise.resolve(true);
+    if (child.signalCode !== null && child.signalCode !== undefined) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (exited: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.off("exit", onExit);
+        child.off("close", onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      child.once("exit", onExit);
+      child.once("close", onExit);
+      const timer = setTimeout(() => finish(false), Math.max(1, timeoutMs));
+    });
+  }
+
+  private async terminateOwnedChild(): Promise<boolean> {
+    const ownedChild = this.proc;
+    if (!ownedChild?.pid) return true;
+    if (
+      (ownedChild.exitCode !== null && ownedChild.exitCode !== undefined) ||
+      (ownedChild.signalCode !== null && ownedChild.signalCode !== undefined)
+    ) {
+      if (this.proc === ownedChild) this.proc = null;
+      return true;
+    }
+    const exited = this.waitForOwnedChildExit(
+      ownedChild,
+      this.opts.stopTimeoutMs ?? Math.max(1, Number(process.env.CLOUDFLARED_STOP_TIMEOUT_MS || "5000"))
+    );
+    try {
+      (this.opts.killProcess || process.kill)(ownedChild.pid);
+    } catch {}
+    let stopped = await exited;
+    if (!stopped) {
+      const forcedExit = this.waitForOwnedChildExit(
+        ownedChild,
+        this.opts.stopEscalationTimeoutMs ?? Math.max(1, Number(process.env.CLOUDFLARED_STOP_ESCALATION_TIMEOUT_MS || "1000"))
+      );
+      try {
+        (this.opts.killProcess || process.kill)(ownedChild.pid, "SIGKILL");
+      } catch {}
+      stopped = await forcedExit;
+    }
+    if (stopped && this.proc === ownedChild) this.proc = null;
+    return stopped;
   }
 
   async ensureBinary(signal?: AbortSignal): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -392,24 +453,24 @@ export class TunnelManager {
 
   async stop(): Promise<TunnelState> {
     this.stopping = true;
+    this.namedRestartGeneration += 1;
     this.namedRestartInFlight = false;
     this.clearHealthTimer();
     this.healthFailures = 0;
-    if (this.proc?.pid) {
-      try {
-        (this.opts.killProcess || process.kill)(this.proc.pid);
-      } catch {}
+    const ownedPid = this.proc?.pid || null;
+    const stopped = await this.terminateOwnedChild();
+    if (stopped) {
+      this.proc = null;
+      this.activeMode = null;
     }
-    this.proc = null;
-    this.activeMode = null;
     this.state = {
       ...this.state,
-      status: "STOPPED",
+      status: stopped ? "STOPPED" : "ERROR",
       publicOrigin: null,
-      lastError: null,
+      lastError: stopped ? null : "Timed out waiting for owned cloudflared process to exit",
       lastCheckedAt: null,
-      startedAt: null,
-      pid: null
+      startedAt: stopped ? null : this.state.startedAt,
+      pid: stopped ? null : ownedPid
     };
     this.stopping = false;
     return this.status();
@@ -600,6 +661,7 @@ export class TunnelManager {
     }
     this.state = { ...this.state, status: "STARTING", lastError: null };
     this.lastNamedInput = { ...input };
+    this.namedRestartGeneration += 1;
 
     let binPath: string;
     try {
@@ -647,7 +709,7 @@ export class TunnelManager {
     this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
 
     child.on("exit", () => {
-      if (this.stopping) return;
+      if (this.stopping || this.proc !== child) return;
       this.proc = null;
       this.activeMode = null;
       this.state = { ...this.state, status: "ERROR", publicOrigin: null, lastError: "cloudflared exited" };
@@ -704,9 +766,14 @@ export class TunnelManager {
     this.healthTimer = setInterval(async () => {
       if (this.healthInFlight) return;
       if ((this.state.status !== "ACTIVE" && this.state.status !== "STARTING") || !this.state.publicOrigin) return;
+      const restartGeneration = this.namedRestartGeneration;
       this.healthInFlight = true;
       try {
         const ok = await this.verify(this.state.publicOrigin);
+        if (
+          restartGeneration !== this.namedRestartGeneration ||
+          this.stopping
+        ) return;
         if (ok) {
           this.healthFailures = 0;
           if (this.state.status !== "ACTIVE") {
@@ -726,17 +793,25 @@ export class TunnelManager {
               this.healthFailures = 0;
               if (!this.namedRestartInFlight && this.lastNamedInput) {
                 this.namedRestartInFlight = true;
+                const restartInput = { ...this.lastNamedInput };
                 (async () => {
                   try {
-                    if (this.proc?.pid) {
-                      try {
-                        (this.opts.killProcess || process.kill)(this.proc.pid);
-                      } catch {}
-                    }
-                    this.proc = null;
+                    const stopped = await this.terminateOwnedChild();
                     this.activeMode = null;
-                    await new Promise((r) => setTimeout(r, 500));
-                    await this.startNamed(this.lastNamedInput as any);
+                    if (!stopped) {
+                      this.state = {
+                        ...this.state,
+                        status: "ERROR",
+                        lastError: "Timed out waiting for owned cloudflared process to exit"
+                      };
+                      return;
+                    }
+                    if (
+                      restartGeneration !== this.namedRestartGeneration ||
+                      this.stopping
+                    ) return;
+                    this.state = { ...this.state, status: "STOPPED", pid: null };
+                    await this.startNamed(restartInput);
                   } catch (e: any) {
                     this.state = {
                       ...this.state,

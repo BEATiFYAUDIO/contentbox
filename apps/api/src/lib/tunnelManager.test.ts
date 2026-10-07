@@ -32,7 +32,10 @@ test("quick tunnel targets the public listener and stop kills only its owned chi
       queueMicrotask(() => child.stderr.write("https://owned-test.trycloudflare.com\n"));
       return child;
     }) as any,
-    killProcess: (pid) => killed.push(pid)
+    killProcess: (pid) => {
+      killed.push(pid);
+      queueMicrotask(() => child.emit("exit", 0, null));
+    }
   });
 
   const started = await manager.startQuick();
@@ -67,7 +70,10 @@ test("stopping one manager does not terminate another Certifyd instance's cloudf
         queueMicrotask(() => child.stderr.write(`${origin}\n`));
         return child;
       }) as any,
-      killProcess: (ownedPid) => killed.push(ownedPid)
+      killProcess: (ownedPid) => {
+        killed.push(ownedPid);
+        queueMicrotask(() => child.emit("exit", 0, null));
+      }
     });
   };
   const first = makeManager(4242, "https://first.trycloudflare.com");
@@ -96,7 +102,10 @@ test("named tunnel startup arguments and owned-child stop behavior remain unchan
         spawned.push({ command, args: [...args] });
         return child;
       }) as any,
-      killProcess: (pid) => killed.push(pid)
+      killProcess: (pid) => {
+        killed.push(pid);
+        queueMicrotask(() => child.emit("exit", 0, null));
+      }
     });
     const status = await manager.startNamed({
       publicOrigin: "https://creator.example.com",
@@ -112,6 +121,155 @@ test("named tunnel startup arguments and owned-child stop behavior remain unchan
     ]);
     await manager.stop();
     assert.deepEqual(killed, [8181]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("named Stop waits for delayed owned-child exit and remains STOPPED after late events", async () => {
+  const child = fakeChild(8282);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("ok", { status: 200 });
+  try {
+    const manager = new TunnelManager({
+      targetPort: 4010,
+      binDir: "/unused",
+      stopTimeoutMs: 100,
+      resolveBinary: async () => "/mock/cloudflared",
+      readVersion: async () => "cloudflared mock",
+      spawnProcess: (() => child) as any,
+      killProcess: () => setTimeout(() => child.emit("exit", 0, null), 20)
+    });
+    await manager.startNamed({ publicOrigin: "https://creator.example.com", tunnelName: "creator", token: "token" });
+    const startedAt = Date.now();
+    assert.equal((await manager.stop()).status, "STOPPED");
+    assert.ok(Date.now() - startedAt >= 15);
+    child.emit("exit", 0, null);
+    assert.equal(manager.status().status, "STOPPED");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("named Stop handles an already-exited child", async () => {
+  const child = fakeChild(8383);
+  child.exitCode = 0;
+  let kills = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("ok", { status: 200 });
+  try {
+    const manager = new TunnelManager({
+      targetPort: 4010,
+      binDir: "/unused",
+      resolveBinary: async () => "/mock/cloudflared",
+      readVersion: async () => "cloudflared mock",
+      spawnProcess: (() => child) as any,
+      killProcess: () => { kills += 1; }
+    });
+    await manager.startNamed({ publicOrigin: "https://creator.example.com", tunnelName: "creator", token: "token" });
+    assert.equal((await manager.stop()).status, "STOPPED");
+    assert.equal(kills, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("named Stop timeout is bounded and escalates only its owned PID", async () => {
+  const child = fakeChild(8484);
+  const kills: Array<[number, unknown]> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("ok", { status: 200 });
+  try {
+    const manager = new TunnelManager({
+      targetPort: 4010,
+      binDir: "/unused",
+      stopTimeoutMs: 10,
+      stopEscalationTimeoutMs: 10,
+      resolveBinary: async () => "/mock/cloudflared",
+      readVersion: async () => "cloudflared mock",
+      spawnProcess: (() => child) as any,
+      killProcess: (pid, signal) => kills.push([pid, signal])
+    });
+    await manager.startNamed({ publicOrigin: "https://creator.example.com", tunnelName: "creator", token: "token" });
+    const startedAt = Date.now();
+    const stopped = await manager.stop();
+    assert.equal(stopped.status, "ERROR");
+    assert.match(String(stopped.lastError), /Timed out/);
+    assert.equal(stopped.pid, 8484);
+    assert.ok(Date.now() - startedAt < 250);
+    assert.deepEqual(kills, [[8484, undefined], [8484, "SIGKILL"]]);
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+    assert.equal((await manager.stop()).status, "STOPPED");
+    assert.deepEqual(kills, [[8484, undefined], [8484, "SIGKILL"]]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Stop cancels a delayed named self-heal before it can respawn", async () => {
+  const children = [fakeChild(8585), fakeChild(8586)];
+  let spawnCount = 0;
+  let fetchCount = 0;
+  let healthKill!: () => void;
+  const healthKilled = new Promise<void>((resolve) => { healthKill = resolve; });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("ok", { status: fetchCount++ === 0 ? 200 : 503 });
+  try {
+    const manager = new TunnelManager({
+      targetPort: 4010,
+      binDir: "/unused",
+      healthIntervalMs: 5,
+      healthFailureThreshold: 1,
+      resolveBinary: async () => "/mock/cloudflared",
+      readVersion: async () => "cloudflared mock",
+      spawnProcess: (() => children[spawnCount++]) as any,
+      killProcess: () => {
+        healthKill();
+        queueMicrotask(() => children[0].emit("exit", 0, null));
+      }
+    });
+    await manager.startNamed({ publicOrigin: "https://creator.example.com", tunnelName: "creator", token: "token" });
+    await healthKilled;
+    await manager.stop();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(spawnCount, 1);
+    assert.equal(manager.status().status, "STOPPED");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("config invalidation cancels a pending named self-heal generation", async () => {
+  const child = fakeChild(8686);
+  let spawnCount = 0;
+  let fetchCount = 0;
+  let healthKill!: () => void;
+  const healthKilled = new Promise<void>((resolve) => { healthKill = resolve; });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("ok", { status: fetchCount++ === 0 ? 200 : 503 });
+  try {
+    const manager = new TunnelManager({
+      targetPort: 4010,
+      binDir: "/unused",
+      healthIntervalMs: 5,
+      healthFailureThreshold: 1,
+      resolveBinary: async () => "/mock/cloudflared",
+      readVersion: async () => "cloudflared mock",
+      spawnProcess: (() => { spawnCount += 1; return child; }) as any,
+      killProcess: () => {
+        healthKill();
+        queueMicrotask(() => child.emit("exit", 0, null));
+      }
+    });
+    await manager.startNamed({ publicOrigin: "https://creator.example.com", tunnelName: "creator", token: "token" });
+    await healthKilled;
+    manager.invalidateNamedIntent();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(spawnCount, 1);
+    await manager.stop();
   } finally {
     globalThis.fetch = originalFetch;
   }
