@@ -1,7 +1,8 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import { isPublicRouteAllowed } from "./security/publicRoutePolicy.js";
 
-const PUBLIC_PORT = Number(process.env.PUBLIC_PORT || 4010);
+export const DEFAULT_PUBLIC_PORT = 4010;
+const PUBLIC_PORT = Number(process.env.PUBLIC_PORT || DEFAULT_PUBLIC_PORT);
 
 type RegisterFn = (app: any) => void;
 
@@ -64,8 +65,47 @@ export function createPublicServer(registerPublicRoutes: RegisterFn) {
   return app;
 }
 
-export async function startPublicServer(registerPublicRoutes: RegisterFn, host: string) {
+export async function startPublicServer(
+  registerPublicRoutes: RegisterFn,
+  host: string,
+  port = PUBLIC_PORT
+): Promise<FastifyInstance> {
   const app = createPublicServer(registerPublicRoutes);
-  await app.listen({ port: PUBLIC_PORT, host });
+  await app.listen({ port, host });
   return app;
+}
+
+export class PublicServerLifecycle {
+  private app: FastifyInstance | null = null;
+  private startPromise: Promise<FastifyInstance> | null = null;
+
+  isStarted() {
+    return Boolean(this.app);
+  }
+
+  async ensureStarted(registerPublicRoutes: RegisterFn, host: string, port = PUBLIC_PORT) {
+    if (this.app) return this.app;
+    if (this.startPromise) return this.startPromise;
+
+    const startPromise = startPublicServer(registerPublicRoutes, host, port)
+      .then((app) => {
+        this.app = app;
+        return app;
+      })
+      .finally(() => {
+        this.startPromise = null;
+      });
+    this.startPromise = startPromise;
+    return startPromise;
+  }
+
+  async stop() {
+    const pending = this.startPromise;
+    if (pending) {
+      await pending.catch(() => null);
+    }
+    const app = this.app;
+    this.app = null;
+    if (app) await app.close();
+  }
 }

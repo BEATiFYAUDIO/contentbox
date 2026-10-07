@@ -1,6 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalOriginForLinks, computePublicLinkState } from "./publicLinkState.js";
+import {
+  canonicalOriginForLinks,
+  computePublicLinkState,
+  resolveConfiguredPublicMode,
+  resolvePublicModeSelection,
+  shouldAutoStartSelectedQuick
+} from "./publicLinkState.js";
+
+test("fresh packaged mode stays off until the user persists a quick transition", () => {
+  assert.equal(resolveConfiguredPublicMode({ envMode: "off", persistedMode: null }), "off");
+  assert.equal(
+    resolveConfiguredPublicMode({ envMode: "off", persistedMode: "quick", consentGranted: true, autoStartEnabled: true }),
+    "quick"
+  );
+  assert.equal(resolveConfiguredPublicMode({ envMode: "off", persistedMode: "off" }), "off");
+});
+
+test("user-selected Quick requires consent and autostart on restart", () => {
+  const selection = resolvePublicModeSelection({ envMode: "off", persistedMode: "quick" });
+  assert.equal(shouldAutoStartSelectedQuick({ selection, consentGranted: false, autoStartEnabled: true }), false);
+  assert.equal(shouldAutoStartSelectedQuick({ selection, consentGranted: true, autoStartEnabled: false }), false);
+  assert.equal(shouldAutoStartSelectedQuick({ selection, consentGranted: true, autoStartEnabled: true }), true);
+});
+
+test("environment-forced Quick preserves source and developer autostart behavior", () => {
+  const selection = resolvePublicModeSelection({ envMode: "quick", persistedMode: "off" });
+  assert.deepEqual(selection, { mode: "quick", source: "environment" });
+  assert.equal(shouldAutoStartSelectedQuick({ selection, consentGranted: false, autoStartEnabled: false }), true);
+});
 
 test("named configured in quick mode keeps quick canonical origin", () => {
   const state = computePublicLinkState({

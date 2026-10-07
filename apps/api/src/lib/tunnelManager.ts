@@ -3,7 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { spawn, spawnSync, execFile } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 
 export type TunnelStatus = "STOPPED" | "STARTING" | "ACTIVE" | "ERROR";
@@ -29,7 +29,22 @@ type TunnelManagerOptions = {
   healthFailureThreshold?: number;
   protocolPreference?: "auto" | "http2" | "quic";
   onProtocolSuggestion?: (protocol: "http2" | "quic") => void;
+  resolveBinary?: (signal?: AbortSignal) => Promise<string>;
+  readVersion?: (binPath: string, signal?: AbortSignal) => Promise<string | null>;
+  spawnProcess?: typeof spawn;
+  killProcess?: (pid: number, signal?: NodeJS.Signals | number) => void;
+  stopTimeoutMs?: number;
+  stopEscalationTimeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  execFileRunner?: ExecFileRunner;
+  downloadSpec?: DownloadSpec;
 };
+
+type ExecFileRunner = (
+  cmd: string,
+  args: string[],
+  options?: { signal?: AbortSignal; timeoutMs?: number }
+) => Promise<{ stdout: string; stderr: string }>;
 
 type DownloadSpec = {
   url: string;
@@ -38,18 +53,20 @@ type DownloadSpec = {
 };
 
 function parseQuickTunnelUrl(text: string): string | null {
-  const m = String(text || "").match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-  return m ? m[0] : null;
+  const m = String(text || "").match(
+    /Your quick Tunnel has been created![\s\S]{0,1024}?\b(https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com)\b/i
+  );
+  return m ? m[1] : null;
 }
 
-function execFileAsync(cmd: string, args: string[]) {
+const execFileAsync: ExecFileRunner = (cmd, args, options = {}) => {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(cmd, args, (err, stdout, stderr) => {
+    execFile(cmd, args, { signal: options.signal, timeout: options.timeoutMs }, (err, stdout, stderr) => {
       if (err) return reject(Object.assign(err, { stdout, stderr }));
       resolve({ stdout: String(stdout || ""), stderr: String(stderr || "") });
     });
   });
-}
+};
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000) {
   const controller = new AbortController();
@@ -71,9 +88,19 @@ async function sha256File(filePath: string): Promise<string> {
   });
 }
 
-async function maybeFetchChecksum(url: string): Promise<string | null> {
+async function maybeFetchChecksum(
+  url: string,
+  outerSignal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch
+): Promise<string | null> {
+  const timeoutMs = Math.max(1, Number(process.env.CLOUDFLARED_CHECKSUM_TIMEOUT_MS || "15000"));
+  const controller = new AbortController();
+  const onOuterAbort = () => controller.abort();
+  outerSignal?.addEventListener("abort", onOuterAbort, { once: true });
+  if (outerSignal?.aborted) controller.abort();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { method: "GET" } as any);
+    const res = await fetchImpl(url, { method: "GET", signal: controller.signal } as any);
     if (!res.ok) return null;
     const text = (await res.text()).trim();
     if (!text) return null;
@@ -82,8 +109,14 @@ async function maybeFetchChecksum(url: string): Promise<string | null> {
     const candidate = parts[0];
     if (/^[a-f0-9]{64}$/i.test(candidate)) return candidate.toLowerCase();
     return null;
-  } catch {
+  } catch (error: any) {
+    if (controller.signal.aborted) {
+      throw new Error(`cloudflared checksum request timed out after ${timeoutMs}ms`);
+    }
     return null;
+  } finally {
+    clearTimeout(timer);
+    outerSignal?.removeEventListener("abort", onOuterAbort);
   }
 }
 
@@ -131,55 +164,104 @@ function pickDownloadSpec(): DownloadSpec {
   throw new Error(`Unsupported platform/arch for cloudflared: ${platform}/${arch}`);
 }
 
-async function downloadCloudflared(destPath: string, logger?: TunnelManagerOptions["logger"]) {
-  const spec = pickDownloadSpec();
+async function downloadCloudflared(
+  destPath: string,
+  logger?: TunnelManagerOptions["logger"],
+  outerSignal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+  execRunner: ExecFileRunner = execFileAsync,
+  requestedSpec?: DownloadSpec
+) {
+  const spec = requestedSpec || pickDownloadSpec();
   if (!String(process.env.CLOUDFLARED_VERSION || "").trim()) {
     logger?.warn?.("CLOUDFLARED_VERSION not set; downloading latest cloudflared");
   }
   await ensureDir(path.dirname(destPath));
 
   const tmpFile = `${destPath}.download`;
-  const res = await fetch(spec.url, { method: "GET" } as any);
-  if (!res.ok || !res.body) throw new Error(`Download failed (${res.status})`);
+  let installed = false;
+  const timeoutMs = Math.max(1, Number(process.env.CLOUDFLARED_DOWNLOAD_TIMEOUT_MS || "120000"));
+  const controller = new AbortController();
+  const onOuterAbort = () => controller.abort();
+  outerSignal?.addEventListener("abort", onOuterAbort, { once: true });
+  if (outerSignal?.aborted) controller.abort();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(spec.url, { method: "GET", signal: controller.signal } as any);
+    if (!res.ok || !res.body) throw new Error(`Download failed (${res.status})`);
 
-  await pipeline(res.body as any, fsSync.createWriteStream(tmpFile));
+    await pipeline(res.body as any, fsSync.createWriteStream(tmpFile), { signal: controller.signal });
 
-  const checksumUrl = `${spec.url}.sha256`;
-  const expected = await maybeFetchChecksum(checksumUrl);
-  if (expected) {
-    const actual = await sha256File(tmpFile);
-    if (actual !== expected) {
-      throw new Error("Downloaded cloudflared checksum mismatch");
+    const checksumUrl = `${spec.url}.sha256`;
+    const expected = await maybeFetchChecksum(checksumUrl, controller.signal, fetchImpl);
+    if (controller.signal.aborted) throw new Error("cloudflared download aborted");
+    if (expected) {
+      const actual = await sha256File(tmpFile);
+      if (controller.signal.aborted) throw new Error("cloudflared download aborted");
+      if (actual !== expected) {
+        throw new Error("Downloaded cloudflared checksum mismatch");
+      }
+    } else {
+      logger?.warn?.("cloudflared checksum not available; continuing without verification");
     }
-  } else {
-    logger?.warn?.("cloudflared checksum not available; continuing without verification");
-  }
 
-  if (spec.isTgz) {
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "contentbox-cloudflared-"));
-    try {
-      await execFileAsync("tar", ["-xzf", tmpFile, "-C", tmpDir]);
-    } catch (e) {
-      throw new Error("Failed to extract cloudflared archive (tar not available?)");
+    if (spec.isTgz) {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "contentbox-cloudflared-"));
+      try {
+        try {
+          await execRunner("tar", ["-xzf", tmpFile, "-C", tmpDir], {
+            signal: controller.signal,
+            timeoutMs: Math.max(1, Number(process.env.CLOUDFLARED_EXTRACT_TIMEOUT_MS || "30000"))
+          });
+        } catch (e) {
+          throw new Error("Failed to extract cloudflared archive (tar unavailable, cancelled, or timed out)");
+        }
+        const extracted = await findExtractedBinary(tmpDir, spec.binaryName);
+        if (!extracted) throw new Error("Extracted cloudflared binary not found");
+        if (controller.signal.aborted) throw new Error("cloudflared download aborted");
+        await fs.copyFile(extracted, destPath);
+        installed = true;
+        await fs.unlink(tmpFile);
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    } else {
+      if (controller.signal.aborted) throw new Error("cloudflared download aborted");
+      await fs.rename(tmpFile, destPath).catch(async () => {
+        await fs.copyFile(tmpFile, destPath);
+        await fs.unlink(tmpFile).catch(() => {});
+      });
+      installed = true;
     }
-    const extracted = await findExtractedBinary(tmpDir, spec.binaryName);
-    if (!extracted) throw new Error("Extracted cloudflared binary not found");
-    await fs.copyFile(extracted, destPath);
-  } else {
-    await fs.rename(tmpFile, destPath).catch(async () => {
-      await fs.copyFile(tmpFile, destPath);
-      await fs.unlink(tmpFile).catch(() => {});
-    });
-  }
 
-  if (process.platform !== "win32") {
-    await fs.chmod(destPath, 0o755);
-  }
+    if (controller.signal.aborted) throw new Error("cloudflared download aborted");
+    if (process.platform !== "win32") {
+      await fs.chmod(destPath, 0o755);
+    }
+    if (controller.signal.aborted) throw new Error("cloudflared download aborted");
 
-  logger?.info?.(`cloudflared installed at ${destPath}`);
+    logger?.info?.(`cloudflared installed at ${destPath}`);
+  } catch (error: any) {
+    await fs.unlink(tmpFile).catch(() => undefined);
+    if (installed) await fs.unlink(destPath).catch(() => undefined);
+    if (controller.signal.aborted) {
+      throw new Error(`cloudflared download cancelled or timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    outerSignal?.removeEventListener("abort", onOuterAbort);
+  }
 }
 
-async function resolveCloudflaredPath(binDir: string, logger?: TunnelManagerOptions["logger"]) {
+async function resolveCloudflaredPath(
+  binDir: string,
+  logger?: TunnelManagerOptions["logger"],
+  signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+  execRunner: ExecFileRunner = execFileAsync,
+  downloadSpec?: DownloadSpec
+) {
   const envPath = String(process.env.CLOUDFLARED_PATH || "").trim();
   if (envPath && fsSync.existsSync(envPath)) return envPath;
 
@@ -188,19 +270,30 @@ async function resolveCloudflaredPath(binDir: string, logger?: TunnelManagerOpti
   if (fsSync.existsSync(managedPath)) return managedPath;
 
   try {
-    const res = spawnSync("cloudflared", ["--version"], { stdio: "ignore" });
-    if (res.status === 0) return "cloudflared";
+    await execRunner("cloudflared", ["--version"], {
+      signal,
+      timeoutMs: Math.max(1, Number(process.env.CLOUDFLARED_VERSION_TIMEOUT_MS || "5000"))
+    });
+    return "cloudflared";
   } catch {
     // ignore
   }
 
-  await downloadCloudflared(managedPath, logger);
+  if (signal?.aborted) throw new Error("cloudflared preparation aborted");
+  await downloadCloudflared(managedPath, logger, signal, fetchImpl, execRunner, downloadSpec);
   return managedPath;
 }
 
-async function readCloudflaredVersion(binPath: string): Promise<string | null> {
+async function readCloudflaredVersion(
+  binPath: string,
+  signal?: AbortSignal,
+  execRunner: ExecFileRunner = execFileAsync
+): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(binPath, ["--version"]);
+    const { stdout } = await execRunner(binPath, ["--version"], {
+      signal,
+      timeoutMs: Math.max(1, Number(process.env.CLOUDFLARED_VERSION_TIMEOUT_MS || "5000"))
+    });
     return stdout.trim() || null;
   } catch {
     return null;
@@ -219,6 +312,7 @@ export class TunnelManager {
   private activeMode: "quick" | "named" | null = null;
   private lastNamedInput: { publicOrigin: string; tunnelName: string; configPath?: string | null; token?: string | null } | null = null;
   private namedRestartInFlight = false;
+  private namedRestartGeneration = 0;
 
   constructor(opts: TunnelManagerOptions) {
     this.opts = {
@@ -248,18 +342,93 @@ export class TunnelManager {
     this.state = { ...this.state, status: "ERROR", lastError: message };
   }
 
-  async ensureBinary(): Promise<{ ok: true } | { ok: false; error: string }> {
+  invalidateNamedIntent() {
+    this.namedRestartGeneration += 1;
+    this.namedRestartInFlight = false;
+    this.lastNamedInput = null;
+  }
+
+  private waitForOwnedChildExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<boolean> {
+    if (child.exitCode !== null && child.exitCode !== undefined) return Promise.resolve(true);
+    if (child.signalCode !== null && child.signalCode !== undefined) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (exited: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.off("exit", onExit);
+        child.off("close", onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      child.once("exit", onExit);
+      child.once("close", onExit);
+      const timer = setTimeout(() => finish(false), Math.max(1, timeoutMs));
+    });
+  }
+
+  private async terminateOwnedChild(): Promise<boolean> {
+    const ownedChild = this.proc;
+    if (!ownedChild?.pid) return true;
+    if (
+      (ownedChild.exitCode !== null && ownedChild.exitCode !== undefined) ||
+      (ownedChild.signalCode !== null && ownedChild.signalCode !== undefined)
+    ) {
+      if (this.proc === ownedChild) this.proc = null;
+      return true;
+    }
+    const exited = this.waitForOwnedChildExit(
+      ownedChild,
+      this.opts.stopTimeoutMs ?? Math.max(1, Number(process.env.CLOUDFLARED_STOP_TIMEOUT_MS || "5000"))
+    );
     try {
-      const binPath = await resolveCloudflaredPath(this.opts.binDir, this.opts.logger);
+      (this.opts.killProcess || process.kill)(ownedChild.pid);
+    } catch {}
+    let stopped = await exited;
+    if (!stopped) {
+      const forcedExit = this.waitForOwnedChildExit(
+        ownedChild,
+        this.opts.stopEscalationTimeoutMs ?? Math.max(1, Number(process.env.CLOUDFLARED_STOP_ESCALATION_TIMEOUT_MS || "1000"))
+      );
+      try {
+        (this.opts.killProcess || process.kill)(ownedChild.pid, "SIGKILL");
+      } catch {}
+      stopped = await forcedExit;
+    }
+    if (stopped && this.proc === ownedChild) this.proc = null;
+    return stopped;
+  }
+
+  async ensureBinary(signal?: AbortSignal): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      const binPath = await (
+        this.opts.resolveBinary?.(signal) ||
+        resolveCloudflaredPath(
+          this.opts.binDir,
+          this.opts.logger,
+          signal,
+          this.opts.fetchImpl,
+          this.opts.execFileRunner,
+          this.opts.downloadSpec
+        )
+      );
+      const version = await (
+        this.opts.readVersion?.(binPath, signal) ||
+        readCloudflaredVersion(binPath, signal, this.opts.execFileRunner)
+      );
+      if (signal?.aborted) throw new Error("cloudflared preparation aborted");
       this.state = {
         ...this.state,
         cloudflaredPath: binPath,
-        cloudflaredVersion: await readCloudflaredVersion(binPath)
+        cloudflaredVersion: version
       };
       return { ok: true };
     } catch (e: any) {
       const msg = String(e?.message || e);
-      this.state = { ...this.state, status: "ERROR", lastError: msg };
+      if (!signal?.aborted) {
+        this.state = { ...this.state, status: "ERROR", lastError: msg };
+      }
       return { ok: false, error: msg };
     }
   }
@@ -286,24 +455,24 @@ export class TunnelManager {
 
   async stop(): Promise<TunnelState> {
     this.stopping = true;
+    this.namedRestartGeneration += 1;
     this.namedRestartInFlight = false;
     this.clearHealthTimer();
     this.healthFailures = 0;
-    if (this.proc?.pid) {
-      try {
-        process.kill(this.proc.pid);
-      } catch {}
+    const ownedPid = this.proc?.pid || null;
+    const stopped = await this.terminateOwnedChild();
+    if (stopped) {
+      this.proc = null;
+      this.activeMode = null;
     }
-    this.proc = null;
-    this.activeMode = null;
     this.state = {
       ...this.state,
-      status: "STOPPED",
+      status: stopped ? "STOPPED" : "ERROR",
       publicOrigin: null,
-      lastError: null,
+      lastError: stopped ? null : "Timed out waiting for owned cloudflared process to exit",
       lastCheckedAt: null,
-      startedAt: null,
-      pid: null
+      startedAt: stopped ? null : this.state.startedAt,
+      pid: stopped ? null : ownedPid
     };
     this.stopping = false;
     return this.status();
@@ -318,7 +487,17 @@ export class TunnelManager {
 
     let binPath: string;
     try {
-      binPath = await resolveCloudflaredPath(this.opts.binDir, this.opts.logger);
+      binPath = await (
+        this.opts.resolveBinary?.() ||
+        resolveCloudflaredPath(
+          this.opts.binDir,
+          this.opts.logger,
+          undefined,
+          this.opts.fetchImpl,
+          this.opts.execFileRunner,
+          this.opts.downloadSpec
+        )
+      );
     } catch (e: any) {
       const msg = String(e?.message || e);
       this.state = { ...this.state, status: "ERROR", lastError: msg };
@@ -328,7 +507,9 @@ export class TunnelManager {
     this.state = {
       ...this.state,
       cloudflaredPath: binPath,
-      cloudflaredVersion: await readCloudflaredVersion(binPath),
+      cloudflaredVersion: await (
+        this.opts.readVersion?.(binPath) || readCloudflaredVersion(binPath, undefined, this.opts.execFileRunner)
+      ),
       lastError: null
     };
 
@@ -343,22 +524,28 @@ export class TunnelManager {
       args.push("--url", targetUrl, "--no-autoupdate");
       if (protocol) args.push("--protocol", protocol);
       this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
-      const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+      const child = (this.opts.spawnProcess || spawn)(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
       this.proc = child;
       this.activeMode = "quick";
       this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
 
       const urlPromise = new Promise<string>((resolve, reject) => {
-        let resolved = false;
+        let settled = false;
+        let timeout: NodeJS.Timeout | null = null;
         let buffer = "";
+        const settle = (callback: (value: any) => void, value: any) => {
+          if (settled) return false;
+          settled = true;
+          if (timeout) clearTimeout(timeout);
+          callback(value);
+          return true;
+        };
         const onData = (buf: Buffer) => {
           const txt = buf.toString("utf8");
           buffer = (buffer + txt).slice(-8000);
           const url = parseQuickTunnelUrl(buffer);
-          if (url && !resolved) {
-            resolved = true;
+          if (url && settle(resolve, url)) {
             this.opts.logger?.info?.(`quick tunnel URL: ${url}`);
-            resolve(url);
           }
         };
 
@@ -366,26 +553,20 @@ export class TunnelManager {
         child.stderr?.on("data", onData);
 
         child.on("error", (err) => {
-          if (!resolved) {
-            resolved = true;
+          if (settle(reject, err)) {
             this.opts.logger?.error?.(`cloudflared error: ${err?.message || err}`);
-            reject(err);
           }
         });
 
         child.on("exit", () => {
-          if (!resolved) {
-            resolved = true;
+          if (settle(reject, new Error("cloudflared exited before URL was assigned"))) {
             this.opts.logger?.error?.("cloudflared exited before URL was assigned");
-            reject(new Error("cloudflared exited before URL was assigned"));
           }
         });
 
-        setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
+        timeout = setTimeout(() => {
+          if (settle(reject, new Error("Timed out waiting for cloudflared quick tunnel URL"))) {
             this.opts.logger?.error?.("Timed out waiting for cloudflared quick tunnel URL");
-            reject(new Error("Timed out waiting for cloudflared quick tunnel URL"));
           }
         }, 20000);
       });
@@ -396,7 +577,7 @@ export class TunnelManager {
       } catch (e: any) {
         this.state = { ...this.state, status: "ERROR", lastError: String(e?.message || e) };
         try {
-          if (child.pid) process.kill(child.pid);
+          if (child.pid) (this.opts.killProcess || process.kill)(child.pid);
         } catch {}
         this.proc = null;
         this.activeMode = null;
@@ -482,10 +663,21 @@ export class TunnelManager {
     }
     this.state = { ...this.state, status: "STARTING", lastError: null };
     this.lastNamedInput = { ...input };
+    this.namedRestartGeneration += 1;
 
     let binPath: string;
     try {
-      binPath = await resolveCloudflaredPath(this.opts.binDir, this.opts.logger);
+      binPath = await (
+        this.opts.resolveBinary?.() ||
+        resolveCloudflaredPath(
+          this.opts.binDir,
+          this.opts.logger,
+          undefined,
+          this.opts.fetchImpl,
+          this.opts.execFileRunner,
+          this.opts.downloadSpec
+        )
+      );
     } catch (e: any) {
       const msg = String(e?.message || e);
       this.state = { ...this.state, status: "ERROR", lastError: msg };
@@ -495,7 +687,9 @@ export class TunnelManager {
     this.state = {
       ...this.state,
       cloudflaredPath: binPath,
-      cloudflaredVersion: await readCloudflaredVersion(binPath),
+      cloudflaredVersion: await (
+        this.opts.readVersion?.(binPath) || readCloudflaredVersion(binPath, undefined, this.opts.execFileRunner)
+      ),
       lastError: null
     };
 
@@ -511,13 +705,13 @@ export class TunnelManager {
     }
     this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
 
-    const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = (this.opts.spawnProcess || spawn)(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     this.proc = child;
     this.activeMode = "named";
     this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
 
     child.on("exit", () => {
-      if (this.stopping) return;
+      if (this.stopping || this.proc !== child) return;
       this.proc = null;
       this.activeMode = null;
       this.state = { ...this.state, status: "ERROR", publicOrigin: null, lastError: "cloudflared exited" };
@@ -574,9 +768,14 @@ export class TunnelManager {
     this.healthTimer = setInterval(async () => {
       if (this.healthInFlight) return;
       if ((this.state.status !== "ACTIVE" && this.state.status !== "STARTING") || !this.state.publicOrigin) return;
+      const restartGeneration = this.namedRestartGeneration;
       this.healthInFlight = true;
       try {
         const ok = await this.verify(this.state.publicOrigin);
+        if (
+          restartGeneration !== this.namedRestartGeneration ||
+          this.stopping
+        ) return;
         if (ok) {
           this.healthFailures = 0;
           if (this.state.status !== "ACTIVE") {
@@ -596,17 +795,25 @@ export class TunnelManager {
               this.healthFailures = 0;
               if (!this.namedRestartInFlight && this.lastNamedInput) {
                 this.namedRestartInFlight = true;
+                const restartInput = { ...this.lastNamedInput };
                 (async () => {
                   try {
-                    if (this.proc?.pid) {
-                      try {
-                        process.kill(this.proc.pid);
-                      } catch {}
-                    }
-                    this.proc = null;
+                    const stopped = await this.terminateOwnedChild();
                     this.activeMode = null;
-                    await new Promise((r) => setTimeout(r, 500));
-                    await this.startNamed(this.lastNamedInput as any);
+                    if (!stopped) {
+                      this.state = {
+                        ...this.state,
+                        status: "ERROR",
+                        lastError: "Timed out waiting for owned cloudflared process to exit"
+                      };
+                      return;
+                    }
+                    if (
+                      restartGeneration !== this.namedRestartGeneration ||
+                      this.stopping
+                    ) return;
+                    this.state = { ...this.state, status: "STOPPED", pid: null };
+                    await this.startNamed(restartInput);
                   } catch (e: any) {
                     this.state = {
                       ...this.state,
@@ -621,7 +828,7 @@ export class TunnelManager {
             } else {
               this.state = { ...this.state, status: "ERROR", lastError: "Public link health check failed" };
               try {
-                if (this.proc?.pid) process.kill(this.proc.pid);
+                if (this.proc?.pid) (this.opts.killProcess || process.kill)(this.proc.pid);
               } catch {}
               this.proc = null;
               this.activeMode = null;
