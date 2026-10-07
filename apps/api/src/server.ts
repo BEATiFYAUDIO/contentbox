@@ -74,6 +74,8 @@ import {
   computePublicLinkState,
   getNamedTunnelConfig,
   isNamedConfigured,
+  resolvePublicModeSelection,
+  shouldAutoStartSelectedQuick,
   type PublicMode,
   type PublicLinkState
 } from "./lib/publicLinkState.js";
@@ -99,7 +101,9 @@ import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
 import { validateNodeMode, writeNodeConfig, writeProductTier } from "./lib/nodeConfig.js";
 import { deriveActivationStatusMessageFromNetwork, deriveUserNetworkStatusFromState } from "./lib/userNetworkStatus.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
-import { startPublicServer } from "./publicServer.js";
+import { AsyncLifecycleMutex, startAutomaticQuickRuntime, startNamedRuntimeAtStartup } from "./lib/publicLifecycle.js";
+import { registerPublicGoRoute, registerPublicStopRoute } from "./lib/publicGoRoute.js";
+import { PublicServerLifecycle } from "./publicServer.js";
 import { shouldBlockPrivateHostRequest } from "./security/privateHostGuard.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 import { SingleFlight } from "./lib/asyncPrimitives.js";
@@ -1875,6 +1879,8 @@ const tunnelManager = new TunnelManager({
     error: (msg) => app.log.error(msg)
   }
 });
+const publicServerLifecycle = new PublicServerLifecycle();
+const publicLifecycleMutex = new AsyncLifecycleMutex();
 
 function resolveCloudflaredCmdFast(): string | null {
   const envPath = String(process.env.CLOUDFLARED_PATH || "").trim();
@@ -1953,6 +1959,7 @@ type LocalState = {
   };
   publicSharingAutoStart?: boolean;
   publicSharingProtocol?: "http2" | "quic";
+  publicSharingModeOverride?: "off" | "quick";
   namedTunnelToken?: string;
   namedTunnelDisabled?: boolean;
   backupsEnabled?: boolean;
@@ -2029,13 +2036,30 @@ function setPublicSharingAutoStart(enabled: boolean) {
   writeLocalState(s);
 }
 
-function getConfiguredPublicMode(): PublicMode {
-  if (PUBLIC_MODE === "off" || PUBLIC_MODE === "quick" || PUBLIC_MODE === "named") {
-    return PUBLIC_MODE as PublicMode;
-  }
+function getPublicSharingModeOverride(): "off" | "quick" | null {
+  const value = readLocalState().publicSharingModeOverride;
+  return value === "off" || value === "quick" ? value : null;
+}
+
+function setPublicSharingModeOverride(mode: "off" | "quick" | null) {
+  const s = readLocalState();
+  if (mode) s.publicSharingModeOverride = mode;
+  else delete s.publicSharingModeOverride;
+  writeLocalState(s);
+}
+
+function getPublicModeSelection() {
   const consent = getPublicSharingConsent();
-  if ((consent.granted || consent.dontAskAgain) && getPublicSharingAutoStart()) return "quick";
-  return "off";
+  return resolvePublicModeSelection({
+    envMode: PUBLIC_MODE,
+    persistedMode: getPublicSharingModeOverride(),
+    consentGranted: consent.granted || consent.dontAskAgain,
+    autoStartEnabled: getPublicSharingAutoStart()
+  });
+}
+
+function getConfiguredPublicMode(): PublicMode {
+  return getPublicModeSelection().mode;
 }
 
 function getPublicSharingProtocolPreference(): "auto" | "http2" | "quic" {
@@ -10829,7 +10853,7 @@ function getServiceManagedNamedStartupGraceState(input: {
   };
 }
 
-function reconcileNamedTunnelOwnership(force = false) {
+async function reconcileNamedTunnelOwnershipUnlocked(force = false) {
   const now = Date.now();
   if (!force && now - lastNamedOwnershipReconcileAt < 15_000) return;
   lastNamedOwnershipReconcileAt = now;
@@ -10839,7 +10863,7 @@ function reconcileNamedTunnelOwnership(force = false) {
 
   const st = tunnelManager.status();
   if (st.status === "ACTIVE" || st.status === "STARTING") {
-    tunnelManager.stop().catch((e) => app.log.warn(String(e?.message || e)));
+    await tunnelManager.stop().catch((e) => app.log.warn(String(e?.message || e)));
   }
 
   if (process.platform === "win32") {
@@ -10867,6 +10891,12 @@ function reconcileNamedTunnelOwnership(force = false) {
       }
     } catch {}
   }
+}
+
+function reconcileNamedTunnelOwnership(force = false) {
+  return publicLifecycleMutex
+    .runExclusive(() => reconcileNamedTunnelOwnershipUnlocked(force))
+    .catch((e) => app.log.warn(String(e?.message || e)));
 }
 
 async function refreshNamedHealth(origin: string): Promise<boolean> {
@@ -11016,11 +11046,13 @@ function getPublicStatus() {
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
   const autoStartEnabled = getPublicSharingAutoStart();
+  const modeSelection = getPublicModeSelection();
   const quickState = tunnelManager.status();
   const suppressAppManagedTransport = defer.shouldDefer && state.mode === "named";
   const transportQuickStatus = suppressAppManagedTransport ? "STOPPED" : quickState.status;
   const transportQuickOrigin = suppressAppManagedTransport ? null : quickState.publicOrigin || null;
-  const consentRequired = state.mode === "quick" && !cloudflared.available && !consentGranted;
+  const consentRequired =
+    (state.mode === "off" || (state.mode === "quick" && modeSelection.source !== "environment")) && !consentGranted;
   const productTier = resolveProductTier().productTier;
   const advancedNeedsNamed = productTier === "advanced";
   const namedConfigured = Boolean(namedCfg);
@@ -11136,7 +11168,7 @@ function getPublicStatus() {
     tunnelControl,
     hostInvariant,
     consentRequired,
-    autoStartEnabled: state.mode === "quick" ? true : autoStartEnabled
+    autoStartEnabled
   };
 }
 
@@ -11281,7 +11313,56 @@ async function warmStartupRuntimeCaches() {
   app.log.info({ durationMs }, "startup.runtime_cache_warm.ready");
 }
 
-async function triggerPublicStartBestEffort() {
+function quickStartDependencies() {
+  return {
+    validate: async () =>
+      isNamedConfigured()
+        ? {
+            ok: false as const,
+            code: "named_configured",
+            message: "Named tunnel configured. Disable named mode to use a temporary link."
+          }
+        : { ok: true as const },
+    hasConsent: () => {
+      const consent = getPublicSharingConsent();
+      return consent.granted || consent.dontAskAgain;
+    },
+    grantConsent: (dontAskAgain: boolean) => {
+      setPublicSharingConsent(true, dontAskAgain);
+    },
+    snapshot: () => ({ mode: getPublicSharingModeOverride(), autoStart: getPublicSharingAutoStart() }),
+    setMode: (mode: "off" | "quick" | null) => setPublicSharingModeOverride(mode),
+    setAutoStart: (enabled: boolean) => setPublicSharingAutoStart(enabled),
+    startListener: async () => {
+      await publicServerLifecycle.ensureStarted(registerPublicRoutes, getPublicBindHost("quick"));
+    },
+    stopListener: async () => {
+      await publicServerLifecycle.stop();
+    },
+    prepareTunnel: (signal?: AbortSignal) => tunnelManager.ensureBinary(signal),
+    startTunnel: () => tunnelManager.startQuick(),
+    stopTunnel: () => tunnelManager.stop()
+  };
+}
+
+async function startConfiguredQuickRuntime() {
+  const selection = getPublicModeSelection();
+  if (selection.mode !== "quick") return tunnelManager.status();
+  const consent = getPublicSharingConsent();
+  if (
+    !shouldAutoStartSelectedQuick({
+      selection,
+      consentGranted: consent.granted || consent.dontAskAgain,
+      autoStartEnabled: getPublicSharingAutoStart()
+    })
+  ) {
+    return tunnelManager.status();
+  }
+  if (isNamedConfigured()) return tunnelManager.status();
+  return startAutomaticQuickRuntime(quickStartDependencies());
+}
+
+async function triggerPublicStartBestEffortUnlocked() {
   const state = getPublicLinkState();
   if (state.mode === "off") {
     app.log.info(
@@ -11305,18 +11386,13 @@ async function triggerPublicStartBestEffort() {
       );
       return;
     }
-    const prep = await tunnelManager.ensureBinary();
-    if (!prep.ok) {
-      app.log.warn({ lastError: prep.error || "cloudflared_unavailable" }, "public.quick.start_skipped");
-      return;
+    try {
+      const status = await startConfiguredQuickRuntime();
+      const publicUrl = status.publicOrigin || tunnelManager.status().publicOrigin || null;
+      app.log.info({ publicMode: "quick", publicUrl }, "public.quick.url_ready");
+    } catch (e: any) {
+      app.log.warn({ err: String(e?.message || e) }, "public.quick.start_failed");
     }
-    tunnelManager
-      .startQuick()
-      .then((status) => {
-        const publicUrl = status.publicOrigin || tunnelManager.status().publicOrigin || null;
-        app.log.info({ publicMode: "quick", publicUrl }, "public.quick.url_ready");
-      })
-      .catch((e) => app.log.warn({ err: String(e?.message || e) }, "public.quick.start_failed"));
     return;
   }
   if (state.mode === "named") {
@@ -11339,15 +11415,19 @@ async function triggerPublicStartBestEffort() {
     const cur = tunnelManager.status();
     if ((cur.status === "ACTIVE" || cur.status === "STARTING") && cur.publicOrigin === cfg.publicOrigin) return;
     const namedToken = getNamedTunnelToken();
-    tunnelManager
+    await tunnelManager
       .startNamed({
         publicOrigin: cfg.publicOrigin,
         tunnelName: String(cfg.tunnelName || "").trim(),
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
         token: namedToken
       })
-      .catch(() => {});
+      .catch(() => tunnelManager.status());
   }
+}
+
+async function triggerPublicStartBestEffort() {
+  return publicLifecycleMutex.runExclusive(() => triggerPublicStartBestEffortUnlocked());
 }
 
 async function checkPublicPing(publicOrigin: string): Promise<boolean> {
@@ -18606,7 +18686,7 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
     if (consentGranted && getPublicSharingAutoStart()) {
       const st = tunnelManager.status();
       if (st.status === "STOPPED") {
-        tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
+        triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
       }
     }
   }
@@ -22743,18 +22823,17 @@ app.post("/api/diagnostics/backups/settings", { preHandler: requireAuth }, async
   return reply.send({ ok: true, enabled: setBackupsEnabled(enabled) });
 });
 
-app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const state = getPublicLinkState();
-  const body = (_req.body ?? {}) as { consent?: boolean; dontAskAgain?: boolean };
-
-  if (state.mode === "off") {
-    return reply.code(409).send({
-      ...getPublicStatus(),
-      lastError: "public_mode_disabled"
-    });
-  }
-
-  if (state.mode === "named") {
+registerPublicGoRoute(app, {
+  requireAuth,
+  mutex: publicLifecycleMutex,
+  getMode: () => getPublicLinkState().mode,
+  environmentForcesQuick: () => {
+    const selection = getPublicModeSelection();
+    return selection.mode === "quick" && selection.source === "environment";
+  },
+  quick: quickStartDependencies,
+  getStatus: getPublicStatus,
+  handleNamed: async (reply: any) => {
     const cfg = getNamedTunnelConfig();
     if (!cfg) {
       return reply.code(409).send({
@@ -22795,9 +22874,7 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     }
     const cur = tunnelManager.status();
     if ((cur.status === "ACTIVE" || cur.status === "STARTING") && cur.publicOrigin === cfg.publicOrigin) {
-      return reply.send({
-        ...getPublicStatus()
-      });
+      return reply.send({ ...getPublicStatus() });
     }
     const status = await tunnelManager.startNamed({
       publicOrigin: cfg.publicOrigin,
@@ -22816,83 +22893,47 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       lastError: status.lastError || "named_tunnel_failed"
     });
   }
-
-  // quick
-  if (isNamedConfigured()) {
-    return reply.code(409).send({
-      ...getPublicStatus(),
-      lastError: "named_configured",
-      message: "Named tunnel configured. Disable named mode to use a temporary link."
-    });
-  }
-
-  const cloudflared = getCloudflaredStatus();
-  const consent = getPublicSharingConsent();
-  const consentGranted = consent.granted || consent.dontAskAgain;
-  if (!cloudflared.available && !consentGranted) {
-    if (body?.consent !== true) {
-      return reply.code(409).send({ ...getPublicStatus(), lastError: "consent_required", consentRequired: true });
-    }
-    setPublicSharingConsent(true, body?.dontAskAgain === true);
-  }
-
-  const prep = await tunnelManager.ensureBinary();
-  if (!prep.ok) {
-    tunnelManager.setError("cloudflared_download_failed");
-    return reply.code(503).send({
-      ...getPublicStatus(),
-      lastError: "cloudflared_download_failed",
-      consentRequired: false
-    });
-  }
-  const status = getPublicStatus();
-  if (status.status === "online") return reply.send(status);
-  if (tunnelManager.status().status === "ERROR") {
-    await tunnelManager.stop();
-  }
-  tunnelManager.startQuick().catch(() => {});
-  return reply.send({ ...getPublicStatus(), status: "starting" });
 });
 
-app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  await tunnelManager.stop();
-  if (process.platform !== "win32") {
-    try {
-      spawnSync("pkill", ["-f", "cloudflared tunnel run"], { stdio: "ignore" });
-    } catch {}
-  }
-  const status = getPublicStatus();
-  return reply.send({
-    ...status,
-    state: "STOPPED",
-    publicOrigin: null,
-    lastError: null
-  });
+registerPublicStopRoute(app, {
+  requireAuth,
+  mutex: publicLifecycleMutex,
+  getMode: () => getPublicLinkState().mode,
+  getSelection: getPublicModeSelection,
+  stopTunnel: () => tunnelManager.stop(),
+  stopListener: () => publicServerLifecycle.stop(),
+  persistMode: () => setPublicSharingModeOverride("off"),
+  setAutoStart: setPublicSharingAutoStart,
+  getStatus: getPublicStatus
 });
 
 app.post("/api/public/consent/reset", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  clearPublicSharingConsent();
-  return reply.send(getPublicStatus());
+  return publicLifecycleMutex.runExclusive(async () => {
+    clearPublicSharingConsent();
+    return reply.send(getPublicStatus());
+  });
 });
 
 app.post("/api/public/named-token", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const detected = await detectConfiguredNamedTunnel();
-  if (detected.namedTunnelDetected) {
-    return reply.send({
-      ok: true,
-      stored: Boolean(getNamedTunnelToken()),
-      skipped: true,
-      reason: "existing_named_tunnel_detected",
-      tunnelName: detected.discoveredTunnelName || detected.configuredTunnelName
-    });
-  }
-  const body = (_req.body ?? {}) as { token?: string };
-  const token = String(body?.token || "").trim();
-  if (!token || token.length < 20) {
-    return reply.code(400).send({ error: "Invalid token" });
-  }
-  setNamedTunnelToken(token);
-  return reply.send({ ok: true, stored: true });
+  return publicLifecycleMutex.runExclusive(async () => {
+    const detected = await detectConfiguredNamedTunnel();
+    if (detected.namedTunnelDetected) {
+      return reply.send({
+        ok: true,
+        stored: Boolean(getNamedTunnelToken()),
+        skipped: true,
+        reason: "existing_named_tunnel_detected",
+        tunnelName: detected.discoveredTunnelName || detected.configuredTunnelName
+      });
+    }
+    const body = (_req.body ?? {}) as { token?: string };
+    const token = String(body?.token || "").trim();
+    if (!token || token.length < 20) {
+      return reply.code(400).send({ error: "Invalid token" });
+    }
+    setNamedTunnelToken(token);
+    return reply.send({ ok: true, stored: true });
+  });
 });
 
 app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -22930,24 +22971,32 @@ app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async 
 });
 
 app.post("/api/public/named-token/clear", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  clearNamedTunnelToken();
-  return reply.send({ ok: true, stored: false });
+  return publicLifecycleMutex.runExclusive(async () => {
+    clearNamedTunnelToken();
+    return reply.send({ ok: true, stored: false });
+  });
 });
 
 app.post("/api/public/named/disable", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  setNamedTunnelDisabled(true);
-  return reply.send({ ok: true, disabled: true });
+  return publicLifecycleMutex.runExclusive(async () => {
+    setNamedTunnelDisabled(true);
+    return reply.send({ ok: true, disabled: true });
+  });
 });
 
 app.post("/api/public/named/enable", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  setNamedTunnelDisabled(false);
-  return reply.send({ ok: true, disabled: false });
+  return publicLifecycleMutex.runExclusive(async () => {
+    setNamedTunnelDisabled(false);
+    return reply.send({ ok: true, disabled: false });
+  });
 });
 
 app.post("/api/public/autostart", { preHandler: requireAuth }, async (req: any, reply: any) => {
-  const body = (req.body ?? {}) as { enabled?: boolean };
-  setPublicSharingAutoStart(Boolean(body.enabled));
-  return reply.send(getPublicStatus());
+  return publicLifecycleMutex.runExclusive(async () => {
+    const body = (req.body ?? {}) as { enabled?: boolean };
+    setPublicSharingAutoStart(Boolean(body.enabled));
+    return reply.send(getPublicStatus());
+  });
 });
 
 // Buyer library (entitlements)
@@ -28148,7 +28197,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
 
   // Best-effort: trigger public sharing on publish
   try {
-    await triggerPublicStartBestEffort();
+    triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
   } catch {}
 
   const providerNodeIdForReceipt = delegatedPublishRecord?.providerNodeId || (isNetworkProviderConfigured(providerCfg) ? providerCfg.providerNodeId : null);
@@ -51378,37 +51427,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
     });
   }
 
-  const state = getPublicLinkState();
-  if (state.mode === "quick") {
-    const consent = getPublicSharingConsent();
-    const consentGranted = consent.granted || consent.dontAskAgain;
-    if (consentGranted && getPublicSharingAutoStart()) {
-      const st = tunnelManager.status();
-      if (st.status !== "ACTIVE") {
-        tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
-      }
-    }
-  } else if (state.mode === "named") {
-    const cfg = getNamedTunnelConfig();
-    if (cfg) {
-      const defer = shouldDeferNamedTunnelToServiceControl();
-      if (defer.shouldDefer) {
-        reconcileNamedTunnelOwnership(true);
-        app.log.info(
-          { mode: defer.tunnelControl.mode, activeProcessToken: defer.tunnelControl.activeProcessToken },
-          "invite.named.defer_to_service_control"
-        );
-      } else {
-      const namedToken = getNamedTunnelToken();
-      tunnelManager.startNamed({
-        publicOrigin: cfg.publicOrigin,
-        tunnelName: String(cfg.tunnelName || "").trim(),
-        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
-        token: namedToken
-      }).catch((e) => app.log.warn(String(e?.message || e)));
-      }
-    }
-  }
+  triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
 
   const ttlHoursIn = num((req.body as Record<string, unknown>).ttlHours ?? 168);
   const ttlHours = Math.max(1, Math.min(24 * 30, ttlHoursIn));
@@ -53348,13 +53367,16 @@ async function start() {
     );
   }
   const state = getPublicLinkState();
-  if (state.mode !== "off") {
-    const host = getPublicBindHost(state.mode);
-    await startPublicServer(registerPublicRoutes, host);
-    const autoStart = state.mode === "quick" ? true : getPublicSharingAutoStart();
-    if (autoStart) {
-      triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
-    }
+  if (state.mode === "named") {
+    await startNamedRuntimeAtStartup({
+      mutex: publicLifecycleMutex,
+      startListener: () => publicServerLifecycle.ensureStarted(registerPublicRoutes, getPublicBindHost("named")).then(() => undefined),
+      shouldStartTunnel: getPublicSharingAutoStart,
+      startTunnel: triggerPublicStartBestEffortUnlocked,
+      onTunnelError: (e) => app.log.warn(String((e as any)?.message || e))
+    });
+  } else if (state.mode === "quick") {
+    triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
   }
   logPublicHostInvariantOnStartup();
   setTimeout(() => {
@@ -53364,22 +53386,34 @@ async function start() {
   }, 25);
 }
 
-process.on("SIGTERM", () => {
+let runtimeShutdownStarted = false;
+async function shutdownRuntime(signal: "SIGTERM" | "SIGINT") {
+  if (runtimeShutdownStarted) return;
+  runtimeShutdownStarted = true;
+  try {
+    await publicLifecycleMutex.runExclusive(async () => {
+      await tunnelManager.stop();
+      await publicServerLifecycle.stop();
+      await app.close();
+    });
+  } catch (err: any) {
+    app.log.warn({ err: String(err?.message || err), signal }, "runtime.shutdown_cleanup_failed");
+  }
   releaseApiRuntimeLock();
   persistRuntimeHealthFromApi({
     apiReady: false,
     reason: "api_exit_code_0",
     statusIfUnsupervised: "stopped"
   });
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => {
+  void shutdownRuntime("SIGTERM");
 });
 
 process.on("SIGINT", () => {
-  releaseApiRuntimeLock();
-  persistRuntimeHealthFromApi({
-    apiReady: false,
-    reason: "api_exit_code_0",
-    statusIfUnsupervised: "stopped"
-  });
+  void shutdownRuntime("SIGINT");
 });
 
 process.on("uncaughtException", () => {

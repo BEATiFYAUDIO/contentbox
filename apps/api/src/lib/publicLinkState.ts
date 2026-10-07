@@ -51,6 +51,41 @@ export interface PublicLinkStateInput {
   directOrigin?: string | null;
 }
 
+export function resolveConfiguredPublicMode(input: {
+  envMode?: string | null;
+  persistedMode?: "off" | "quick" | null;
+  consentGranted?: boolean;
+  autoStartEnabled?: boolean;
+}): PublicMode {
+  return resolvePublicModeSelection(input).mode;
+}
+
+export function resolvePublicModeSelection(input: {
+  envMode?: string | null;
+  persistedMode?: "off" | "quick" | null;
+  consentGranted?: boolean;
+  autoStartEnabled?: boolean;
+}): { mode: PublicMode; source: "environment" | "user" | "legacy" | "default" } {
+  const envMode = String(input.envMode || "").trim().toLowerCase();
+  if (envMode === "named" || envMode === "quick") return { mode: envMode, source: "environment" };
+  if (input.persistedMode === "off" || input.persistedMode === "quick") {
+    return { mode: input.persistedMode, source: "user" };
+  }
+  if (envMode === "off") return { mode: "off", source: "default" };
+  if (input.consentGranted && input.autoStartEnabled) return { mode: "quick", source: "legacy" };
+  return { mode: "off", source: "default" };
+}
+
+export function shouldAutoStartSelectedQuick(input: {
+  selection: ReturnType<typeof resolvePublicModeSelection>;
+  consentGranted: boolean;
+  autoStartEnabled: boolean;
+}): boolean {
+  if (input.selection.mode !== "quick") return false;
+  if (input.selection.source === "environment") return true;
+  return input.consentGranted && input.autoStartEnabled;
+}
+
 const normalizeMode = (value: string | undefined): PublicMode => {
   const v = String(value || "").trim().toLowerCase();
   if (v === "off" || v === "quick" || v === "named") return v;
