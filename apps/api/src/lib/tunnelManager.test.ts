@@ -15,6 +15,10 @@ function fakeChild(pid: number) {
   return child;
 }
 
+function quickTunnelAnnouncement(origin: string) {
+  return `Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):\n${origin}\n`;
+}
+
 test("quick tunnel targets the public listener and stop kills only its owned child", async () => {
   const ownedPid = 4242;
   const unrelatedPid = 7777;
@@ -29,7 +33,7 @@ test("quick tunnel targets the public listener and stop kills only its owned chi
     readVersion: async () => "cloudflared mock",
     spawnProcess: ((command: string, args: string[]) => {
       spawned.push({ command, args: [...args] });
-      queueMicrotask(() => child.stderr.write("https://owned-test.trycloudflare.com\n"));
+      queueMicrotask(() => child.stderr.write(quickTunnelAnnouncement("https://owned-test.trycloudflare.com")));
       return child;
     }) as any,
     killProcess: (pid) => {
@@ -67,7 +71,7 @@ test("stopping one manager does not terminate another Certifyd instance's cloudf
       resolveBinary: async () => "/mock/cloudflared",
       readVersion: async () => "cloudflared mock",
       spawnProcess: (() => {
-        queueMicrotask(() => child.stderr.write(`${origin}\n`));
+        queueMicrotask(() => child.stderr.write(quickTunnelAnnouncement(origin)));
         return child;
       }) as any,
       killProcess: (ownedPid) => {
@@ -84,6 +88,29 @@ test("stopping one manager does not terminate another Certifyd instance's cloudf
   assert.deepEqual(killed, [4242]);
   assert.equal(second.status().status, "ACTIVE");
   await second.stop();
+});
+
+test("quick tunnel ignores trycloudflare URLs in error output without the creation announcement", async () => {
+  const child = fakeChild(7878);
+  const manager = new TunnelManager({
+    targetPort: 4010,
+    binDir: "/unused",
+    protocolPreference: "http2",
+    resolveBinary: async () => "/mock/cloudflared",
+    readVersion: async () => "cloudflared mock",
+    spawnProcess: (() => {
+      queueMicrotask(() => {
+        child.stderr.write("Unable to request quick Tunnel: Get https://api.trycloudflare.com/tunnel: certificate verify failed\n");
+        child.emit("exit", 1, null);
+      });
+      return child;
+    }) as any
+  });
+
+  const result = await manager.startQuick();
+  assert.equal(result.status, "ERROR");
+  assert.equal(result.publicOrigin, null);
+  assert.match(String(result.lastError), /exited before URL was assigned/);
 });
 
 test("named tunnel startup arguments and owned-child stop behavior remain unchanged", async () => {

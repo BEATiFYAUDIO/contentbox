@@ -53,8 +53,10 @@ type DownloadSpec = {
 };
 
 function parseQuickTunnelUrl(text: string): string | null {
-  const m = String(text || "").match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-  return m ? m[0] : null;
+  const m = String(text || "").match(
+    /Your quick Tunnel has been created![\s\S]{0,1024}?\b(https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com)\b/i
+  );
+  return m ? m[1] : null;
 }
 
 const execFileAsync: ExecFileRunner = (cmd, args, options = {}) => {
