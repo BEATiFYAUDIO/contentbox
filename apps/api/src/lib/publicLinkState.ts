@@ -53,7 +53,7 @@ export interface PublicLinkStateInput {
 
 export function resolveConfiguredPublicMode(input: {
   envMode?: string | null;
-  persistedMode?: "off" | "quick" | null;
+  persistedMode?: PublicMode | null;
   consentGranted?: boolean;
   autoStartEnabled?: boolean;
 }): PublicMode {
@@ -62,18 +62,33 @@ export function resolveConfiguredPublicMode(input: {
 
 export function resolvePublicModeSelection(input: {
   envMode?: string | null;
-  persistedMode?: "off" | "quick" | null;
+  persistedMode?: PublicMode | null;
   consentGranted?: boolean;
   autoStartEnabled?: boolean;
 }): { mode: PublicMode; source: "environment" | "user" | "legacy" | "default" } {
   const envMode = String(input.envMode || "").trim().toLowerCase();
   if (envMode === "named" || envMode === "quick") return { mode: envMode, source: "environment" };
-  if (input.persistedMode === "off" || input.persistedMode === "quick") {
+  if (input.persistedMode === "off" || input.persistedMode === "quick" || input.persistedMode === "named") {
     return { mode: input.persistedMode, source: "user" };
   }
   if (envMode === "off") return { mode: "off", source: "default" };
   if (input.consentGranted && input.autoStartEnabled) return { mode: "quick", source: "legacy" };
   return { mode: "off", source: "default" };
+}
+
+export function resolveEffectivePublicMode(input: {
+  selection: ReturnType<typeof resolvePublicModeSelection>;
+  nodeMode: "basic" | "advanced" | "lan";
+  namedConfigured: boolean;
+}): PublicMode {
+  if (
+    input.selection.source === "default" &&
+    input.namedConfigured &&
+    (input.nodeMode === "advanced" || input.nodeMode === "lan")
+  ) {
+    return "named";
+  }
+  return input.selection.mode;
 }
 
 export function shouldAutoStartSelectedQuick(input: {

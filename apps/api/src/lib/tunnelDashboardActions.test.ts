@@ -19,10 +19,11 @@ test("Named start, verification, and removal use explicit backend actions", () =
   assert.doesNotMatch(tokenHandler, /await startPublicLink\(\)/);
 });
 
-test("external service ownership disables the misleading Stop action", () => {
+test("external service ownership offers public disable without claiming connector control", () => {
   assert.match(source, /externalNamedActive/);
-  assert.match(source, /managed outside Certifyd/);
-  assert.match(source, /operating-system service manager or Cloudflare/);
+  assert.match(source, /Disable public sharing/);
+  const stopDisabled = source.slice(source.indexOf("const stopActionDisabled"), source.indexOf("const refreshActionDisabled"));
+  assert.doesNotMatch(stopDisabled, /externalNamedActive/);
 });
 
 test("Named removal never changes posture implicitly", () => {

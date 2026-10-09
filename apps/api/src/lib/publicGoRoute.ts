@@ -70,11 +70,12 @@ export function registerPublicStopRoute(app: any, deps: PublicStopRouteDependenc
       const modeBeforeStop = deps.getMode();
       const selection = deps.getSelection();
       await deps.stopTunnel();
-      if (selection.mode === "quick" && (selection.source === "user" || selection.source === "legacy")) {
+      const persistExplicitOff = selection.source !== "environment";
+      if (persistExplicitOff) {
         deps.persistMode("off");
         deps.setAutoStart(false);
       }
-      if (modeBeforeStop !== "named") await deps.stopListener();
+      if (modeBeforeStop !== "named" || persistExplicitOff) await deps.stopListener();
       return reply.send({
         ...deps.getStatus(),
         state: "STOPPED",

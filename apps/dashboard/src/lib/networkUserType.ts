@@ -32,7 +32,7 @@ export function resolveParticipationMode(input: {
   localSovereignReady?: boolean;
 }): ParticipationMode {
   if (input.nodeMode === "basic") return "basic_creator";
-  if (input.localSovereignReady) return "sovereign_node";
+  if (input.nodeMode === "lan") return "sovereign_node";
   if (input.providerConfigured || input.providerInfrastructureCapability) return "sovereign_with_provider";
   return "sovereign_with_provider";
 }

@@ -1523,7 +1523,7 @@ export default function StorePage(_props: { onOpenReceipt: (token: string) => vo
       ? "Creator-hosted (stable canonical origin)"
       : "Creator-hosted (temporary tunnel)";
   const providerCommerceActive = participationModeFromSummary === "sovereign_creator_with_provider";
-  const summaryCommerceAuthority = networkSummary?.modeProfile?.localSovereignReady
+  const summaryCommerceAuthority = participationModeFromSummary === "sovereign_node"
     ? "Local sovereign commerce"
     : providerCommerceActive
       ? "Connected provider commerce"
@@ -1755,7 +1755,7 @@ export default function StorePage(_props: { onOpenReceipt: (token: string) => vo
         ? "warn"
         : "ready";
   const commerceGuardMessage =
-    participationModeFromSummary === "sovereign_node" || networkSummary?.modeProfile?.localSovereignReady
+    participationModeFromSummary === "sovereign_node"
       ? "Local sovereign commerce is active for this mode."
     : !providerCommerceActive
       ? "Basic monetization posture is active for this mode. Connect provider commerce or run local sovereign node to enable paid commerce."

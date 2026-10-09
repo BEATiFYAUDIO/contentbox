@@ -4,9 +4,56 @@ Param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:LauncherLogDir = ""
+$script:LauncherMutex = $null
+$script:LauncherLockAcquired = $false
 
 function Fail($message) {
-  Write-Error "[Certifyd Core] $message"
+  throw "[Certifyd Core] $message"
+}
+
+function Show-LaunchFailure($message) {
+  $logHint = if ($script:LauncherLogDir) { "`n`nLogs: $script:LauncherLogDir" } else { "" }
+  $details = "Certifyd Core could not start.`n`n$message$logHint"
+  [Console]::Error.WriteLine($details)
+  if ($env:CI -eq "true" -or $env:CERTIFYD_LAUNCHER_NO_UI -eq "1") { return }
+  try {
+    $shell = New-Object -ComObject WScript.Shell
+    [void]$shell.Popup($details, 0, "Certifyd Core", 16)
+  } catch {}
+}
+
+function Show-StartingNotice {
+  if ($env:CI -eq "true" -or $env:CERTIFYD_LAUNCHER_NO_UI -eq "1") { return }
+  try {
+    $shell = New-Object -ComObject WScript.Shell
+    [void]$shell.Popup("Certifyd Core is starting. The dashboard will open when it is ready.", 3, "Certifyd Core", 64)
+  } catch {}
+}
+
+function Open-Dashboard($url) {
+  if ($env:CERTIFYD_NO_BROWSER -eq "1") { return }
+  try {
+    Start-Process -FilePath ([string]$url) -ErrorAction Stop
+  } catch {
+    Fail "Core is running, but Windows could not open the dashboard at $url. Open that address in your browser."
+  }
+}
+
+function Release-LauncherLock {
+  if ($script:LauncherLockAcquired -and $null -ne $script:LauncherMutex) {
+    [void]$script:LauncherMutex.ReleaseMutex()
+    $script:LauncherLockAcquired = $false
+  }
+  if ($null -ne $script:LauncherMutex) {
+    $script:LauncherMutex.Dispose()
+    $script:LauncherMutex = $null
+  }
+}
+
+trap {
+  Release-LauncherLock
+  Show-LaunchFailure $_.Exception.Message
   exit 1
 }
 
@@ -202,6 +249,31 @@ function Test-Health {
   }
 }
 
+function Test-CoreProcess($processId, $nodeExe) {
+  try {
+    $record = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $record) { return $false }
+    $actualExe = [System.IO.Path]::GetFullPath([string]$record.ExecutablePath)
+    $expectedExe = [System.IO.Path]::GetFullPath($nodeExe)
+    return ($actualExe -ieq $expectedExe -and [string]$record.CommandLine -match 'src[\\/]server\.ts')
+  } catch {
+    return $false
+  }
+}
+
+function Wait-ForCoreHealth($seconds, $process = $null) {
+  $deadline = (Get-Date).AddSeconds($seconds)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-Health) { return $true }
+    if ($null -ne $process) {
+      $process.Refresh()
+      if ($process.HasExited) { return $false }
+    }
+    Start-Sleep -Milliseconds 750
+  }
+  return $false
+}
+
 $appDir = Resolve-AppDir
 $nodeExe = Join-Path $appDir "runtime\node\node.exe"
 $apiDir = Join-Path $appDir "apps\api"
@@ -211,6 +283,7 @@ $dataRoot = Join-Path $env:LOCALAPPDATA "ContentBox"
 $configDir = Join-Path $dataRoot "config"
 $stateDir = Join-Path $dataRoot "state"
 $logDir = Join-Path $dataRoot "logs"
+$script:LauncherLogDir = $logDir
 $envFile = Join-Path $configDir "api.env"
 $pidFile = Join-Path $stateDir "certifyd-core.pid"
 $stdoutLog = Join-Path $logDir "certifyd-core.out.log"
@@ -225,6 +298,15 @@ Ensure-Dir $dataRoot
 Ensure-Dir $configDir
 Ensure-Dir $stateDir
 Ensure-Dir $logDir
+
+$script:LauncherMutex = [System.Threading.Mutex]::new($false, "Local\CertifydCoreLauncher")
+try {
+  $script:LauncherLockAcquired = $script:LauncherMutex.WaitOne([TimeSpan]::FromSeconds(120))
+} catch [System.Threading.AbandonedMutexException] {
+  # Windows transferred the abandoned launcher lock to this process.
+  $script:LauncherLockAcquired = $true
+}
+if (-not $script:LauncherLockAcquired) { Fail "Another launcher operation did not finish within two minutes." }
 
 $envValues = Read-EnvFile $envFile
 if (-not $envValues.ContainsKey("DB_MODE") -or (Test-UninitializedValue $envValues["DB_MODE"])) {
@@ -261,6 +343,30 @@ if (-not $envValues.ContainsKey("JWT_SECRET") -or -not $envValues["JWT_SECRET"] 
 Write-EnvFile $envFile $envValues
 Apply-Env $envValues
 
+if (Test-Health) {
+  Open-Dashboard $envValues["APP_BASE_URL"]
+  Release-LauncherLock
+  exit 0
+}
+Show-StartingNotice
+
+$existingPid = 0
+if (Test-Path $pidFile) {
+  $rawPid = (Get-Content $pidFile -Raw).Trim()
+  if ([int]::TryParse($rawPid, [ref]$existingPid) -and $existingPid -gt 0) {
+    $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+    if ($null -ne $existing -and (Test-CoreProcess $existingPid $nodeExe)) {
+      if (Wait-ForCoreHealth 45 $existing) {
+        Open-Dashboard $envValues["APP_BASE_URL"]
+        Release-LauncherLock
+        exit 0
+      }
+      Fail "The Core process is running but did not become healthy. Use Stop Certifyd Core, then try again."
+    }
+  }
+  Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+}
+
 if (-not (Test-Path $dbPath)) {
   New-Item -ItemType File -Path $dbPath | Out-Null
 }
@@ -271,21 +377,11 @@ if (-not (Test-Path (Join-Path $apiDir "node_modules\.prisma\client"))) {
 }
 Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "db", "push", "--schema", $schemaPath)
 
+# A separately started healthy Core wins the race without spawning a duplicate.
 if (Test-Health) {
-  Start-Process ([string]$envValues["APP_BASE_URL"])
+  Open-Dashboard $envValues["APP_BASE_URL"]
+  Release-LauncherLock
   exit 0
-}
-
-$existingPid = $null
-if (Test-Path $pidFile) {
-  $rawPid = (Get-Content $pidFile -Raw).Trim()
-  if ([int]::TryParse($rawPid, [ref]$existingPid)) {
-    $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
-    if ($null -ne $existing) {
-      Start-Process ([string]$envValues["APP_BASE_URL"])
-      exit 0
-    }
-  }
 }
 
 $process = Start-Process `
@@ -299,13 +395,14 @@ $process = Start-Process `
 
 Set-Content -Path $pidFile -Value "$($process.Id)" -Encoding ASCII
 
-$deadline = (Get-Date).AddSeconds(45)
-while ((Get-Date) -lt $deadline) {
-  if (Test-Health) {
-    Start-Process ([string]$envValues["APP_BASE_URL"])
-    exit 0
-  }
-  Start-Sleep -Milliseconds 750
+if (Wait-ForCoreHealth 45 $process) {
+  Open-Dashboard $envValues["APP_BASE_URL"]
+  Release-LauncherLock
+  exit 0
 }
 
-Fail "Core did not become ready. Check logs in $logDir"
+if ($process.HasExited) {
+  Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+  Fail "Core exited before it became ready. Check the launcher logs for the startup error."
+}
+Fail "Core did not become ready. Use Certifyd Core Status for details."

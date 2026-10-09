@@ -4,6 +4,7 @@ import {
   canonicalOriginForLinks,
   computePublicLinkState,
   resolveConfiguredPublicMode,
+  resolveEffectivePublicMode,
   resolvePublicModeSelection,
   shouldAutoStartSelectedQuick
 } from "./publicLinkState.js";
@@ -28,6 +29,25 @@ test("environment-forced Quick preserves source and developer autostart behavior
   const selection = resolvePublicModeSelection({ envMode: "quick", persistedMode: "off" });
   assert.deepEqual(selection, { mode: "quick", source: "environment" });
   assert.equal(shouldAutoStartSelectedQuick({ selection, consentGranted: false, autoStartEnabled: false }), true);
+});
+
+test("Basic can explicitly select named transport without changing posture", () => {
+  const selection = resolvePublicModeSelection({ envMode: "off", persistedMode: "named" });
+  assert.deepEqual(selection, { mode: "named", source: "user" });
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "basic", namedConfigured: true }), "named");
+});
+
+test("explicit OFF overrides legacy posture-driven named preference", () => {
+  const selection = resolvePublicModeSelection({ envMode: "off", persistedMode: "off" });
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "advanced", namedConfigured: true }), "off");
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "lan", namedConfigured: true }), "off");
+});
+
+test("legacy Advanced and LAN installs still infer named only without an explicit selection", () => {
+  const selection = resolvePublicModeSelection({ envMode: "off", persistedMode: null });
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "advanced", namedConfigured: true }), "named");
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "lan", namedConfigured: true }), "named");
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "basic", namedConfigured: true }), "off");
 });
 
 test("named configured in quick mode keeps quick canonical origin", () => {

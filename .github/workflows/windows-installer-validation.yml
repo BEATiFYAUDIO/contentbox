@@ -251,6 +251,25 @@ jobs:
           "Dashboard=PASS" | Tee-Object -Append windows-validation-summary.md
           "Database exists=PASS" | Tee-Object -Append windows-validation-summary.md
 
+          $pidFile = Join-Path $dataRoot "state\certifyd-core.pid"
+          Assert-Path $pidFile
+          $pidBeforeRepeatLaunch = (Get-Content $pidFile -Raw).Trim()
+          $env:CERTIFYD_NO_BROWSER = "1"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
+          Remove-Item Env:CERTIFYD_NO_BROWSER -ErrorAction SilentlyContinue
+          $pidAfterRepeatLaunch = (Get-Content $pidFile -Raw).Trim()
+          if ($pidAfterRepeatLaunch -ne $pidBeforeRepeatLaunch) {
+            throw "Repeated launcher invocation replaced the healthy Core process ($pidBeforeRepeatLaunch -> $pidAfterRepeatLaunch)."
+          }
+          $matchingCoreProcesses = @(Get-CimInstance Win32_Process | Where-Object {
+            $_.ExecutablePath -eq (Join-Path $installDir "runtime\node\node.exe") -and
+            $_.CommandLine -match 'src[\\/]server\.ts'
+          })
+          if ($matchingCoreProcesses.Count -ne 1) {
+            throw "Repeated launcher invocation left $($matchingCoreProcesses.Count) installed Core API processes; expected exactly one."
+          }
+          "Repeated launch single-process behavior=PASS" | Tee-Object -Append windows-validation-summary.md
+
           $statusOutput = "`n" | powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Status.ps1") 2>&1 | Out-String
           if ($statusOutput -notmatch "Alive:\s+True" -or $statusOutput -notmatch "Health:\s+True") {
             $statusOutput
