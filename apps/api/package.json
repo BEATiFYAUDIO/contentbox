@@ -28,7 +28,7 @@
     "test:participant-payout-phase2": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/payments/participant_payout_phase2.test.ts",
     "test:buyer-auth": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/buyer_auth_test.ts",
     "test:lightning-onboarding": "npx tsx --test src/payments/lightning.onboarding.test.ts",
-    "test:public-boundary": "npx tsx --test src/security/publicRoutePolicy.test.ts src/security/privateHostGuard.test.ts",
+    "test:public-boundary": "npx tsx --test src/security/publicRoutePolicy.test.ts src/security/privateHostGuard.test.ts src/lib/dashboardAssetCaching.test.ts",
     "test:packaging-static": "npx tsx --test src/scripts/windows_launcher_static.test.ts",
     "test:public-lifecycle": "npx tsx --test src/lib/publicLifecycle.test.ts src/lib/publicGoRoute.test.ts src/lib/publicLinkState.test.ts src/lib/publicServingGate.test.ts src/lib/participationMode.test.ts src/lib/postureEligibility.test.ts src/lib/posturePersistence.test.ts src/lib/userNetworkStatus.test.ts src/lib/tunnelManager.test.ts src/lib/namedTunnelSafety.test.ts src/lib/cloudflaredServiceInspection.test.ts src/lib/tunnelDashboardActions.test.ts src/publicServer.test.ts",
     "test:public-playback": "npx tsx --test src/lib/publicPlayback.test.ts",

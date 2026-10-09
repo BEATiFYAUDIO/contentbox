@@ -27,6 +27,7 @@ import {
   stableStringify
 } from "./lib/proof.js";
 import { createPaymentProvider } from "./lib/payments.js";
+import { dashboardAssetCacheControl } from "./lib/dashboardAssetCaching.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
@@ -1544,6 +1545,7 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
 
   if (candidate.startsWith(DASHBOARD_DIST_DIR) && fsSync.existsSync(candidate) && fsSync.statSync(candidate).isFile()) {
     reply.type(contentTypeForAsset(candidate));
+    reply.header("cache-control", dashboardAssetCacheControl(pathname));
     if (method === "HEAD") {
       reply.code(200).send();
       return true;
@@ -1564,6 +1566,7 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
   }
 
   reply.type("text/html; charset=utf-8");
+  reply.header("cache-control", "no-store");
   if (method === "HEAD") {
     reply.code(200).send();
     return true;

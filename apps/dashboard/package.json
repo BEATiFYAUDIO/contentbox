@@ -8,7 +8,8 @@
     "whoami": "node dev/whoami.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:pwa": "node --test tests/pwa.test.mjs"
   },
   "dependencies": {
     "@noble/ed25519": "^2.3.0",
