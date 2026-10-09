@@ -64,3 +64,28 @@ test("activation message tracks network status coherently", () => {
   assert.match(deriveActivationStatusMessageFromNetwork(readyStatus), /Setup is ready/i);
   assert.equal(deriveActivationStatusMessageFromNetwork(blockedStatus), blockedStatus.message);
 });
+
+test("selected Sovereign Creator reports missing named-route readiness instead of Basic or ready", () => {
+  const status = deriveUserNetworkStatusFromState({
+    ...baseInput,
+    participationMode: "sovereign_creator",
+    namedTunnelDetected: false
+  });
+  assert.equal(status.status, "action_required");
+  assert.equal(status.reason, "sovereign_public_origin_missing");
+});
+
+test("selected Sovereign Node remains selected but reports missing local readiness", () => {
+  const status = deriveUserNetworkStatusFromState({
+    ...baseInput,
+    participationMode: "sovereign_node",
+    nodeMode: "lan",
+    namedTunnelDetected: true,
+    sovereignReady: false,
+    localBitcoinReady: false,
+    localLndReady: false,
+    localCommerceReady: false
+  });
+  assert.equal(status.status, "action_required");
+  assert.equal(status.reason, "sovereign_local_stack_missing");
+});

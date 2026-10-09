@@ -6,9 +6,9 @@ import { AsyncLifecycleMutex, type QuickStartDependencies } from "./publicLifecy
 
 type Failure = "listener" | "preparation" | "tunnel" | null;
 
-function routeHarness(input: { namedConflict?: boolean; failure?: Failure; environmentMode?: "quick" | "named"; externalStopBlocked?: boolean } = {}) {
+function routeHarness(input: { namedConflict?: boolean; failure?: Failure; environmentMode?: "quick" | "named"; externalManaged?: boolean } = {}) {
   const state = {
-    mode: null as "off" | "quick" | null,
+    mode: null as "off" | "quick" | "named" | null,
     autoStart: false,
     consent: false,
     listener: false,
@@ -56,6 +56,7 @@ function routeHarness(input: { namedConflict?: boolean; failure?: Failure; envir
         : { status: "ACTIVE", publicOrigin: "https://route-test.trycloudflare.com" };
     },
     stopTunnel: async () => {
+      if (input.externalManaged) return;
       state.tunnel = false;
       state.tunnelTarget = null;
     }
@@ -106,24 +107,22 @@ function routeHarness(input: { namedConflict?: boolean; failure?: Failure; envir
     setAutoStart: (enabled) => {
       state.autoStart = enabled;
     },
-    getStatus: status,
-    getStopBlocker: () => input.externalStopBlocked
-      ? { code: "EXTERNAL_TUNNEL_CONTROL", message: "Externally managed." }
-      : null
+    getStatus: status
   });
   return { app, state, selection };
 }
 
-test("Stop refuses to claim success for an externally managed Named Tunnel", async () => {
-  const h = routeHarness({ environmentMode: "named", externalStopBlocked: true });
+test("Stop disables public serving without terminating an externally managed Named Tunnel", async () => {
+  const h = routeHarness({ externalManaged: true });
+  h.state.mode = "named";
   h.state.tunnel = true;
   h.state.listener = true;
   try {
     const response = await postStop(h.app);
-    assert.equal(response.statusCode, 409);
-    assert.equal(response.json().lastError, "EXTERNAL_TUNNEL_CONTROL");
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(h.selection(), { mode: "off", source: "user" });
     assert.equal(h.state.tunnel, true);
-    assert.equal(h.state.listener, true);
+    assert.equal(h.state.listener, false);
   } finally {
     await h.app.close();
   }

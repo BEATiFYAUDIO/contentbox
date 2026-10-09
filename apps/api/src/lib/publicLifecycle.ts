@@ -17,7 +17,7 @@ export class AsyncLifecycleMutex {
 }
 
 export type UserQuickState = {
-  mode: "off" | "quick" | null;
+  mode: "off" | "quick" | "named" | null;
   autoStart: boolean;
 };
 
@@ -30,7 +30,7 @@ export type QuickStartDependencies = {
   hasConsent: () => boolean;
   grantConsent: (dontAskAgain: boolean) => void;
   snapshot: () => UserQuickState;
-  setMode: (mode: "off" | "quick" | null) => void;
+  setMode: (mode: "off" | "quick" | "named" | null) => void;
   setAutoStart: (enabled: boolean) => void;
   startListener: () => Promise<void>;
   stopListener: () => Promise<void>;

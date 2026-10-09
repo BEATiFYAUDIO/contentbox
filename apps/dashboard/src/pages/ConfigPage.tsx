@@ -821,15 +821,13 @@ export default function ConfigPage({
                 ? "No local named tunnel is discovered/configured yet."
                 : null;
   const externalNamedActive = serviceManagedTokenMode && namedTunnelOnline && !publicStatus?.namedDisabled;
-  const stopActionDisabled = !token || publicBusy || publicStatus?.status !== "online" || externalNamedActive;
+  const stopActionDisabled = !token || publicBusy || publicStatus?.status !== "online";
   const stopActionDisabledReason = !token
     ? "Sign in to stop routing."
     : publicBusy
       ? "Routing action in progress."
       : publicStatus?.status !== "online"
         ? "Tunnel must be online before it can be stopped."
-        : externalNamedActive
-          ? "This Named Tunnel is managed outside Certifyd. Stop it through the operating-system service manager or Cloudflare."
         : null;
   const refreshActionDisabled = !token || publicBusy;
   const refreshActionDisabledReason = !token
@@ -932,7 +930,9 @@ export default function ConfigPage({
         ? "Named tunnel"
           : "Temporary link";
   const stopActionLabel =
-    uiTunnelMode === "existing_named" && !publicStatus?.namedDisabled
+    externalNamedActive
+      ? "Disable public sharing"
+      : uiTunnelMode === "existing_named" && !publicStatus?.namedDisabled
       ? "Stop named tunnel"
       : "Stop temporary link";
   const refreshRoutingLabel = "Refresh routing";

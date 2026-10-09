@@ -18,7 +18,7 @@ function deferred() {
 
 function harness(overrides: Partial<QuickStartDependencies> = {}) {
   const state = {
-    mode: null as "off" | "quick" | null,
+    mode: null as "off" | "quick" | "named" | null,
     autoStart: false,
     consent: false,
     listener: false,

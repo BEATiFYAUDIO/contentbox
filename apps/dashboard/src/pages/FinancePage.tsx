@@ -47,17 +47,20 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
 
   const financePosture: FinancePosture = useMemo(() => {
     if (nodeMode === "basic") return "basic_creator";
-    if (nodeMode === "lan" || postureSnapshot?.localSovereignReady) return "sovereign_node";
+    if (nodeMode === "lan") return "sovereign_node";
     if (postureSnapshot?.providerCommerceConnected) return "sovereign_creator_with_provider";
     return "sovereign_creator";
-  }, [nodeMode, postureSnapshot?.localSovereignReady, postureSnapshot?.providerCommerceConnected]);
+  }, [nodeMode, postureSnapshot?.providerCommerceConnected]);
 
   const hasInvoiceCommerce = useMemo(() => {
     // Conservative presentation gate:
     // - provider-backed invoice commerce is active, or
     // - local sovereign commerce stack is explicitly ready.
-    return Boolean(postureSnapshot?.providerCommerceConnected || postureSnapshot?.localSovereignReady);
-  }, [postureSnapshot?.localSovereignReady, postureSnapshot?.providerCommerceConnected]);
+    return Boolean(
+      (nodeMode === "advanced" && postureSnapshot?.providerCommerceConnected) ||
+      (nodeMode === "lan" && postureSnapshot?.localSovereignReady)
+    );
+  }, [nodeMode, postureSnapshot?.localSovereignReady, postureSnapshot?.providerCommerceConnected]);
 
   useEffect(() => {
     setTab(initialTab);

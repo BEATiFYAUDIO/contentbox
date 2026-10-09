@@ -127,14 +127,29 @@ test("Named removal is serialized, clears only Named config, and never mutates n
 });
 
 test("Named verification starts the 4010 listener and requires this Core BOOT_ID", () => {
+  const verificationWindow = serverSource.slice(
+    serverSource.indexOf("async function withNamedVerificationWindow"),
+    serverSource.indexOf("async function handleNamedPublicStart")
+  );
   const route = serverSource.slice(
     serverSource.indexOf('app.post("/api/public/named/verify"'),
     serverSource.indexOf('registerPublicStopRoute(app')
   );
-  assert.match(route, /publicServerLifecycle\.ensureStarted/);
-  assert.match(route, /PUBLIC_HTTP_PORT/);
+  assert.match(route, /withNamedVerificationWindow/);
+  assert.match(verificationWindow, /publicServerLifecycle\.ensureStarted/);
+  assert.match(verificationWindow, /PUBLIC_HTTP_PORT/);
   assert.match(serverSource, /body\?\.bootId === BOOT_ID/);
   assert.match(serverSource, /bootId: BOOT_ID/);
+});
+
+test("Named selection is persisted only after the current route verification succeeds", () => {
+  const selector = serverSource.slice(
+    serverSource.indexOf("function selectVerifiedNamedMode"),
+    serverSource.indexOf("async function handleNamedPublicStart")
+  );
+  assert.match(selector, /namedVerificationStillCurrent/);
+  assert.match(selector, /setPublicSharingModeOverride\("named"\)/);
+  assert.ok(selector.indexOf("namedVerificationStillCurrent") < selector.indexOf('setPublicSharingModeOverride("named")'));
 });
 
 test("dedicated Named start cannot fall through to Quick startup", () => {
