@@ -6,7 +6,7 @@ import { AsyncLifecycleMutex, type QuickStartDependencies } from "./publicLifecy
 
 type Failure = "listener" | "preparation" | "tunnel" | null;
 
-function routeHarness(input: { namedConflict?: boolean; failure?: Failure; environmentMode?: "quick" | "named" } = {}) {
+function routeHarness(input: { namedConflict?: boolean; failure?: Failure; environmentMode?: "quick" | "named"; externalStopBlocked?: boolean } = {}) {
   const state = {
     mode: null as "off" | "quick" | null,
     autoStart: false,
@@ -106,10 +106,28 @@ function routeHarness(input: { namedConflict?: boolean; failure?: Failure; envir
     setAutoStart: (enabled) => {
       state.autoStart = enabled;
     },
-    getStatus: status
+    getStatus: status,
+    getStopBlocker: () => input.externalStopBlocked
+      ? { code: "EXTERNAL_TUNNEL_CONTROL", message: "Externally managed." }
+      : null
   });
   return { app, state, selection };
 }
+
+test("Stop refuses to claim success for an externally managed Named Tunnel", async () => {
+  const h = routeHarness({ environmentMode: "named", externalStopBlocked: true });
+  h.state.tunnel = true;
+  h.state.listener = true;
+  try {
+    const response = await postStop(h.app);
+    assert.equal(response.statusCode, 409);
+    assert.equal(response.json().lastError, "EXTERNAL_TUNNEL_CONTROL");
+    assert.equal(h.state.tunnel, true);
+    assert.equal(h.state.listener, true);
+  } finally {
+    await h.app.close();
+  }
+});
 
 async function postGo(app: ReturnType<typeof Fastify>, body: Record<string, unknown> = {}) {
   return app.inject({

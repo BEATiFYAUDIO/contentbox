@@ -53,11 +53,20 @@ export type PublicStopRouteDependencies = {
   persistMode: (mode: "off") => void;
   setAutoStart: (enabled: boolean) => void;
   getStatus: () => Record<string, unknown>;
+  getStopBlocker?: () => { code: string; message: string } | null;
 };
 
 export function registerPublicStopRoute(app: any, deps: PublicStopRouteDependencies) {
   app.post("/api/public/stop", { preHandler: deps.requireAuth }, async (_request: any, reply: ReplyLike) => {
     return deps.mutex.runExclusive(async () => {
+      const blocker = deps.getStopBlocker?.();
+      if (blocker) {
+        return reply.code(409).send({
+          ...deps.getStatus(),
+          lastError: blocker.code,
+          message: blocker.message
+        });
+      }
       const modeBeforeStop = deps.getMode();
       const selection = deps.getSelection();
       await deps.stopTunnel();

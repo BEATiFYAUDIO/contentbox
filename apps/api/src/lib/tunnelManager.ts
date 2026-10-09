@@ -338,6 +338,10 @@ export class TunnelManager {
     return { ...this.state };
   }
 
+  activeTransport(): "quick" | "named" | null {
+    return this.activeMode;
+  }
+
   setError(message: string) {
     this.state = { ...this.state, status: "ERROR", lastError: message };
   }

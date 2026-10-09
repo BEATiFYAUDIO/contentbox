@@ -187,21 +187,6 @@ function deriveNamedPublicOrigin(tunnelName: string, domain: string): string {
   return normalizeOrigin(`${name}.${host}`);
 }
 
-function sanitizeNamedPublicOrigin(publicOrigin: string, tunnelName: string, domain: string): string {
-  const normalized = normalizeOrigin(publicOrigin);
-  const name = String(tunnelName || "").trim().toLowerCase();
-  const host = String(domain || "").trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
-  if (!normalized || !name || !host || host.split(".").filter(Boolean).length <= 2) return normalized;
-  try {
-    const originHost = new URL(normalized).hostname.toLowerCase();
-    if (originHost === `${name}.${host}`) return "";
-  } catch {
-    return normalized;
-  }
-  return normalized;
-}
-
-
 export default function ConfigPage({
   showAdvanced,
   onOpenPayments,
@@ -756,7 +741,13 @@ export default function ConfigPage({
   const quickDisabled = isSovereignPosture && namedConfigured;
   const modeLocked = Boolean(modeInfo?.tierLocked);
   const namedOriginCandidate = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
+  const tunnelState = publicStatus?.tunnelState || {};
+  const namedIdentityVerified = Boolean(tunnelState.identityVerified);
+  const namedRouteVerified = Boolean(tunnelState.routeVerified);
+  const namedServiceDetected = Boolean(tunnelState.serviceDetected || tunnelState.serviceRunning);
+  const namedOwnership = String(tunnelState.ownership || "unknown");
   const namedTunnelOnline =
+    Boolean(tunnelState.connected) ||
     Boolean((publicStatus as any)?.transport?.named?.online) ||
     (publicStatus?.mode === "named" &&
       publicStatus?.status === "online" &&
@@ -776,24 +767,15 @@ export default function ConfigPage({
   const cloudflaredAvailable = Boolean(publicStatus?.cloudflared?.available);
   const tunnelControlMode = String(publicStatus?.tunnelControl?.mode || "unknown");
   const tunnelControlMessage = String(publicStatus?.tunnelControl?.message || "").trim();
-  const serviceManagedTokenMode = tunnelControlMode === "service_token";
-  // Treat named tunnel as "detected" only when it is locally discoverable/manageable.
-  // A stale status.mode==="named" on another machine should not block Basic temporary links.
-  const namedTunnelDetectedFromStatus =
-    !publicStatus?.namedDisabled &&
-    Boolean(publicStatus?.namedConfigured) &&
-    (Boolean(discoveredTunnelNameFromStatus) || publicStatus?.mode === "named");
+  const serviceManagedTokenMode = tunnelControlMode === "service_token" || tunnelState.ownership === "external-service";
+  const namedTunnelDetectedFromStatus = Boolean(tunnelState.identityVerified || tunnelState.routeVerified);
   const namedTunnelDetectedRaw =
     namedTunnelDetectedState ||
     Boolean(discoveredTunnelNameFromList) ||
     namedTunnelDetectedFromStatus ||
-    Boolean((publicStatus as any)?.transport?.named?.configured) ||
     Boolean((publicStatus as any)?.transport?.named?.online) ||
-    Boolean(publicStatus?.namedTokenStored) ||
-    Boolean(publicStatus?.namedConfigured);
-  const namedTunnelDetected = serviceManagedTokenMode
-    ? Boolean(namedTunnelDetectedRaw)
-    : Boolean(cloudflaredAvailable && namedTunnelDetectedRaw);
+    Boolean(publicStatus?.namedTokenStored);
+  const namedTunnelDetected = Boolean(namedTunnelDetectedRaw);
   // Bootstrap/token flow should be required only when no named tunnel is discovered.
   // Do not gate this on local cloudflared manageability, otherwise service-managed
   // or temporarily-undetected control modes can incorrectly re-prompt for token input.
@@ -804,14 +786,15 @@ export default function ConfigPage({
   // - Sovereign postures default to named routing controls
   // Status/detail blocks still reflect real backend mode underneath.
   const activeNamedPosture = Boolean(!publicStatus?.namedDisabled && publicStatus?.mode === "named");
+  const hasNamedConfiguration = Boolean(configuredTunnelName || publicStatus?.namedConfigured);
   const uiTunnelMode: "existing_named" | "token_bootstrap" = isSovereignPosture
     ? "existing_named"
-    : activeNamedPosture
+    : activeNamedPosture || (hasNamedConfiguration && !publicStatus?.namedDisabled)
       ? "existing_named"
       : "token_bootstrap";
   const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const namedTunnelManageableLocally = Boolean(cloudflaredAvailable && (publicStatus?.namedTokenStored || namedTunnelDetected));
-  const namedTunnelConfiguredLocally = Boolean(configuredTunnelName || publicStatus?.namedConfigured);
+  const namedTunnelConfiguredLocally = hasNamedConfiguration;
   const startActionLabel =
     uiTunnelMode === "existing_named"
       ? "Start named tunnel"
@@ -823,7 +806,7 @@ export default function ConfigPage({
     publicBusy ||
     publicStatus?.status === "starting" ||
     publicStatus?.status === "online" ||
-    (uiTunnelMode === "token_bootstrap" ? quickDisabled : !cloudflaredAvailable || (!namedTunnelManageableLocally && !namedTunnelConfiguredLocally));
+    (uiTunnelMode === "token_bootstrap" ? quickDisabled : !namedTunnelConfiguredLocally);
   const startActionDisabledReason = !token
     ? "Sign in to start routing."
     : publicBusy
@@ -834,18 +817,19 @@ export default function ConfigPage({
           ? "Tunnel is already online."
           : uiTunnelMode === "token_bootstrap" && quickDisabled
             ? "Temporary links are disabled in this posture while named routing is configured."
-            : uiTunnelMode === "existing_named" && !cloudflaredAvailable
-              ? "cloudflared is unavailable on this machine."
-              : uiTunnelMode === "existing_named" && !namedTunnelManageableLocally && !namedTunnelConfiguredLocally
+            : uiTunnelMode === "existing_named" && !namedTunnelConfiguredLocally
                 ? "No local named tunnel is discovered/configured yet."
                 : null;
-  const stopActionDisabled = !token || publicBusy || publicStatus?.status !== "online";
+  const externalNamedActive = serviceManagedTokenMode && namedTunnelOnline && !publicStatus?.namedDisabled;
+  const stopActionDisabled = !token || publicBusy || publicStatus?.status !== "online" || externalNamedActive;
   const stopActionDisabledReason = !token
     ? "Sign in to stop routing."
     : publicBusy
       ? "Routing action in progress."
       : publicStatus?.status !== "online"
         ? "Tunnel must be online before it can be stopped."
+        : externalNamedActive
+          ? "This Named Tunnel is managed outside Certifyd. Stop it through the operating-system service manager or Cloudflare."
         : null;
   const refreshActionDisabled = !token || publicBusy;
   const refreshActionDisabledReason = !token
@@ -853,11 +837,7 @@ export default function ConfigPage({
     : publicBusy
       ? "Routing action in progress."
       : null;
-  const localRoutingControlsDisabled =
-    serviceManagedTokenMode &&
-    !publicStatus?.namedDisabled &&
-    publicStatus?.mode === "named" &&
-    publicStatus?.status === "online";
+  const localRoutingControlsDisabled = externalNamedActive;
   const saveConfigDisabled = tunnelLoading || !tunnelEnabled || localRoutingControlsDisabled;
   const saveConfigDisabledReason = tunnelLoading
     ? "Tunnel settings are loading."
@@ -1051,11 +1031,12 @@ export default function ConfigPage({
       });
       const json = await res.json();
       setPublicStatus(json || null);
+      let discoveryOk = true;
       if (opts?.discover) {
-        await discoverTunnels({ silent: true });
+        discoveryOk = await discoverTunnels({ silent: true });
       }
       if (!silent) {
-        setPublicMsg("Tunnel status refreshed.");
+        setPublicMsg(discoveryOk ? "Tunnel status refreshed." : "Routing refreshed, but the Named Tunnel is not ready. Review the tunnel error below.");
       }
     } catch {
       setPublicStatus(null);
@@ -1199,6 +1180,30 @@ export default function ConfigPage({
     }
   };
 
+  const startNamedPublicLink = async () => {
+    if (!token) {
+      setPublicMsg("Sign in again to start Named Tunnel routing.");
+      return;
+    }
+    setPublicBusy(true);
+    setPublicMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/named/start`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json().catch(() => null);
+      setPublicStatus(json || null);
+      if (!res.ok) throw new Error(json?.message || json?.error || "Failed to start Named Tunnel.");
+      setPublicMsg(json?.message || "Named Tunnel start requested.");
+      await refreshPublicStatus({ silent: true, discover: true });
+    } catch (e: any) {
+      setPublicMsg(e?.message || "Failed to start Named Tunnel.");
+    } finally {
+      setPublicBusy(false);
+    }
+  };
+
   const setNamedOverride = async (disabled: boolean) => {
     if (!token) {
       setPublicMsg("Sign in again to change tunnel override.");
@@ -1214,7 +1219,11 @@ export default function ConfigPage({
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to update named override.");
       await refreshPublicStatus({ silent: true, discover: true });
-      setPublicMsg(disabled ? "Named tunnel override enabled." : "Named tunnel override disabled.");
+      setPublicMsg(
+        disabled
+          ? "Named routing paused. Start a temporary link when ready; node posture was not changed."
+          : "Named routing preference restored. Use Start named tunnel to verify or start the durable route."
+      );
     } catch (e: any) {
       setPublicMsg(e?.message || "Failed to update named override.");
     } finally {
@@ -1336,7 +1345,6 @@ export default function ConfigPage({
     setTunnelLoading(true);
     try {
       const normalizedPublicOrigin =
-        sanitizeNamedPublicOrigin(publicOrigin, tunnelName, tunnelDomain) ||
         deriveNamedPublicOrigin(tunnelName, tunnelDomain) ||
         normalizeOrigin(tunnelDomain);
       const res = await fetch(`${apiBase}/api/public/config`, {
@@ -1364,24 +1372,60 @@ export default function ConfigPage({
     }
   };
 
-  const discoverTunnels = async (opts?: { silent?: boolean }) => {
+  const removeNamedTunnelConfig = async () => {
     if (!token) return;
+    setTunnelError(null);
+    setTunnelActionMsg(null);
+    setTunnelLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/api/public/named/remove`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(json?.message || json?.error || "Failed to remove Named Tunnel configuration.");
+      setTunnelProvider("cloudflare");
+      setTunnelDomain("");
+      setTunnelName("");
+      setPublicOrigin("");
+      setTunnelList([]);
+      setNamedTunnelDetectedState(false);
+      setDiscoveredTunnelNameState(null);
+      setPublicStatus(json || null);
+      setTunnelActionMsg(json?.message || "Named Tunnel configuration removed.");
+      await refreshPublicStatus({ silent: true });
+    } catch (e: any) {
+      setTunnelError(e?.message || String(e));
+    } finally {
+      setTunnelLoading(false);
+    }
+  };
+
+  const discoverTunnels = async (opts?: { silent?: boolean }): Promise<boolean> => {
+    if (!token) return false;
     setTunnelError(null);
     if (!opts?.silent) setTunnelActionMsg(null);
     setTunnelLoading(true);
     try {
-      const res = await fetch(`${apiBase}/api/public/tunnels`, {
-        method: "GET",
+      const res = await fetch(`${apiBase}/api/public/named/verify`, {
+        method: "POST",
         headers: { Authorization: `Bearer ${token}` }
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Failed to list tunnels");
+      if (!res.ok && !json?.configuredTunnelName) throw new Error(json?.message || json?.error || "Failed to verify Named Tunnel");
+      setPublicStatus(json || null);
       setTunnelList(Array.isArray(json?.tunnels) ? json.tunnels : []);
       setNamedTunnelDetectedState(Boolean(json?.namedTunnelDetected));
       setDiscoveredTunnelNameState(
         json?.namedTunnelDetected && json?.discoveredTunnelName ? String(json.discoveredTunnelName) : null
       );
-      if (json?.namedTunnelDetected && json?.discoveredTunnelName) {
+      if (!res.ok) {
+        setTunnelError(json?.message || json?.error || "Named Tunnel verification failed.");
+        if (!opts?.silent) setTunnelActionMsg("Named Tunnel is not ready. Review the error and retry Refresh routing.");
+      } else if (json?.routeVerified && !json?.identityVerified) {
+        setNamedTokenMsg("Durable route verified to this Core instance. Exact Cloudflare tunnel identity is unavailable without account credentials.");
+        if (!opts?.silent) setTunnelActionMsg("Named route verified. The external service remains under operating-system control.");
+      } else if (json?.namedTunnelDetected && json?.discoveredTunnelName) {
         setNamedTokenMsg(`Existing named tunnel detected (${json.discoveredTunnelName}). Token bootstrap is not required.`);
         if (!opts?.silent) setTunnelActionMsg(`Named tunnel detected: ${json.discoveredTunnelName}`);
       } else if (json?.configuredTunnelName) {
@@ -1390,8 +1434,16 @@ export default function ConfigPage({
       } else if (!opts?.silent) {
         setTunnelActionMsg("No configured named tunnel to discover.");
       }
+      const modeRes = await fetch(`${apiBase}/api/node/mode`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const modeJson = await modeRes.json().catch(() => null);
+      if (modeRes.ok && modeJson) setModeInfo(modeJson as NodeModeStatus);
+      return res.ok;
     } catch (e: any) {
       setTunnelError(e?.message || String(e));
+      return false;
     } finally {
       setTunnelLoading(false);
     }
@@ -1408,7 +1460,7 @@ export default function ConfigPage({
     if (!token) return;
     if (selectedTunnelMode === "existing_named") {
       setNamedTokenMsg("Existing named tunnel detected. Token bootstrap is not required.");
-      if (autoStart) await startPublicLink();
+      if (autoStart) await startNamedPublicLink();
       return;
     }
     const trimmed = namedTokenInput.trim();
@@ -1433,7 +1485,7 @@ export default function ConfigPage({
       }
       setNamedTokenInput("");
       setNamedTokenMsg("Token saved.");
-      if (autoStart) await startPublicLink();
+      if (autoStart) await startNamedPublicLink();
       await refreshPublicStatus({ silent: true, discover: true });
     } catch (e: any) {
       setNamedTokenMsg(e?.message || "Failed to save token.");
@@ -1781,7 +1833,7 @@ export default function ConfigPage({
         {publicStatus ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
               <button
-                onClick={startPublicLink}
+                onClick={uiTunnelMode === "existing_named" ? startNamedPublicLink : startPublicLink}
                 disabled={startActionDisabled}
                 title={startActionDisabledReason || undefined}
                 style={actionBtnStyle(startActionDisabled)}
@@ -1801,12 +1853,12 @@ export default function ConfigPage({
                 Named tunnel configured, but local runtime is still in quick mode.
               </div>
             ) : null}
-            {uiTunnelMode === "existing_named" && !cloudflaredAvailable ? (
+            {uiTunnelMode === "existing_named" && !cloudflaredAvailable && !serviceManagedTokenMode ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 cloudflared is unavailable on this machine, so local named-tunnel launch is disabled.
               </div>
             ) : null}
-            {uiTunnelMode === "existing_named" && cloudflaredAvailable && !namedTunnelManageableLocally ? (
+            {uiTunnelMode === "existing_named" && cloudflaredAvailable && !namedTunnelManageableLocally && !namedTunnelConfiguredLocally ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 Named tunnel launch is not available yet on this machine. Discover the named tunnel first.
               </div>
@@ -1913,7 +1965,7 @@ export default function ConfigPage({
           </div>
           <div style={{ display: "grid", gap: 3, fontSize: 12, opacity: 0.82, marginTop: 8 }}>
             <div>Public base domain: <b>{tunnelDomain || "—"}</b></div>
-            <div>Tunnel control: <b>{serviceManagedTokenMode ? "Service-managed token" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
+            <div>Tunnel control: <b>{serviceManagedTokenMode ? "Externally managed service" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
             <div>Named tunnel online: <b>{namedTunnelOnline ? "yes" : "no"}</b></div>
           </div>
           {tunnelControlMessage ? (
@@ -1969,10 +2021,14 @@ export default function ConfigPage({
               <div style={{ display: "grid", gap: 3, fontSize: 12, opacity: 0.9, marginTop: 8 }}>
                 <div>Tunnel provider: <b>{tunnelProvider || "cloudflare"}</b></div>
                 <div>Tunnel name: <b>{configuredTunnelName || "—"}</b></div>
-                <div>Tunnel detected: <b>{namedTunnelDetected ? "yes" : "no"}</b></div>
+                <div>Tunnel configured: <b>{namedTunnelConfiguredLocally ? "yes" : "no"}</b></div>
+                <div>Exact tunnel identity verified: <b>{namedIdentityVerified ? "yes" : "no"}</b></div>
+                <div>External service detected: <b>{namedServiceDetected ? "yes" : "no"}</b></div>
+                <div>Durable route verified to this Core: <b>{namedRouteVerified ? "yes" : "no"}</b></div>
                 <div>Tunnel online: <b>{namedTunnelOnline ? "yes" : "no"}</b></div>
+                <div>Ownership: <b>{namedOwnership === "core-managed" ? "Core-managed" : namedOwnership === "external-service" ? "Externally managed" : "Unable to verify"}</b></div>
                 <div>Preferred route: <b>{uiTunnelMode === "existing_named" ? "Named tunnel" : "Temporary bootstrap"}</b></div>
-                <div>Tunnel control mode: <b>{serviceManagedTokenMode ? "Service-managed token" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
+                <div>Tunnel control mode: <b>{serviceManagedTokenMode ? "Externally managed service" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
                 <div>Public base domain: <b>{tunnelDomain || "—"}</b></div>
               </div>
               {uiTunnelMode === "existing_named" ? (
@@ -1994,14 +2050,9 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelProvider(e.target.value)}
                 placeholder="cloudflare"
                 className={inputClass}
-                disabled={!tunnelEnabled || !namedTunnelDetected || localRoutingControlsDisabled}
+                disabled={!tunnelEnabled || localRoutingControlsDisabled}
                 autoComplete="off"
               />
-              {!namedTunnelDetected ? (
-                <div style={{ opacity: 0.7, marginTop: 4, fontSize: 12 }}>
-                  Provider host settings unlock after the named tunnel is detected.
-                </div>
-              ) : null}
             </label>
             <label htmlFor="tunnel-domain">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Public domain (base)</div>
@@ -2118,7 +2169,26 @@ export default function ConfigPage({
               >
                 Discover tunnels
               </button>
+              <button
+                onClick={removeNamedTunnelConfig}
+                disabled={tunnelLoading || !namedTunnelConfiguredLocally || isSovereignPosture}
+                title={
+                  !namedTunnelConfiguredLocally
+                    ? "No Named Tunnel configuration is saved."
+                    : isSovereignPosture
+                      ? "Switch to Basic Creator before removing the durable Named Tunnel configuration."
+                      : "Remove the saved Named Tunnel configuration without stopping external services or deleting credentials."
+                }
+                style={actionBtnStyle(tunnelLoading || !namedTunnelConfiguredLocally || isSovereignPosture)}
+              >
+                Remove named config
+              </button>
             </div>
+            {isSovereignPosture && namedTunnelConfiguredLocally ? (
+              <div style={{ marginTop: 2, fontSize: 12, opacity: 0.75 }}>
+                Switch to Basic Creator before removing the durable Named Tunnel configuration. Node posture is never changed automatically.
+              </div>
+            ) : null}
             {saveConfigDisabledReason ? (
               <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{saveConfigDisabledReason}</div>
             ) : null}
@@ -2228,6 +2298,7 @@ export default function ConfigPage({
                       name="diagnosticsPublicAutostart"
                       type="checkbox"
                       checked={Boolean(publicStatus?.autoStartEnabled)}
+                      disabled={externalNamedActive}
                       onChange={async (e) => {
                         try {
                           const res = await fetch(`${apiBase}/api/public/autostart`, {
@@ -2242,10 +2313,10 @@ export default function ConfigPage({
                         }
                       }}
                     />
-                    Auto-start Public Link on launch
+                    {externalNamedActive ? "Auto-start is managed by the external service" : "Auto-start Public Link on launch"}
                   </label>
                 ) : (
-                  <div style={{ opacity: 0.7 }}>Set PUBLIC_MODE=quick to enable a temporary public test URL.</div>
+                  <div style={{ opacity: 0.7 }}>Use Start temporary link in Tunnel &amp; routing to create a temporary public URL.</div>
                 )}
                 <div>
                   <button
@@ -2263,7 +2334,7 @@ export default function ConfigPage({
                     }}
                     style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
                   >
-                    Reset Public Link consent
+                    Reset temporary-link consent
                   </button>
                 </div>
                 <button
