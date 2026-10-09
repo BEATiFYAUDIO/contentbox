@@ -107,6 +107,14 @@ import {
   namedConfigurationCacheKey,
   normalizeTunnelIdentity
 } from "./lib/namedTunnelSafety.js";
+import {
+  parseLinuxCloudflaredService,
+  parseMacCloudflaredServices,
+  parseWindowsCloudflaredServices,
+  serviceInspectionSummary,
+  evaluateNamedRouteEvidence,
+  type CloudflaredServiceRecord
+} from "./lib/cloudflaredServiceInspection.js";
 import { AsyncLifecycleMutex, startAutomaticQuickRuntime, startNamedRuntimeAtStartup } from "./lib/publicLifecycle.js";
 import { registerPublicGoRoute, registerPublicStopRoute } from "./lib/publicGoRoute.js";
 import { PublicServerLifecycle } from "./publicServer.js";
@@ -10667,6 +10675,56 @@ function runWindowsCloudflaredProcessQuery(args: string[]): string {
   return "";
 }
 
+function runWindowsPowerShellQuery(args: string[]): string {
+  const candidates = [
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "powershell.exe",
+    "powershell"
+  ];
+  for (const cmd of candidates) {
+    try {
+      const result = spawnSync(cmd, args, { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS });
+      if (!result.error && result.status === 0) return String(result.stdout || "");
+    } catch {}
+  }
+  return "";
+}
+
+function inspectCloudflaredServices(): CloudflaredServiceRecord[] {
+  if (process.platform === "win32") {
+    const output = runWindowsPowerShellQuery([
+      "-NoProfile",
+      "-Command",
+      "Get-CimInstance Win32_Service | Where-Object { $_.Name -match 'cloudflared' -or $_.PathName -match 'cloudflared' } | ForEach-Object { \"$($_.Name)|$($_.State)|$($_.ProcessId)|$($_.PathName)\" }"
+    ]);
+    return parseWindowsCloudflaredServices(output);
+  }
+  if (process.platform === "linux") {
+    try {
+      const result = spawnSync(
+        "systemctl",
+        ["show", "cloudflared.service", "--property=Id,LoadState,ActiveState,MainPID,ExecStart", "--no-pager"],
+        { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS }
+      );
+      return parseLinuxCloudflaredService(String(result.stdout || ""));
+    } catch {
+      return [];
+    }
+  }
+  if (process.platform === "darwin") {
+    try {
+      const result = spawnSync("launchctl", ["list"], {
+        encoding: "utf8",
+        timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS
+      });
+      return parseMacCloudflaredServices(String(result.stdout || ""));
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function detectTunnelControlMode() {
   const serviceScriptPath = "/etc/init.d/cloudflared";
   const localConfigPath =
@@ -10675,6 +10733,12 @@ function detectTunnelControlMode() {
   const localConfigPresent = fsSync.existsSync(localConfigPath);
   const configuredIdentities = getConfiguredNamedIdentityAliases();
   const processRecords: Array<{ pid?: number | null; commandLine: string; serviceManaged?: boolean }> = [];
+  const serviceRecords = inspectCloudflaredServices();
+  const serviceInspection = serviceInspectionSummary(serviceRecords);
+  for (const service of serviceRecords) {
+    if (service.state !== "running") continue;
+    processRecords.push({ pid: service.pid, commandLine: service.commandLine, serviceManaged: true });
+  }
 
   let serviceScriptHasToken = false;
   if (fsSync.existsSync(serviceScriptPath)) {
@@ -10762,6 +10826,8 @@ function detectTunnelControlMode() {
   });
   activeServiceTokenProcess = ownership === "service-external";
   activeAppManagedTokenProcess = ownership === "app-managed";
+  const ownedPid = tunnelManager.status().pid;
+  const externalProcessRunning = processRecords.some((record) => record.serviceManaged || (record.pid && record.pid !== ownedPid));
   const hasServiceOwnedActiveToken = ownership === "service-external";
 
   const mode: "service_token" | "local_config" | "unknown" =
@@ -10788,7 +10854,9 @@ function detectTunnelControlMode() {
     activeProcessToken,
     activeProcessConfig,
     activeServiceTokenProcess,
-    activeAppManagedTokenProcess
+    activeAppManagedTokenProcess,
+    externalProcessRunning,
+    ...serviceInspection
   };
 }
 
@@ -10822,7 +10890,13 @@ function getTunnelControlModeFallback(): ReturnType<typeof detectTunnelControlMo
     activeProcessToken: false,
     activeProcessConfig: false,
     activeServiceTokenProcess: false,
-    activeAppManagedTokenProcess: false
+    activeAppManagedTokenProcess: false,
+    externalProcessRunning: false,
+    serviceDetected: false,
+    serviceRunning: false,
+    serviceCount: 0,
+    runningServiceCount: 0,
+    servicePids: [] as number[]
   };
 }
 function getTunnelControlModeCached(force = false): ReturnType<typeof detectTunnelControlMode> {
@@ -10848,11 +10922,22 @@ function shouldDeferNamedTunnelToServiceControl() {
   return { shouldDefer, tunnelControl: tc };
 }
 
-const namedHealthCache: { key: string | null; ok: boolean | null; checkedAt: number | null; inflight: boolean } = {
+const namedHealthCache: {
+  key: string | null;
+  ok: boolean | null;
+  checkedAt: number | null;
+  inflight: boolean;
+  identityVerified: boolean;
+  routeReachable: boolean;
+  routeVerified: boolean;
+} = {
   key: null,
   ok: null,
   checkedAt: null,
-  inflight: false
+  inflight: false,
+  identityVerified: false,
+  routeReachable: false,
+  routeVerified: false
 };
 let namedHealthRefreshPromise: Promise<boolean> | null = null;
 let namedHealthRefreshKey: string | null = null;
@@ -10910,12 +10995,17 @@ function invalidateNamedRuntimeCaches() {
   namedHealthCache.key = null;
   namedHealthCache.ok = null;
   namedHealthCache.checkedAt = null;
+  namedHealthCache.identityVerified = false;
+  namedHealthCache.routeReachable = false;
+  namedHealthCache.routeVerified = false;
   tunnelControlModeCache = null;
   namedIdentityAliasKey = null;
   namedIdentityAliases.clear();
   lastNamedOwnershipReconcileAt = 0;
   tunnelManager.invalidateNamedIntent();
   publicStatusCache = null;
+  localSovereignReadinessCache = null;
+  localSovereignReadinessInflight = null;
 }
 
 function getServiceManagedNamedStartupGraceState(input: {
@@ -10968,13 +11058,30 @@ async function refreshNamedHealth(origin: string): Promise<boolean> {
     try {
       const defer = shouldDeferNamedTunnelToServiceControl();
       const localOk = defer.shouldDefer ? true : await checkLocalPublicHealth();
-      const publicOk = await checkPublicPing(origin);
+      const publicRoute = await checkPublicRoute(origin);
       const namedConnectedOk = await checkNamedTunnelConnected().catch(() => false);
-      // Reachability is health evidence, not tunnel identity. The configured exact
-      // tunnel must also be connected before named transport is considered online.
-      const ok = Boolean(namedConnectedOk && (publicOk || localOk));
+      const externalServiceRunning = Boolean(
+        defer.tunnelControl.serviceRunning ||
+        defer.tunnelControl.activeServiceTokenProcess ||
+        defer.tunnelControl.externalProcessRunning
+      );
+      // A listed exact tunnel proves Cloudflare identity. For remotely managed
+      // services without account credentials, a BOOT_ID match proves the configured
+      // durable route terminates at this exact Core instance without granting Core
+      // ownership of that service.
+      const evidence = evaluateNamedRouteEvidence({
+        identityConnected: namedConnectedOk,
+        externalServiceRunning,
+        routeReachable: publicRoute.reachable,
+        routeMatchesThisCore: publicRoute.sameInstance,
+        localListenerReady: localOk
+      });
+      const ok = evidence.online;
       namedHealthCache.key = key;
       namedHealthCache.ok = ok;
+      namedHealthCache.identityVerified = namedConnectedOk;
+      namedHealthCache.routeReachable = publicRoute.reachable;
+      namedHealthCache.routeVerified = publicRoute.sameInstance;
       namedHealthCache.checkedAt = Date.now();
       return ok;
     } finally {
@@ -11120,6 +11227,12 @@ function getPublicStatus() {
   const advancedNeedsNamed = productTier === "advanced";
   const namedConfigured = Boolean(namedCfg);
   const namedOnline = state.mode === "named" && state.status === "online";
+  const namedRuntime = tunnelManager.status();
+  const namedOwnership = tunnelControl.activeAppManagedTokenProcess
+    ? "core-managed"
+    : tunnelControl.activeServiceTokenProcess || tunnelControl.serviceRunning || tunnelControl.externalProcessRunning
+      ? "external-service"
+      : "unknown";
   const startupGraceState = getServiceManagedNamedStartupGraceState({
     namedConfigured,
     namedOnline,
@@ -11202,6 +11315,18 @@ function getPublicStatus() {
     tunnelName: namedCfg?.tunnelName || null,
     namedTokenStored: Boolean(getNamedTunnelToken()),
     namedConfigured,
+    tunnelState: {
+      configured: namedConfigured,
+      identityVerified: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.identityVerified,
+      serviceDetected: Boolean(tunnelControl.serviceDetected || tunnelControl.externalProcessRunning),
+      serviceRunning: Boolean(tunnelControl.serviceRunning || tunnelControl.externalProcessRunning),
+      routeReachable: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeReachable,
+      routeVerified: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeVerified,
+      connected: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.ok === true,
+      ownership: namedOwnership,
+      controllableByCore: namedOwnership === "core-managed" && Boolean(namedRuntime.pid),
+      publicListenerReady: publicServerLifecycle.isStarted()
+    },
     quickModeWithNamedConfig: state.mode === "quick" && namedConfigured,
     namedDisabled: isNamedTunnelDisabled(),
     transport: {
@@ -11495,13 +11620,15 @@ async function triggerPublicStartBestEffort() {
   return publicLifecycleMutex.runExclusive(() => triggerPublicStartBestEffortUnlocked());
 }
 
-async function checkPublicPing(publicOrigin: string): Promise<boolean> {
+async function checkPublicRoute(publicOrigin: string): Promise<{ reachable: boolean; sameInstance: boolean }> {
   const base = publicOrigin.replace(/\/$/, "");
   try {
-    const res = await fetchWithTimeout(`${base}/health`, { method: "GET" } as any, 4000);
-    return res.ok;
+    const res = await fetchWithTimeout(`${base}/public/ping`, { method: "GET" } as any, 4000);
+    if (!res.ok) return { reachable: false, sameInstance: false };
+    const body = await res.json().catch(() => null) as any;
+    return { reachable: true, sameInstance: body?.bootId === BOOT_ID };
   } catch {
-    return false;
+    return { reachable: false, sameInstance: false };
   }
 }
 
@@ -14005,7 +14132,8 @@ function registerPublicRoutes(appPublic: any) {
 }
 
 function handlePublicPing(_req: any, reply: any) {
-  return reply.send({ ok: true, ts: new Date().toISOString() });
+  reply.header("cache-control", "no-store");
+  return reply.send({ ok: true, ts: new Date().toISOString(), bootId: BOOT_ID });
 }
 
 app.get("/health", async () => ({ ok: true }));
@@ -14038,7 +14166,8 @@ app.get("/.well-known/certifyd-node", async (_req: any, reply: any) => {
   return reply.send(publicDoc);
 });
 app.get("/public/ping", async (_req: any, reply: any) => {
-  return reply.send({ ok: true, ts: new Date().toISOString() });
+  reply.header("cache-control", "no-store");
+  return reply.send({ ok: true, ts: new Date().toISOString(), bootId: BOOT_ID });
 });
 
 app.addHook("onRequest", (req: any, reply: any, done: any) => {
@@ -19941,6 +20070,43 @@ app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, rep
   });
 });
 
+app.post("/api/public/named/remove", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return publicLifecycleMutex.runExclusive(async () => {
+    const nodeMode = getNodeModeStatus().nodeMode;
+    if (nodeMode === "advanced" || nodeMode === "lan") {
+      return reply.code(409).send({
+        error: "BASIC_MODE_REQUIRED",
+        message: "Switch this node to Basic Creator before removing its durable Named Tunnel configuration."
+      });
+    }
+    if (String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() || String(process.env.CLOUDFLARED_TUNNEL_NAME || "").trim()) {
+      return reply.code(409).send({
+        error: "ENVIRONMENT_NAMED_CONFIG",
+        message: "Named Tunnel configuration is controlled by this installation's environment and cannot be removed in the dashboard."
+      });
+    }
+    const cfg = getNamedTunnelConfig();
+    const runtime = tunnelManager.status();
+    const ownsConfiguredNamedChild = Boolean(
+      cfg?.publicOrigin &&
+      runtime.pid &&
+      tunnelManager.activeTransport() === "named"
+    );
+    if (ownsConfiguredNamedChild) await tunnelManager.stop();
+    setPublicOriginConfig({ provider: null, domain: null, tunnelName: null, publicOrigin: null });
+    setNamedTunnelDisabled(false);
+    invalidateNamedRuntimeCaches();
+    const quickStillActive = tunnelManager.status().status === "ACTIVE" && /\.trycloudflare\.com\/?$/i.test(String(tunnelManager.status().publicOrigin || ""));
+    if (!quickStillActive) await publicServerLifecycle.stop();
+    return reply.send({
+      ...getPublicStatusCached(true),
+      ok: true,
+      removed: true,
+      message: "Named Tunnel configuration removed. Externally managed Cloudflare services and saved connector credentials were not changed."
+    });
+  });
+});
+
 async function detectConfiguredNamedTunnel() {
   const cfg = getNamedTunnelConfig();
   const fallback = getPublicOriginConfig();
@@ -19962,6 +20128,9 @@ async function detectConfiguredNamedTunnel() {
     return {
       configuredTunnelName: null,
       namedTunnelDetected: false,
+      identityVerified: false,
+      routeReachable: false,
+      routeVerified: false,
       discoveredTunnelName: null,
       verifiedPublicOrigin: null,
       reason: "tunnel_name_not_configured",
@@ -19974,6 +20143,9 @@ async function detectConfiguredNamedTunnel() {
     return {
       configuredTunnelName,
       namedTunnelDetected: false,
+      identityVerified: false,
+      routeReachable: false,
+      routeVerified: false,
       discoveredTunnelName: null,
       verifiedPublicOrigin: null,
       reason: "provider_not_cloudflare",
@@ -19989,26 +20161,18 @@ async function detectConfiguredNamedTunnel() {
           configuredDomain && shouldDeriveNamedTunnelOrigin()
             ? normalizeOrigin(`${configuredTunnelName}.${configuredDomain}`)
             : null,
-          normalizeOrigin(configuredDomain),
-          configuredDomain && !configuredDomain.includes("://") ? normalizeOrigin(`certifyd.${configuredDomain}`) : null,
-          configuredDomain && !configuredDomain.includes("://") ? normalizeOrigin(`public.${configuredDomain}`) : null
+          normalizeOrigin(configuredDomain)
         ].filter(Boolean) as string[]
       )
     );
     for (const origin of candidates) {
       const base = origin.replace(/\/+$/, "");
-      for (const probePath of ["/.well-known/contentbox", "/health", "/public/ping"]) {
-        try {
-          const res = await fetchWithTimeout(
-            `${base}${probePath}`,
-            { method: "GET", headers: { Accept: "application/json" } as any } as any,
-            2500
-          );
-          if (res.ok) return { ok: true, origin: base, probePath };
-        } catch {}
+      const route = await checkPublicRoute(base);
+      if (route.reachable) {
+        return { ok: true, sameInstance: route.sameInstance, origin: base, probePath: "/public/ping" };
       }
     }
-    return { ok: false, origin: null as string | null, probePath: null as string | null };
+    return { ok: false, sameInstance: false, origin: null as string | null, probePath: null as string | null };
   };
 
   const configurationKey = currentNamedHealthCacheKey();
@@ -20017,6 +20181,9 @@ async function detectConfiguredNamedTunnel() {
     return {
       configuredTunnelName,
       namedTunnelDetected: false,
+      identityVerified: false,
+      routeReachable: false,
+      routeVerified: false,
       discoveredTunnelName: null,
       verifiedPublicOrigin: null,
       reason: "configuration_changed",
@@ -20027,10 +20194,13 @@ async function detectConfiguredNamedTunnel() {
     const probe = await probeConfiguredPublicOrigin();
     return {
       configuredTunnelName,
-      namedTunnelDetected: false,
+      namedTunnelDetected: probe.sameInstance,
+      identityVerified: false,
+      routeReachable: probe.ok,
+      routeVerified: probe.sameInstance,
       discoveredTunnelName: null,
       verifiedPublicOrigin: probe.origin,
-      reason: probe.ok ? "origin_reachable_identity_unverified" : "cloudflared_not_available",
+      reason: probe.sameInstance ? "route_verified_identity_unavailable" : probe.ok ? "origin_reachable_wrong_instance" : "cloudflared_not_available",
       tunnels: [] as any[]
     };
   }
@@ -20041,6 +20211,9 @@ async function detectConfiguredNamedTunnel() {
     return {
       configuredTunnelName,
       namedTunnelDetected: Boolean(match),
+      identityVerified: Boolean(match),
+      routeReachable: false,
+      routeVerified: false,
       discoveredTunnelName: match ? String(match?.name || match?.id || "") : null,
       verifiedPublicOrigin: null,
       reason: match ? null : "not_found",
@@ -20050,10 +20223,13 @@ async function detectConfiguredNamedTunnel() {
   const probe = await probeConfiguredPublicOrigin();
   return {
     configuredTunnelName,
-    namedTunnelDetected: false,
+    namedTunnelDetected: probe.sameInstance,
+    identityVerified: false,
+    routeReachable: probe.ok,
+    routeVerified: probe.sameInstance,
     discoveredTunnelName: null,
     verifiedPublicOrigin: probe.origin,
-    reason: probe.ok ? "origin_reachable_identity_unverified" : listed.error || "list_failed",
+    reason: probe.sameInstance ? "route_verified_identity_unavailable" : probe.ok ? "origin_reachable_wrong_instance" : listed.error || "list_failed",
     tunnels: [] as any[]
   };
 }
@@ -20072,8 +20248,13 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
       tunnels: detected.tunnels,
       configuredTunnelName: detected.configuredTunnelName,
       namedTunnelDetected: detected.namedTunnelDetected,
+      identityVerified: detected.identityVerified,
+      routeReachable: detected.routeReachable,
+      routeVerified: detected.routeVerified,
+      verifiedPublicOrigin: detected.verifiedPublicOrigin,
       discoveredTunnelName: detected.discoveredTunnelName,
-      reason: detected.reason
+      reason: detected.reason,
+      tunnelControl: getTunnelControlModeCached(true)
     });
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to list tunnels", details: e?.message || String(e) });
@@ -22896,22 +23077,21 @@ app.post("/api/diagnostics/backups/settings", { preHandler: requireAuth }, async
   return reply.send({ ok: true, enabled: setBackupsEnabled(enabled) });
 });
 
-registerPublicGoRoute(app, {
-  requireAuth,
-  mutex: publicLifecycleMutex,
-  getMode: () => getPublicLinkState().mode,
-  environmentForcesQuick: () => {
-    const selection = getPublicModeSelection();
-    return selection.mode === "quick" && selection.source === "environment";
-  },
-  quick: quickStartDependencies,
-  getStatus: getPublicStatus,
-  handleNamed: async (reply: any) => {
+async function handleNamedPublicStart(reply: any) {
     const cfg = getNamedTunnelConfig();
     if (!cfg) {
       return reply.code(409).send({
         ...getPublicStatus(),
         lastError: "missing_named_tunnel_config"
+      });
+    }
+    try {
+      await publicServerLifecycle.ensureStarted(registerPublicRoutes, getPublicBindHost("named"), PUBLIC_HTTP_PORT);
+    } catch (error: any) {
+      return reply.code(503).send({
+        ...getPublicStatus(),
+        lastError: "public_listener_unavailable",
+        message: String(error?.message || "Public listener could not start on 127.0.0.1:4010.")
       });
     }
     const alreadyOnline = await ensureNamedHealthFresh(cfg.publicOrigin, true);
@@ -22923,6 +23103,15 @@ registerPublicGoRoute(app, {
     }
     const namedToken = getNamedTunnelToken();
     const configPath = String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null;
+    const currentControl = getTunnelControlModeCached(true);
+    if (!namedToken && !configPath && (currentControl.serviceRunning || currentControl.externalProcessRunning)) {
+      return reply.code(409).send({
+        ...getPublicStatusCached(true),
+        lastError: "external_named_route_unverified",
+        message:
+          "cloudflared is managed outside Certifyd, but the configured durable host does not reach this Core listener on 127.0.0.1:4010. Check the Cloudflare published application route; Certifyd will not start or stop the external service."
+      });
+    }
     let allowDiscoveredNamedBootstrap = false;
     let discoveredTunnelName: string | null = null;
     if (!namedToken && !configPath) {
@@ -22965,7 +23154,77 @@ registerPublicGoRoute(app, {
       ...getPublicStatus(),
       lastError: status.lastError || "named_tunnel_failed"
     });
-  }
+}
+
+registerPublicGoRoute(app, {
+  requireAuth,
+  mutex: publicLifecycleMutex,
+  getMode: () => getPublicLinkState().mode,
+  environmentForcesQuick: () => {
+    const selection = getPublicModeSelection();
+    return selection.mode === "quick" && selection.source === "environment";
+  },
+  quick: quickStartDependencies,
+  getStatus: getPublicStatus,
+  handleNamed: handleNamedPublicStart
+});
+
+app.post("/api/public/named/start", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return publicLifecycleMutex.runExclusive(() => handleNamedPublicStart(reply));
+});
+
+app.post("/api/public/named/verify", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return publicLifecycleMutex.runExclusive(async () => {
+    const cfg = getNamedTunnelConfig();
+    if (!cfg) {
+      return reply.code(409).send({
+        ...getPublicStatus(),
+        lastError: "missing_named_tunnel_config",
+        message: "Save a Named Tunnel and durable public origin before verification."
+      });
+    }
+    try {
+      await publicServerLifecycle.ensureStarted(registerPublicRoutes, getPublicBindHost("named"), PUBLIC_HTTP_PORT);
+    } catch (error: any) {
+      return reply.code(503).send({
+        ...getPublicStatus(),
+        lastError: "public_listener_unavailable",
+        message: String(error?.message || "Public listener could not start on 127.0.0.1:4010.")
+      });
+    }
+    const detected = await detectConfiguredNamedTunnel();
+    const connected = await ensureNamedHealthFresh(cfg.publicOrigin, true).catch(() => false);
+    const status = getPublicStatusCached(true);
+    const identityVerified = Boolean(detected.identityVerified || status.tunnelState?.identityVerified);
+    const routeReachable = Boolean(detected.routeReachable || status.tunnelState?.routeReachable);
+    const routeVerified = Boolean(detected.routeVerified || status.tunnelState?.routeVerified);
+    const reason = connected
+      ? identityVerified
+        ? "identity_and_route_verified"
+        : "route_verified_identity_unavailable"
+      : detected.reason || "named_route_offline";
+    return reply.code(connected ? 200 : 409).send({
+      ...status,
+      ok: connected,
+      configured: true,
+      identityVerified,
+      routeReachable,
+      routeVerified,
+      tunnels: detected.tunnels,
+      configuredTunnelName: detected.configuredTunnelName,
+      namedTunnelDetected: detected.namedTunnelDetected,
+      discoveredTunnelName: detected.discoveredTunnelName,
+      ownership: status.tunnelState?.ownership || "unknown",
+      reason,
+      message: connected
+        ? identityVerified
+          ? "Named Tunnel identity and route verified."
+          : "Durable route verified to this Core instance; Cloudflare tunnel identity is unavailable without account credentials."
+        : routeReachable
+          ? "The configured host is reachable but does not terminate at this Core instance."
+          : "The configured host could not reach this Core public listener on 127.0.0.1:4010."
+    });
+  });
 });
 
 registerPublicStopRoute(app, {
@@ -22977,7 +23236,17 @@ registerPublicStopRoute(app, {
   stopListener: () => publicServerLifecycle.stop(),
   persistMode: () => setPublicSharingModeOverride("off"),
   setAutoStart: setPublicSharingAutoStart,
-  getStatus: getPublicStatus
+  getStatus: getPublicStatus,
+  getStopBlocker: () => {
+    const status = getPublicStatus();
+    if (status.mode === "named" && status.tunnelState?.ownership === "external-service" && status.tunnelState.connected) {
+      return {
+        code: "EXTERNAL_TUNNEL_CONTROL",
+        message: "This Named Tunnel is managed outside Certifyd. Stop it through the operating-system service manager or Cloudflare."
+      };
+    }
+    return null;
+  }
 });
 
 app.post("/api/public/consent/reset", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -23055,6 +23324,9 @@ app.post("/api/public/named-token/clear", { preHandler: requireAuth }, async (_r
 
 app.post("/api/public/named/disable", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return publicLifecycleMutex.runExclusive(async () => {
+    if (tunnelManager.activeTransport() === "named") {
+      await tunnelManager.stop();
+    }
     setNamedTunnelDisabled(true);
     invalidateNamedRuntimeCaches();
     return reply.send({ ok: true, disabled: true });

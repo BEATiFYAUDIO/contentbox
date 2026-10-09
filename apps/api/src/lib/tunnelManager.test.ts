@@ -44,6 +44,7 @@ test("quick tunnel targets the public listener and stop kills only its owned chi
 
   const started = await manager.startQuick();
   assert.equal(started.status, "ACTIVE");
+  assert.equal(manager.activeTransport(), "quick");
   assert.equal(started.publicOrigin, "https://owned-test.trycloudflare.com");
   assert.deepEqual(spawned, [
     {
@@ -53,6 +54,7 @@ test("quick tunnel targets the public listener and stop kills only its owned chi
   ]);
 
   await manager.stop();
+  assert.equal(manager.activeTransport(), null);
   assert.deepEqual(killed, [ownedPid]);
   assert.equal(killed.includes(unrelatedPid), false);
 
@@ -140,6 +142,7 @@ test("named tunnel startup arguments and owned-child stop behavior remain unchan
       token: "named-token"
     });
     assert.equal(status.status, "ACTIVE");
+    assert.equal(manager.activeTransport(), "named");
     assert.deepEqual(spawned, [
       {
         command: "/mock/cloudflared",
@@ -147,6 +150,7 @@ test("named tunnel startup arguments and owned-child stop behavior remain unchan
       }
     ]);
     await manager.stop();
+    assert.equal(manager.activeTransport(), null);
     assert.deepEqual(killed, [8181]);
   } finally {
     globalThis.fetch = originalFetch;

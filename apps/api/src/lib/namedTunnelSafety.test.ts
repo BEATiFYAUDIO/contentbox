@@ -115,6 +115,47 @@ test("named configuration writes use the shared lifecycle mutex and invalidate r
   assert.match(configRoute, /invalidateNamedRuntimeCaches\(\)/);
 });
 
+test("Named removal is serialized, clears only Named config, and never mutates node posture or external services", () => {
+  const route = serverSource.slice(
+    serverSource.indexOf('app.post("/api/public/named/remove"'),
+    serverSource.indexOf("async function detectConfiguredNamedTunnel")
+  );
+  assert.match(route, /publicLifecycleMutex\.runExclusive/);
+  assert.match(route, /setPublicOriginConfig\(\{ provider: null, domain: null, tunnelName: null, publicOrigin: null \}\)/);
+  assert.match(route, /BASIC_MODE_REQUIRED/);
+  assert.doesNotMatch(route, /writeNodeConfig|writeProductTier|clearNamedTunnelToken|systemctl|launchctl|Win32_Service/);
+});
+
+test("Named verification starts the 4010 listener and requires this Core BOOT_ID", () => {
+  const route = serverSource.slice(
+    serverSource.indexOf('app.post("/api/public/named/verify"'),
+    serverSource.indexOf('registerPublicStopRoute(app')
+  );
+  assert.match(route, /publicServerLifecycle\.ensureStarted/);
+  assert.match(route, /PUBLIC_HTTP_PORT/);
+  assert.match(serverSource, /body\?\.bootId === BOOT_ID/);
+  assert.match(serverSource, /bootId: BOOT_ID/);
+});
+
+test("dedicated Named start cannot fall through to Quick startup", () => {
+  const route = serverSource.slice(
+    serverSource.indexOf('app.post("/api/public/named/start"'),
+    serverSource.indexOf('app.post("/api/public/named/verify"')
+  );
+  assert.match(route, /handleNamedPublicStart/);
+  assert.doesNotMatch(route, /startQuick|quickStartDependencies/);
+});
+
+test("temporary override stops only a Core-owned Named child before Quick can start", () => {
+  const route = serverSource.slice(
+    serverSource.indexOf('app.post("/api/public/named/disable"'),
+    serverSource.indexOf('app.post("/api/public/named/enable"')
+  );
+  assert.match(route, /activeTransport\(\) === "named"/);
+  assert.match(route, /await tunnelManager\.stop\(\)/);
+  assert.doesNotMatch(route, /pkill|taskkill|systemctl|launchctl|Win32_Service/);
+});
+
 test("named list and token commands remain bounded by the native exec timeout", () => {
   const listHelper = serverSource.slice(
     serverSource.indexOf("async function listCloudflaredTunnels"),
