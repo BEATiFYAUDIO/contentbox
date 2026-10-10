@@ -179,6 +179,7 @@ chrome_debug_port=$((runtime_port + 5000))
   --no-default-browser-check \
   --disable-background-networking \
   --remote-debugging-port="$chrome_debug_port" \
+  --remote-allow-origins="http://127.0.0.1:$chrome_debug_port" \
   --user-data-dir="$chrome_profile" \
   --app="http://127.0.0.1:$runtime_port/" \
   >"$data_root/logs/chrome-pwa.log" 2>&1 &

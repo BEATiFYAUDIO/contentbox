@@ -64,6 +64,7 @@ def connect_websocket(url: str) -> socket.socket:
         f"Host: {parsed.netloc}\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
+        f"Origin: http://{parsed.hostname}:{parsed.port or 80}\r\n"
         f"Sec-WebSocket-Key: {key}\r\n"
         "Sec-WebSocket-Version: 13\r\n\r\n"
     )
