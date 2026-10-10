@@ -130,8 +130,6 @@ def main() -> None:
     parser.add_argument("--debug-port", type=int, required=True)
     args = parser.parse_args()
     origin = args.origin.rstrip("/")
-    page = find_page(args.debug_port, origin)
-    sock = connect_websocket(page["webSocketDebuggerUrl"])
     expression = r"""
 (async () => {
   const waitUntil = async (predicate, label) => {
@@ -168,10 +166,19 @@ def main() -> None:
   };
 })()
 """
-    try:
-        result = evaluate(sock, expression)
-    finally:
-        sock.close()
+    result = None
+    for attempt in range(3):
+        page = find_page(args.debug_port, origin)
+        sock = connect_websocket(page["webSocketDebuggerUrl"])
+        try:
+            result = evaluate(sock, expression)
+            break
+        except RuntimeError as error:
+            if "Execution context was destroyed" not in str(error) or attempt == 2:
+                raise
+            time.sleep(1)
+        finally:
+            sock.close()
     expected = {
         "location": origin,
         "secureContext": True,
