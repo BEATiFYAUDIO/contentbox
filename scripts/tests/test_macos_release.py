@@ -15,6 +15,15 @@ from unittest.mock import patch
 SPEC = importlib.util.spec_from_file_location("macos_release", Path(__file__).resolve().parents[1] / "macos-release.py")
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
+PWA_SPEC = importlib.util.spec_from_file_location("validate_pwa_chrome", Path(__file__).resolve().parents[1] / "validate-pwa-chrome.py")
+pwa_validation = importlib.util.module_from_spec(PWA_SPEC)
+PWA_SPEC.loader.exec_module(pwa_validation)
+
+
+class ChromePwaValidation(unittest.TestCase):
+    def test_websocket_target_does_not_add_an_empty_query(self):
+        self.assertEqual(pwa_validation.websocket_request_target("ws://127.0.0.1:9222/devtools/page/abc"), "/devtools/page/abc")
+        self.assertEqual(pwa_validation.websocket_request_target("ws://127.0.0.1:9222/devtools/page/abc?token=1"), "/devtools/page/abc?token=1")
 
 
 class Versions(unittest.TestCase):

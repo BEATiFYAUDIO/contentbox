@@ -55,12 +55,18 @@ def receive_frame(sock: socket.socket) -> tuple[int, bytes]:
     return opcode, payload
 
 
+def websocket_request_target(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed.path + (f"?{parsed.query}" if parsed.query else "")
+
+
 def connect_websocket(url: str) -> socket.socket:
     parsed = urlparse(url)
     sock = socket.create_connection((parsed.hostname, parsed.port or 80), timeout=10)
     key = base64.b64encode(os.urandom(16)).decode()
+    target = websocket_request_target(url)
     request = (
-        f"GET {parsed.path}?{parsed.query} HTTP/1.1\r\n"
+        f"GET {target} HTTP/1.1\r\n"
         f"Host: {parsed.netloc}\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"

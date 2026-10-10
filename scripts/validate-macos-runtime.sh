@@ -96,6 +96,10 @@ dump_runtime_diagnostics() {
     echo "--- certifyd-core.err.log ---"
     tail -n 120 "$data_root/logs/certifyd-core.err.log" || true
   fi
+  if [[ -f "$data_root/logs/chrome-pwa.log" ]]; then
+    echo "--- chrome-pwa.log ---"
+    tail -n 120 "$data_root/logs/chrome-pwa.log" || true
+  fi
 }
 
 run_with_timeout() {
