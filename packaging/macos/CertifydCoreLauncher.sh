@@ -12,11 +12,44 @@ for arg in "$@"; do
   esac
 done
 
-fail() {
+failure_reported=0
+launcher_lock_held=0
+launcher_lock_dir=""
+
+show_launch_failure() {
+  local message="$1"
   if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]]; then
-    osascript -e "display alert \"Certifyd Core\" message \"$*\" as critical" >/dev/null 2>&1 || true
+    osascript - "$message" <<'APPLESCRIPT' >/dev/null 2>&1 || true
+on run argv
+  display alert "Certifyd Core" message (item 1 of argv) as critical
+end run
+APPLESCRIPT
   fi
-  echo "[Certifyd Core] $*" >&2
+  echo "[Certifyd Core] $message" >&2
+}
+
+release_launcher_lock() {
+  if [[ "$launcher_lock_held" -eq 1 && -n "$launcher_lock_dir" ]]; then
+    rm -f "$launcher_lock_dir/owner"
+    rmdir "$launcher_lock_dir" >/dev/null 2>&1 || true
+    launcher_lock_held=0
+  fi
+}
+
+launcher_exit() {
+  local status="$?"
+  set +e
+  release_launcher_lock
+  if [[ "$status" -ne 0 && "$failure_reported" -eq 0 ]]; then
+    show_launch_failure "Core could not start. Logs are in ${log_dir:-~/Library/Application Support/ContentBox/logs}."
+  fi
+  return "$status"
+}
+trap launcher_exit EXIT
+
+fail() {
+  failure_reported=1
+  show_launch_failure "$*"
   exit 1
 }
 
@@ -95,6 +128,40 @@ stdout_log="$log_dir/certifyd-core.out.log"
 stderr_log="$log_dir/certifyd-core.err.log"
 
 mkdir -p "$data_root" "$config_dir" "$state_dir" "$log_dir"
+launcher_lock_dir="$state_dir/launcher.lock"
+
+is_launcher_process() {
+  local pid="$1"
+  local command
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command" == *"CertifydCoreLauncher"* ]]
+}
+
+acquire_launcher_lock() {
+  local deadline owner
+  deadline=$((SECONDS + 120))
+  while (( SECONDS < deadline )); do
+    if mkdir "$launcher_lock_dir" >/dev/null 2>&1; then
+      printf '%s\n' "$$" >"$launcher_lock_dir/owner"
+      launcher_lock_held=1
+      return 0
+    fi
+
+    owner=""
+    if [[ -f "$launcher_lock_dir/owner" ]]; then
+      owner="$(tr -dc '0-9' <"$launcher_lock_dir/owner" || true)"
+    fi
+    if [[ -z "$owner" ]] || ! kill -0 "$owner" >/dev/null 2>&1 || ! is_launcher_process "$owner"; then
+      rm -f "$launcher_lock_dir/owner"
+      rmdir "$launcher_lock_dir" >/dev/null 2>&1 || true
+      continue
+    fi
+    sleep 0.25
+  done
+  fail "Another Certifyd Core launch is still in progress. Try again in a moment."
+}
+
+acquire_launcher_lock
 
 if [[ -f "$env_file" ]]; then
   set -a
@@ -208,8 +275,55 @@ open_dashboard() {
   if [[ "${CERTIFYD_NO_BROWSER:-}" == "1" ]]; then
     return 0
   fi
-  open "$app_url" >/dev/null 2>&1 || true
+  if ! open "$app_url" >/dev/null 2>&1; then
+    fail "Core is running at $app_url, but macOS could not open the dashboard. Open that address in your browser."
+  fi
 }
+
+is_core_process() {
+  local pid="$1"
+  local command
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command" == *"$node_bin"* && "$command" == *"src/server.ts"* ]]
+}
+
+wait_for_core_health() {
+  local seconds="$1"
+  local pid="${2:-}"
+  local deadline
+  deadline=$((SECONDS + seconds))
+  while (( SECONDS < deadline )); do
+    if check_health; then
+      return 0
+    fi
+    if [[ -n "$pid" ]] && { ! kill -0 "$pid" >/dev/null 2>&1 || ! is_core_process "$pid"; }; then
+      return 1
+    fi
+    sleep 0.75
+  done
+  return 1
+}
+
+if check_health; then
+  open_dashboard
+  exit 0
+fi
+
+if [[ -f "$pid_file" ]]; then
+  existing_pid="$(tr -dc '0-9' <"$pid_file" || true)"
+  if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1 && is_core_process "$existing_pid"; then
+    if wait_for_core_health 45 "$existing_pid"; then
+      open_dashboard
+      exit 0
+    fi
+    fail "Core is running but did not become ready. Logs are in $log_dir"
+  fi
+  rm -f "$pid_file"
+fi
+
+if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]]; then
+  osascript -e 'display notification "Starting the local dashboard…" with title "Certifyd Core"' >/dev/null 2>&1 || true
+fi
 
 (
   cd "$api_dir"
@@ -220,17 +334,12 @@ open_dashboard() {
   "$node_bin" "$prisma_cli" db push --schema "$schema_path" --skip-generate
 )
 
+# A concurrent launcher may have completed while this invocation prepared the
+# database. The launcher lock prevents that today; retain this guard so future
+# preparation changes cannot create a second API process.
 if check_health; then
   open_dashboard
   exit 0
-fi
-
-if [[ -f "$pid_file" ]]; then
-  existing_pid="$(tr -dc '0-9' <"$pid_file" || true)"
-  if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
-    open_dashboard
-    exit 0
-  fi
 fi
 
 (
@@ -239,14 +348,15 @@ fi
   echo "$!" >"$pid_file"
 )
 
-deadline=$((SECONDS + 45))
-while (( SECONDS < deadline )); do
-  if check_health; then
-    open_dashboard
-    exit 0
-  fi
-  sleep 0.75
-done
+started_pid="$(tr -dc '0-9' <"$pid_file" || true)"
+if [[ -n "$started_pid" ]] && wait_for_core_health 45 "$started_pid"; then
+  open_dashboard
+  exit 0
+fi
+
+if [[ -n "$started_pid" ]] && ! kill -0 "$started_pid" >/dev/null 2>&1; then
+  rm -f "$pid_file"
+fi
 
 tail -n 80 "$stderr_log" >&2 || true
 fail "Core did not become ready. Logs are in $log_dir"
