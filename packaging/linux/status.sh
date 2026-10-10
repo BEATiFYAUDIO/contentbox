@@ -8,13 +8,20 @@ pid_file="$data_root/state/certifyd-core.pid"
 port="${PORT:-4000}"
 health_url="http://127.0.0.1:$port/health"
 
+is_core_process() {
+  local pid="$1"
+  local command
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command" == *"$node_bin"* && "$command" == *"src/server.ts"* ]]
+}
+
 process_id="none"
 alive="false"
 if [[ -f "$pid_file" ]]; then
   parsed_pid="$(tr -dc '0-9' <"$pid_file" || true)"
   if [[ -n "$parsed_pid" ]]; then
     process_id="$parsed_pid"
-    if kill -0 "$parsed_pid" >/dev/null 2>&1; then
+    if kill -0 "$parsed_pid" >/dev/null 2>&1 && is_core_process "$parsed_pid"; then
       alive="true"
     fi
   fi
