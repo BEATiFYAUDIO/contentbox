@@ -15,7 +15,16 @@ data_root="$(mktemp -d)"
 move_root="$(mktemp -d)"
 attach_output="$(hdiutil attach "$DMG_PATH" -mountpoint "$mount_dir" -nobrowse -readonly)"
 echo "$attach_output"
+chrome_pid=""
+chrome_profile=""
 cleanup() {
+  if [[ -n "$chrome_pid" ]]; then
+    kill "$chrome_pid" >/dev/null 2>&1 || true
+    wait "$chrome_pid" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$chrome_profile" ]]; then
+    rm -rf "$chrome_profile"
+  fi
   if [[ -f "$data_root/state/certifyd-core.pid" ]]; then
     CONTENTBOX_ROOT="$data_root" /bin/bash "$repo_root/packaging/macos/stop.sh" || true
   fi
@@ -140,6 +149,49 @@ signed_integrity_checkpoint after-first-launch "$app"
 run_with_timeout "status after first launch" 30 env CONTENTBOX_ROOT="$data_root" PORT="$runtime_port" "$app/Contents/Resources/status.sh" | tee -a "macos-$target_arch-validation-summary.md"
 "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:$runtime_port/health"
 "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("dashboard", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:$runtime_port/"
+
+first_pid="$(tr -dc '0-9' <"$data_root/state/certifyd-core.pid")"
+test -n "$first_pid"
+kill -0 "$first_pid"
+run_with_timeout "second launch" 60 env CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="$runtime_port" "$app/Contents/MacOS/CertifydCoreLauncher"
+second_pid="$(tr -dc '0-9' <"$data_root/state/certifyd-core.pid")"
+test "$second_pid" = "$first_pid"
+core_process_count="$(ps -ax -o pid=,command= | "$python_bin" -c '
+import os, sys
+node = sys.argv[1]
+rows = []
+for line in sys.stdin:
+    fields = line.strip().split(None, 1)
+    if len(fields) == 2 and int(fields[0]) != os.getpid() and node in fields[1] and "src/server.ts" in fields[1]:
+        rows.append(line)
+print(len(rows))
+' "$node_bin")"
+test "$core_process_count" = "1"
+"$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health-after-second-launch", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:$runtime_port/health"
+
+chrome_bin="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+test -x "$chrome_bin"
+chrome_profile="$(mktemp -d)"
+chrome_debug_port=$((runtime_port + 5000))
+"$chrome_bin" \
+  --headless=new \
+  --no-first-run \
+  --no-default-browser-check \
+  --disable-background-networking \
+  --remote-debugging-port="$chrome_debug_port" \
+  --user-data-dir="$chrome_profile" \
+  --app="http://127.0.0.1:$runtime_port/" \
+  >"$data_root/logs/chrome-pwa.log" 2>&1 &
+chrome_pid="$!"
+"$python_bin" "$repo_root/scripts/validate-pwa-chrome.py" \
+  --origin "http://127.0.0.1:$runtime_port" \
+  --debug-port "$chrome_debug_port" | tee -a "macos-$target_arch-validation-summary.md"
+kill "$chrome_pid" >/dev/null 2>&1 || true
+wait "$chrome_pid" >/dev/null 2>&1 || true
+chrome_pid=""
+rm -rf "$chrome_profile"
+chrome_profile=""
+
 test -f "$data_root/contentbox.db"
 db_hash_before="$(shasum -a 256 "$data_root/contentbox.db" | awk '{print $1}')"
 db_size_before="$(stat -f '%z' "$data_root/contentbox.db")"
@@ -172,6 +224,8 @@ test -f "$data_root/config/api.env"
   echo "Runtime start=PASS"
   echo "Health=PASS"
   echo "Dashboard=PASS"
+  echo "Second launch single-process behavior=PASS"
+  echo "Chrome PWA standalone/live runtime=PASS"
   echo "Stop/status=PASS"
   echo "Restart/persistence=PASS"
   echo "Moved app=PASS"

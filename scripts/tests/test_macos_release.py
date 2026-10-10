@@ -223,7 +223,7 @@ class PrismaLauncher(unittest.TestCase):
             shutil.copyfile(Path(__file__).resolve().parents[2] / 'packaging/macos/CertifydCoreLauncher.sh', launcher)
             node = resources / 'runtime/node/bin/node'; node.parent.mkdir(parents=True)
             node.write_text(f'#!{sys.executable}\n' + '''
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 if sys.argv[1:] == ['-p', 'process.arch']:
     print(os.environ['TEST_NODE_ARCH'])
@@ -231,11 +231,21 @@ elif sys.argv[1].endswith('/prisma/build/index.js'):
     with open(os.environ['TEST_PRISMA_CALLS'], 'a') as f:
         f.write(json.dumps({'args': sys.argv[2:], 'schema': os.environ['PRISMA_SCHEMA_ENGINE_BINARY'],
                             'query': os.environ['PRISMA_QUERY_ENGINE_LIBRARY']}) + '\\n')
-# Health is already ready: the launcher exits before starting a real API.
+elif sys.argv[1] == '-e':
+    sys.exit(0 if Path(os.environ['TEST_HEALTH_MARKER']).exists() else 1)
+elif sys.argv[1:3] == ['--import', 'tsx'] and sys.argv[3:] == ['src/server.ts']:
+    Path(os.environ['TEST_HEALTH_MARKER']).touch()
+    while True:
+        time.sleep(1)
+else:
+    sys.exit(2)
 ''')
             node.chmod(0o755)
             data = root / 'data'; (data / 'config').mkdir(parents=True)
+            (data / 'state').mkdir()
             (data / 'config/api.env').write_text('PRISMA_SCHEMA_ENGINE_BINARY="/stale/schema"\nPRISMA_QUERY_ENGINE_LIBRARY="/stale/query"\n')
+            # A live unrelated PID must never be trusted as the Core process.
+            (data / 'state/certifyd-core.pid').write_text(str(os.getpid()))
             if moved:
                 destination = root / 'Moved Core.app'
                 app.rename(destination)
@@ -243,11 +253,24 @@ elif sys.argv[1].endswith('/prisma/build/index.js'):
             resources = app / 'Contents/Resources'
             engines = resources / 'app/apps/api/node_modules/@prisma/engines'
             calls_file = root / 'calls.jsonl'
+            health_marker = root / 'health-ready'
             env = {**os.environ, 'CONTENTBOX_ROOT': str(data), 'CERTIFYD_NO_BROWSER': '1',
-                   'JWT_SECRET': 'test-only', 'TEST_NODE_ARCH': arch, 'TEST_PRISMA_CALLS': str(calls_file)}
+                   'JWT_SECRET': 'test-only', 'TEST_NODE_ARCH': arch, 'TEST_PRISMA_CALLS': str(calls_file),
+                   'TEST_HEALTH_MARKER': str(health_marker)}
             result = subprocess.run(['bash', str(resources / 'CertifydCoreLauncher.sh')],
                                     env=env, capture_output=True, text=True)
+            first_pid = (data / 'state/certifyd-core.pid').read_text().strip() if (data / 'state/certifyd-core.pid').exists() else ''
+            if result.returncode == 0:
+                second = subprocess.run(['bash', str(resources / 'CertifydCoreLauncher.sh')],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                self.assertEqual((data / 'state/certifyd-core.pid').read_text().strip(), first_pid)
             calls = [json.loads(line) for line in calls_file.read_text().splitlines()] if calls_file.exists() else []
+            if result.returncode == 0 and first_pid.isdigit() and int(first_pid) != os.getpid():
+                try:
+                    os.kill(int(first_pid), 15)
+                except ProcessLookupError:
+                    pass
             return result, calls, str(engines), target
 
     def test_prisma_uses_current_bundled_engines_for_both_architectures_and_after_move(self):
@@ -263,6 +286,15 @@ elif sys.argv[1].endswith('/prisma/build/index.js'):
                     for call in calls:
                         self.assertEqual(call['schema'], f'{engines}/schema-engine-{target}')
                         self.assertEqual(call['query'], f'{engines}/libquery_engine-{target}.dylib.node')
+
+    def test_launcher_serializes_startup_and_validates_process_identity(self):
+        source = (Path(__file__).resolve().parents[2] / 'packaging/macos/CertifydCoreLauncher.sh').read_text()
+        self.assertIn('launcher.lock', source)
+        self.assertIn('is_launcher_process', source)
+        self.assertIn('is_core_process', source)
+        self.assertIn('ps -p "$pid" -o command=', source)
+        self.assertIn('wait_for_core_health 45 "$started_pid"', source)
+        self.assertNotIn('open "$app_url" >/dev/null 2>&1 || true', source)
 
     def test_missing_bundled_engine_fails_before_prisma_can_download(self):
         for missing in ['schema', 'query']:
