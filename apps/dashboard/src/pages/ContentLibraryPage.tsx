@@ -321,9 +321,21 @@ type ParentLinkInfo = {
 type UploadState =
   | { status: "idle" }
   | { status: "preparing"; kind: "content" | "cover"; contentId: string; filename: string }
-  | { status: "uploading"; kind: "content" | "cover"; contentId: string; filename: string }
+  | {
+      status: "uploading";
+      kind: "content" | "cover";
+      contentId: string;
+      filename: string;
+      progressPercent: number | null;
+    }
+  | { status: "saving"; kind: "content" | "cover"; contentId: string; filename: string }
   | { status: "done"; kind: "content" | "cover"; contentId: string; filename: string }
   | { status: "error"; kind: "content" | "cover"; contentId: string; message: string };
+
+type UploadProgressHandlers = {
+  onProgress: (progressPercent: number | null) => void;
+  onTransferComplete: () => void;
+};
 
 function visibilityLabel(status: "DISABLED" | "UNLISTED" | "LISTED"): string {
   if (status === "LISTED") return "Discoverable";
@@ -372,7 +384,54 @@ function mediaTypeMismatchNotice(contentType: string, mime: string): string | nu
   return null;
 }
 
-async function uploadToRepo(contentId: string, file: File, idempotencyKey: string) {
+export function uploadMultipart(
+  url: string,
+  token: string,
+  idempotencyKey: string,
+  form: FormData,
+  progress: UploadProgressHandlers
+): Promise<{ ok: boolean; status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let transferComplete = false;
+    const notifyTransferComplete = () => {
+      if (transferComplete) return;
+      transferComplete = true;
+      progress.onTransferComplete();
+    };
+
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.setRequestHeader("x-idempotency-key", idempotencyKey);
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) {
+        progress.onProgress(null);
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      progress.onProgress(percent);
+    };
+    xhr.upload.onload = notifyTransferComplete;
+    xhr.onload = () => {
+      notifyTransferComplete();
+      resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        text: xhr.responseText || ""
+      });
+    };
+    xhr.onerror = () => reject(new Error("Media could not be saved. Try again."));
+    xhr.onabort = () => reject(new Error("Media could not be saved. Try again."));
+    xhr.send(form);
+  });
+}
+
+async function uploadToRepo(
+  contentId: string,
+  file: File,
+  idempotencyKey: string,
+  progress: UploadProgressHandlers
+) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
 
@@ -382,13 +441,9 @@ async function uploadToRepo(contentId: string, file: File, idempotencyKey: strin
   form.append("file", file);
 
   console.info("content.upload.request.start", { contentId, filename: file.name, size: file.size, type: file.type });
-  const res = await fetch(`${base}/content/${contentId}/files`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
-    body: form
-  });
+  const res = await uploadMultipart(`${base}/content/${contentId}/files`, token, idempotencyKey, form, progress);
 
-  const text = await res.text();
+  const text = res.text;
   let json: any = null;
   try {
     json = text ? JSON.parse(text) : null;
@@ -409,7 +464,7 @@ async function uploadToRepo(contentId: string, file: File, idempotencyKey: strin
   return json;
 }
 
-async function uploadSongCover(contentId: string, file: File) {
+async function uploadSongCover(contentId: string, file: File, progress: UploadProgressHandlers) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
   const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -425,12 +480,8 @@ async function uploadSongCover(contentId: string, file: File) {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await fetch(`${base}/content/${contentId}/cover`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
-    body: form
-  });
-  const text = await res.text();
+  const res = await uploadMultipart(`${base}/content/${contentId}/cover`, token, idempotencyKey, form, progress);
+  const text = res.text;
   let json: any = null;
   try {
     json = text ? JSON.parse(text) : null;
@@ -440,6 +491,9 @@ async function uploadSongCover(contentId: string, file: File) {
     const code = json?.code ? ` (${json.code})` : "";
     const msg = `${json?.error || json?.message || text || `Media could not be saved. Try again. (${res.status})`}${code}`;
     throw new Error(msg);
+  }
+  if (!json?.ok || !json?.coverObjectKey || !json?.manifestSha256) {
+    throw new Error("Upload response did not confirm a persisted cover.");
   }
   return json;
 }
@@ -585,6 +639,8 @@ export default function ContentLibraryPage({
   const [creating, setCreating] = React.useState(false);
 
   const [upload, setUpload] = React.useState<UploadState>({ status: "idle" });
+  const uploadSubmissionRef = React.useRef(false);
+  const uploadBusy = upload.status === "preparing" || upload.status === "uploading" || upload.status === "saving";
 
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [filesByContent, setFilesByContent] = React.useState<Record<string, ContentFile[]>>({});
@@ -772,7 +828,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     trashMode: boolean = showTrash,
     tombstoneMode: boolean = showTombstones,
     originFilter: AssetOriginFilter = assetOriginFilter
-  ) {
+  ): Promise<boolean> {
     const requestId = ++loadRequestRef.current;
     const isCurrent = () => requestId === loadRequestRef.current;
     setLoading(true);
@@ -806,8 +862,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         return !deleted;
       });
       if (!Array.isArray(data)) {
-        if (!isCurrent()) return;
+        if (!isCurrent()) return false;
         setError("Failed to load content (unexpected response)");
+        return false;
       }
       let mergedList: ContentItem[] = list;
 
@@ -977,7 +1034,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         mergedList = eligible;
       }
 
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       setParticipationByContentId(nextParticipationByContentId);
       setItems(mergedList);
       setPriceDraft((prev) => {
@@ -1010,13 +1067,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         setExpanded((m) => ({ ...m, [pendingOpenContentId]: true }));
         setPendingOpenContentId(null);
       }
+      return true;
     } catch (e: any) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       const msg = String(e?.message || "Failed to load content");
       setError(msg.includes("INVALID_TYPE") ? "Invalid library type filter." : msg);
+      return false;
     } finally {
-      if (!isCurrent()) return;
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }
 
@@ -2357,17 +2415,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     label?: string;
   }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
-    const busy =
-      (upload.status === "preparing" || upload.status === "uploading") &&
-      upload.kind === "content" &&
-      upload.contentId === contentId;
+    const active = uploadBusy && upload.kind === "content" && upload.contentId === contentId;
     const err = upload.status === "error" && upload.kind === "content" && upload.contentId === contentId;
     const authReady = Boolean(getToken());
-    const triggerDisabled = Boolean(disabled || busy || !authReady);
+    const triggerDisabled = Boolean(disabled || uploadBusy || !authReady);
 
     const onFileSelected = React.useCallback(
       async (file?: File) => {
-        if (!file) return;
+        if (!file || uploadSubmissionRef.current) return;
+        uploadSubmissionRef.current = true;
 
         setError(null);
         setLocalPreviewUrlByContent((prev) => {
@@ -2385,8 +2441,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         const idempotencyKey = uploadIdempotencyKey(contentId, file);
 
         try {
-          setUpload({ status: "uploading", kind: "content", contentId, filename: file.name });
-          const uploaded = await uploadToRepo(contentId, file, idempotencyKey);
+          setUpload({ status: "uploading", kind: "content", contentId, filename: file.name, progressPercent: null });
+          const uploaded = await uploadToRepo(contentId, file, idempotencyKey, {
+            onProgress: (progressPercent) =>
+              setUpload({ status: "uploading", kind: "content", contentId, filename: file.name, progressPercent }),
+            onTransferComplete: () => setUpload({ status: "saving", kind: "content", contentId, filename: file.name })
+          });
 
           await load();
 
@@ -2409,9 +2469,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           setUpload({ status: "done", kind: "content", contentId, filename: file.name });
         } catch (err: any) {
           setUpload({ status: "error", kind: "content", contentId, message: uploadErrorMessage(err) });
+        } finally {
+          uploadSubmissionRef.current = false;
         }
       },
-      [authReady, busy, contentId]
+      [contentId]
     );
 
     return (
@@ -2446,11 +2508,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
           title={triggerDisabled ? "Save unavailable" : "Save media into this content repo and commit"}
         >
-          {upload.status === "preparing" && upload.kind === "content" && upload.contentId === contentId
-            ? "Preparing your media…"
-            : busy
-              ? "Preparing your media…"
-              : label}
+          {active && upload.status === "uploading"
+            ? upload.progressPercent === null
+              ? "Uploading…"
+              : `Uploading ${upload.progressPercent}%`
+            : active && upload.status === "saving"
+              ? "Saving…"
+              : active
+                ? "Preparing your media…"
+                : label}
         </button>
         {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to save media</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Media could not be saved. Try again.</span> : null}
@@ -2468,16 +2534,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     label?: string;
   }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
-    const busy =
-      (upload.status === "preparing" || upload.status === "uploading") &&
-      upload.kind === "cover" &&
-      upload.contentId === contentId;
+    const active = uploadBusy && upload.kind === "cover" && upload.contentId === contentId;
     const authReady = Boolean(getToken());
-    const triggerDisabled = Boolean(disabled || busy || !authReady);
+    const triggerDisabled = Boolean(disabled || uploadBusy || !authReady);
 
     const onCoverSelected = React.useCallback(
       async (file?: File) => {
-        if (!file) return;
+        if (!file || uploadSubmissionRef.current) return;
+        uploadSubmissionRef.current = true;
 
         setError(null);
         setLocalCoverUrlByContent((prev) => {
@@ -2493,14 +2557,23 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         });
         setUpload({ status: "preparing", kind: "cover", contentId, filename: file.name });
         try {
-          setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name });
-          const uploaded = await uploadSongCover(contentId, file);
-          setUpload({ status: "done", kind: "cover", contentId, filename: file.name });
+          setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name, progressPercent: null });
+          const uploaded = await uploadSongCover(contentId, file, {
+            onProgress: (progressPercent) =>
+              setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name, progressPercent }),
+            onTransferComplete: () => setUpload({ status: "saving", kind: "cover", contentId, filename: file.name })
+          });
           const manifestSha = String(uploaded?.manifestSha256 || "").trim();
           setCoverCacheBustByContent((m) => ({ ...m, [contentId]: manifestSha || String(Date.now()) }));
-          await load();
-        } catch {
-          setUpload({ status: "error", kind: "cover", contentId, message: "Media could not be saved. Try again." });
+          const refreshed = await load();
+          if (!refreshed) {
+            throw new Error("Media saved, but the refreshed library could not be loaded. Refresh the page and check again.");
+          }
+          setUpload({ status: "done", kind: "cover", contentId, filename: file.name });
+        } catch (err: any) {
+          setUpload({ status: "error", kind: "cover", contentId, message: uploadErrorMessage(err) });
+        } finally {
+          uploadSubmissionRef.current = false;
         }
       },
       [contentId]
@@ -2539,7 +2612,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
           title={triggerDisabled ? "Cover save unavailable" : "Save album cover (jpg, png, webp)"}
         >
-          {busy ? "Saving image…" : label}
+          {active && upload.status === "uploading"
+            ? upload.progressPercent === null
+              ? "Uploading…"
+              : `Uploading ${upload.progressPercent}%`
+            : active && upload.status === "saving"
+              ? "Saving…"
+              : active
+                ? "Preparing image…"
+                : label}
         </button>
       </div>
     );
@@ -2664,11 +2745,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         <div className="rounded-lg border border-red-900 bg-red-950/50 text-red-200 px-3 py-2 text-sm">{error}</div>
       )}
 
-      {(upload.status === "preparing" || upload.status === "uploading") && (
+      {(upload.status === "preparing" || upload.status === "uploading" || upload.status === "saving") && (
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/30 text-neutral-200 px-3 py-2 text-sm">
           {upload.status === "preparing"
-            ? `${upload.kind === "cover" ? "Saving image" : "Preparing your media"}… ${upload.filename}`
-            : `${upload.kind === "cover" ? "Saving image" : "Preparing your media"}… ${upload.filename}`}
+            ? `${upload.kind === "cover" ? "Preparing image" : "Preparing your media"}… ${upload.filename}`
+            : upload.status === "uploading"
+              ? `${upload.progressPercent === null ? "Uploading" : `Uploading ${upload.progressPercent}%`} — ${upload.filename}`
+              : "Saving and verifying your media… This may take a while for large videos."}
         </div>
       )}
 
@@ -2690,7 +2773,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       {upload.status === "done" && (
         <div className="rounded-lg border border-emerald-900 bg-emerald-950/30 text-emerald-200 px-3 py-2 text-sm">
           <div className="flex items-center justify-between gap-2">
-            <span>Media saved and ready.</span>
+            <span>Saved successfully</span>
             <button
               type="button"
               onClick={() => setUpload({ status: "idle" })}
