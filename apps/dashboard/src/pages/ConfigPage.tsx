@@ -369,7 +369,7 @@ export default function ConfigPage({
       "",
       `timestamp: ${checkedAt}`
     ].join("\n");
-    const baseIssueUrl = "https://github.com/BEATiFYAUDIO/certifyd-fan-pwa/issues/new";
+    const baseIssueUrl = "https://github.com/BEATiFYAUDIO/certifyd-network-requests/issues/new";
     const fullUrl = `${baseIssueUrl}?title=${encodeURIComponent(issueTitle)}&body=${encodeURIComponent(issueBody)}`;
 
     if (fullUrl.length <= 1900) {

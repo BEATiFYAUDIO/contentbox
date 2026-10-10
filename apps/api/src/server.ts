@@ -35223,6 +35223,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   }
   const safeAvatarUrl = avatarSrc ? escHtml(avatarSrc) : "";
+  const creatorProfileBrowserTitle = asString(user.displayName || "").trim() || "Certifyd Creator Profile";
   const safeHandle = escHtml(`@${requested}`);
   const safeNodeUrl = escHtml(nodeUrl);
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
@@ -36188,7 +36189,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   })();
   const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
-  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.svg?v=20260601d";
+  const creatorProfileFaviconHref = safeAvatarUrl || safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.svg?v=20260601d";
 
   const profileMarkupStartMs = Date.now();
   const html = `<!doctype html>
@@ -36196,9 +36197,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Certifyd Creator Profile</title>
-  <link rel="icon" type="image/svg+xml" href="${creatorProfileFaviconHref}" />
-  <link rel="shortcut icon" type="image/svg+xml" href="${creatorProfileFaviconHref}" />
+  <title>${escHtml(creatorProfileBrowserTitle)}</title>
+  <link rel="icon" href="${creatorProfileFaviconHref}" />
+  <link rel="shortcut icon" href="${creatorProfileFaviconHref}" />
   <link rel="apple-touch-icon" href="${creatorProfileFaviconHref}" />
   <style>
     :root {
@@ -37921,8 +37922,12 @@ async function handleBuyPage(req: any, reply: any) {
     canonicalOrigin,
     `/oembed?url=${encodeURIComponent(canonicalBuyUrl || `/buy/${encodeURIComponent(content.id)}`)}`
   );
-  const initialMetaTitle = `${content.title || "Certifyd work"} · Certifyd`;
+  const workTitle = content.title || "Certifyd work";
+  const creatorName = sellerDisplayName || "Certifyd creator";
+  const browserTitle = `${workTitle} — ${creatorName}`;
+  const socialTitle = workTitle;
   const initialMetaDescription = content.description || `${sellerDisplayName || "A Certifyd creator"} work on Certifyd.`;
+  const buyPageFaviconHref = sellerAvatarUrl || "/certifyd-tab-icon.svg?v=20260601d";
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -37930,18 +37935,19 @@ async function handleBuyPage(req: any, reply: any) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="${escHtml(initialMetaDescription)}" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="${escHtml(initialMetaTitle)}" />
+  <meta property="og:title" content="${escHtml(socialTitle)}" />
   <meta property="og:description" content="${escHtml(initialMetaDescription)}" />
   <meta property="og:url" content="${escHtml(canonicalBuyUrl)}" />
   <meta property="og:image" content="${escHtml(buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`))}" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="${escHtml(initialMetaTitle)}" />
+  <meta name="twitter:title" content="${escHtml(socialTitle)}" />
   <meta name="twitter:description" content="${escHtml(initialMetaDescription)}" />
   <meta name="twitter:image" content="${escHtml(buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`))}" />
-  <link rel="alternate" type="application/json+oembed" href="${escHtml(oembedUrl)}" title="${escHtml(initialMetaTitle)}" />
-  <link rel="icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
-  <link rel="shortcut icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
-  <title>${escHtml(initialMetaTitle)}</title>
+  <link rel="alternate" type="application/json+oembed" href="${escHtml(oembedUrl)}" title="${escHtml(socialTitle)}" />
+  <link rel="icon" href="${escHtml(buyPageFaviconHref)}" />
+  <link rel="shortcut icon" href="${escHtml(buyPageFaviconHref)}" />
+  <link rel="apple-touch-icon" href="${escHtml(buyPageFaviconHref)}" />
+  <title>${escHtml(browserTitle)}</title>
   <style>
     :root { color-scheme: dark; ${ownerAppearance.css} }
     * { box-sizing: border-box; }
