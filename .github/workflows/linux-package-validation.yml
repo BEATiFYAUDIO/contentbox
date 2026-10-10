@@ -132,24 +132,68 @@ jobs:
           file "$node_bin" | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
           find "$app/apps/api/node_modules/@prisma/engines" -maxdepth 1 -type f -printf '%f\n' | sort | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
 
-          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/start.sh"
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/start.sh"
           CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/status.sh" | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
           "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/health"
           "$node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("dashboard", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/"
+          "$node_bin" -e '
+            const http=require("http");
+            const paths=["/","/manifest.json","/service-worker.js"];
+            Promise.all(paths.map(path => new Promise((resolve,reject) => {
+              http.get(`http://127.0.0.1:${process.argv[1]}${path}`, res => {
+                res.resume();
+                res.on("end", () => res.statusCode === 200 && res.headers["cache-control"] === "no-store"
+                  ? resolve(null)
+                  : reject(new Error(`${path} status=${res.statusCode} cache-control=${res.headers["cache-control"]}`)));
+              }).on("error", reject);
+            }))).then(() => console.log("PWA live/no-store responses PASS"), error => { console.error(error.message); process.exit(1); });
+          ' "${{ matrix.port }}"
+
+          first_pid="$(tr -dc '0-9' <"$data_root/state/certifyd-core.pid")"
+          test -n "$first_pid"
+          kill -0 "$first_pid"
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/start.sh"
+          second_pid="$(tr -dc '0-9' <"$data_root/state/certifyd-core.pid")"
+          test "$second_pid" = "$first_pid"
+          core_process_count="$(ps -ax -o pid=,command= | python3 -c '
+          import os, sys
+          node = sys.argv[1]
+          rows = []
+          for line in sys.stdin:
+              fields = line.strip().split(None, 1)
+              if len(fields) == 2 and int(fields[0]) != os.getpid() and node in fields[1] and "src/server.ts" in fields[1]:
+                  rows.append(line)
+          print(len(rows))
+          ' "$node_bin")"
+          test "$core_process_count" = "1"
+
+          desktop_root="$(mktemp -d)"
+          XDG_DATA_HOME="$desktop_root" "$app/install-desktop.sh"
+          grep -Fq "Exec=\"$app/start.sh\"" "$desktop_root/applications/certifyd-core.desktop"
+          grep -Fq "Exec=\"$app/start.sh\" --lan" "$desktop_root/applications/certifyd-core-lan.desktop"
           test -f "$data_root/contentbox.db"
           db_hash_before="$(sha256sum "$data_root/contentbox.db" | awk '{print $1}')"
           db_size_before="$(stat -c '%s' "$data_root/contentbox.db")"
 
           CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/stop.sh"
-          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/start.sh"
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/start.sh"
           db_hash_restart="$(sha256sum "$data_root/contentbox.db" | awk '{print $1}')"
           CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/stop.sh"
-          mv "$app" "$move_root/$(basename "$app")"
-          moved_app="$move_root/$(basename "$app")"
+          moved_parent="$move_root/Installed Applications"
+          mkdir -p "$moved_parent"
+          mv "$app" "$moved_parent/$(basename "$app")"
+          moved_app="$moved_parent/$(basename "$app")"
           moved_node_bin="$moved_app/runtime/node/bin/node"
-          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/start.sh"
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/start.sh"
           "$moved_node_bin" -e 'const http=require("http"); http.get(process.argv[1], res => { console.log("health-after-move", res.statusCode); res.resume(); res.on("end",()=>process.exit(res.statusCode===200?0:1)); }).on("error", err => { console.error(err.message); process.exit(1); });' "http://127.0.0.1:${{ matrix.port }}/health"
           CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/stop.sh"
+          printf '%s\n' "$$" >"$data_root/state/certifyd-core.pid"
+          status_output="$(CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/status.sh")"
+          echo "$status_output"
+          grep -q 'Alive:  false' <<<"$status_output"
+          CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$moved_app/stop.sh"
+          kill -0 "$$"
+          test ! -f "$data_root/state/certifyd-core.pid"
           db_hash_after="$(sha256sum "$data_root/contentbox.db" | awk '{print $1}')"
           db_size_after="$(stat -c '%s' "$data_root/contentbox.db")"
           test "$db_hash_before" = "$db_hash_restart"
@@ -159,6 +203,10 @@ jobs:
             echo "Runtime start=PASS"
             echo "Health=PASS"
             echo "Dashboard=PASS"
+            echo "PWA live/no-store responses=PASS"
+            echo "Second launch single-process behavior=PASS"
+            echo "Stale PID ownership safety=PASS"
+            echo "Desktop entries with quoted paths=PASS"
             echo "Stop/status=PASS"
             echo "Restart/persistence=PASS"
             echo "Moved package=PASS"

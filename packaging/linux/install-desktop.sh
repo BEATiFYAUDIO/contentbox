@@ -13,7 +13,7 @@ cat >"$desktop_file" <<EOF
 Type=Application
 Name=Certifyd Core
 Comment=Launch Certifyd Core local dashboard
-Exec=$script_dir/start.sh
+Exec="$script_dir/start.sh"
 Icon=$icon_path
 Terminal=false
 Categories=Utility;
@@ -27,7 +27,7 @@ cat >"$lan_desktop_file" <<EOF
 Type=Application
 Name=Certifyd Core (LAN Access)
 Comment=Launch Certifyd Core for access from devices on your local network
-Exec=$script_dir/start.sh --lan
+Exec="$script_dir/start.sh" --lan
 Icon=$icon_path
 Terminal=false
 Categories=Utility;
