@@ -29,15 +29,19 @@ test("Windows installed launcher gives visible failures and serializes repeated 
 
 test("Windows installed launcher avoids duplicate initialization and opens only a healthy dashboard", () => {
   const firstHealth = launcher.indexOf("if (Test-Health)");
-  const startingNotice = launcher.indexOf("Show-StartingNotice", firstHealth);
+  const startupFeedback = launcher.indexOf('Set-LauncherStatus "Validating local data…"', firstHealth);
   const prismaValidate = launcher.indexOf("Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, \"validate\"");
 
   assert.ok(firstHealth >= 0, "launcher must check an existing healthy Core");
   assert.ok(prismaValidate > firstHealth, "healthy repeat launch must bypass Prisma and process startup");
-  assert.ok(startingNotice > firstHealth && startingNotice < prismaValidate, "cold startup must show feedback before Prisma work");
+  assert.ok(startupFeedback > firstHealth && startupFeedback < prismaValidate, "cold startup must show feedback before Prisma work");
   assert.equal((launcher.match(/-ArgumentList @\(\"--import\", \"tsx\", \"src\/server\.ts\"\)/g) || []).length, 1);
-  assert.match(launcher, /if \(Wait-ForCoreHealth 45 \$process\) \{\s*Open-Dashboard/);
+  assert.match(launcher, /if \(Wait-ForCoreHealth 45 \$process\) \{\s*Set-LauncherStatus[^\n]+\s*Open-Dashboard/);
   assert.match(launcher, /CERTIFYD_NO_BROWSER/);
+  assert.match(launcher, /function Start-LauncherSplash/);
+  assert.match(launcher, /assets\\certifyd-core\.png/);
+  assert.match(launcher, /Retry/);
+  assert.match(launcher, /View Logs/);
   assert.doesNotMatch(launcher, /cloudflared|taskkill\.exe|Stop-Service|Restart-Service/i);
 });
 
@@ -52,6 +56,9 @@ test("Linux packaged launcher serializes startup, validates process identity, an
   assert.match(linuxLauncher, /ps -p "\$pid" -o command=/);
   assert.match(linuxLauncher, /wait_for_core_health 45 "\$started_pid"/);
   assert.match(linuxLauncher, /CERTIFYD_NO_BROWSER/);
+  assert.match(linuxLauncher, /zenity --progress --pulsate/);
+  assert.match(linuxLauncher, /--ok-label="Retry" --cancel-label="View Logs"/);
+  assert.match(linuxLauncher, /assets\/certifyd-core\.png/);
   assert.ok(firstHealth >= 0, "launcher must check an existing healthy Core");
   assert.ok(prismaValidate > firstHealth, "healthy repeat launch must bypass Prisma and process startup");
   assert.equal((linuxLauncher.match(/nohup "\$node_bin" --import tsx src\/server\.ts/g) || []).length, 1);
