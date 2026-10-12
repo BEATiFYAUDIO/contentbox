@@ -305,6 +305,21 @@ else:
         self.assertIn('wait_for_core_health 45 "$started_pid"', source)
         self.assertNotIn('open "$app_url" >/dev/null 2>&1 || true', source)
 
+    def test_native_launcher_uses_branded_status_window_and_headless_ci_path(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / 'packaging/macos/CertifydCoreLauncher.c').read_text()
+        build = (root / 'scripts/build-macos-package.sh').read_text()
+        shell = (root / 'packaging/macos/CertifydCoreLauncher.sh').read_text()
+        self.assertIn('#import <Cocoa/Cocoa.h>', source)
+        self.assertIn('assets/certifyd-core.png', source)
+        self.assertIn('@"Retry"', source)
+        self.assertIn('@"View Logs"', source)
+        self.assertIn('CERTIFYD_LAUNCHER_NO_UI', source)
+        self.assertIn('CERTIFYD_SPLASH_STATUS_FILE', source)
+        self.assertIn('-framework Cocoa', build)
+        self.assertIn('set_launcher_status "Validating local data…"', shell)
+        self.assertIn('set_launcher_status "Waiting for the dashboard to become ready…"', shell)
+
     def test_missing_bundled_engine_fails_before_prisma_can_download(self):
         for missing in ['schema', 'query']:
             with self.subTest(missing=missing):
@@ -314,7 +329,7 @@ else:
                 self.assertEqual(calls, [])
 
 
-@unittest.skipUnless(shutil.which('cc'), 'C compiler required')
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'), 'native macOS compiler required')
 class Launcher(unittest.TestCase):
     def test_path_arguments_and_move(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -325,17 +340,11 @@ class Launcher(unittest.TestCase):
             script = resources / 'CertifydCoreLauncher.sh'
             script.write_text('printf "%s\\n" "$@"\n')
             source = Path(__file__).resolve().parents[2] / 'packaging/macos/CertifydCoreLauncher.c'
-            args = ['cc', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(macos / 'CertifydCoreLauncher')]
-            if sys.platform != 'darwin':
-                # Test path/exec/argument handling on Linux; not a Mach-O build test.
-                include = root / 'mach-o'; include.mkdir()
-                (include / 'dyld.h').write_text('#include <stdint.h>\nint _NSGetExecutablePath(char *, uint32_t *);\n')
-                stub = root / 'dyld.c'
-                stub.write_text('#include <stdint.h>\n#include <unistd.h>\nint _NSGetExecutablePath(char *p,uint32_t *s){ssize_t n=readlink("/proc/self/exe",p,*s-1);if(n<0)return -1;p[n]=0;return 0;}\n')
-                args += ['-I', str(root), str(stub)]
+            args = ['xcrun', 'clang', '-x', 'objective-c', '-fobjc-arc', '-fblocks', '-framework', 'Cocoa',
+                    '-Wall', '-Wextra', '-Werror', str(source), '-o', str(macos / 'CertifydCoreLauncher')]
             subprocess.run(args, check=True, capture_output=True)
             injected = root / 'injected.sh'; injected.write_text('exit 42\n')
-            env = {**os.environ, 'BASH_ENV': str(injected)}
+            env = {**os.environ, 'BASH_ENV': str(injected), 'CERTIFYD_LAUNCHER_NO_UI': '1'}
             for location in [app, root / 'Moved Core.app']:
                 if location != app:
                     app.rename(location)

@@ -119,7 +119,8 @@ done
 cp "$repo_root/packaging/macos/CertifydCoreLauncher.sh" "$resources_dir/CertifydCoreLauncher.sh"
 launcher_arch="$target_arch"
 if [[ "$target_arch" == "x64" ]]; then launcher_arch="x86_64"; fi
-xcrun clang -arch "$launcher_arch" -mmacosx-version-min=12.0 -Os -Wall -Wextra -Werror \
+xcrun clang -x objective-c -fobjc-arc -fblocks -framework Cocoa \
+  -arch "$launcher_arch" -mmacosx-version-min=12.0 -Os -Wall -Wextra -Werror \
   "$repo_root/packaging/macos/CertifydCoreLauncher.c" -o "$macos_dir/CertifydCoreLauncher"
 cp "$repo_root/packaging/macos/stop.sh" "$resources_dir/stop.sh"
 cp "$repo_root/packaging/macos/status.sh" "$resources_dir/status.sh"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ORIGINAL_ARGS=("$@")
 LAN_MODE=0
 for arg in "$@"; do
   case "$arg" in
@@ -15,9 +16,58 @@ done
 failure_reported=0
 launcher_lock_held=0
 launcher_lock_dir=""
+splash_fd=""
+splash_pid=""
+
+start_launcher_splash() {
+  if [[ "${CI:-}" == "true" || "${CERTIFYD_LAUNCHER_NO_UI:-}" == "1" || "${CERTIFYD_NO_BROWSER:-}" == "1" ]]; then
+    return 0
+  fi
+  if command -v zenity >/dev/null 2>&1 && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    coproc CERTIFYD_SPLASH {
+      zenity --progress --pulsate --auto-close --no-cancel \
+        --title="Certifyd Core" \
+        --text="Preparing the local dashboard…" \
+        --width=420 \
+        --window-icon="$script_dir/assets/certifyd-core.png" 2>/dev/null
+    }
+    splash_fd="${CERTIFYD_SPLASH[1]}"
+    splash_pid="$CERTIFYD_SPLASH_PID"
+  fi
+}
+
+set_launcher_status() {
+  local message="$1"
+  echo "[Certifyd Core] $message"
+  if [[ -n "$splash_fd" ]]; then
+    printf '# %s\n' "$message" >&"$splash_fd" 2>/dev/null || true
+  fi
+}
+
+close_launcher_splash() {
+  if [[ -n "$splash_fd" ]]; then
+    exec {splash_fd}>&- 2>/dev/null || true
+    splash_fd=""
+  fi
+  if [[ -n "$splash_pid" ]]; then
+    wait "$splash_pid" 2>/dev/null || true
+    splash_pid=""
+  fi
+}
 
 show_launch_failure() {
   local message="$1"
+  close_launcher_splash
+  if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]] && command -v zenity >/dev/null 2>&1 && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    if zenity --question --title="Certifyd Core" \
+      --text="Core could not start.\n\n$message\n\nLogs: ${log_dir:-$HOME/.local/share/contentbox/logs}" \
+      --ok-label="Retry" --cancel-label="View Logs" \
+      --window-icon="$script_dir/assets/certifyd-core.png" 2>/dev/null; then
+      nohup "$0" "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
+    elif command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "${log_dir:-$HOME/.local/share/contentbox/logs}" >/dev/null 2>&1 || true
+    fi
+  fi
   if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]] && command -v notify-send >/dev/null 2>&1; then
     notify-send --urgency=critical "Certifyd Core" "$message" >/dev/null 2>&1 || true
   fi
@@ -111,6 +161,8 @@ detect_lan_hosts() {
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+start_launcher_splash
+set_launcher_status "Checking the local runtime…"
 app_dir="$script_dir"
 node_bin="$app_dir/runtime/node/bin/node"
 api_dir="$app_dir/apps/api"
@@ -305,15 +357,20 @@ wait_for_core_health() {
 }
 
 if check_health; then
+  set_launcher_status "Core is already running. Opening the dashboard…"
   open_browser
+  close_launcher_splash
   exit 0
 fi
 
 if [[ -f "$pid_file" ]]; then
   existing_pid="$(tr -dc '0-9' <"$pid_file" || true)"
   if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1 && is_core_process "$existing_pid"; then
+    set_launcher_status "Waiting for the existing Core process…"
     if wait_for_core_health 45 "$existing_pid"; then
+      set_launcher_status "Core is ready. Opening the dashboard…"
       open_browser
+      close_launcher_splash
       exit 0
     fi
     fail "Core is running but did not become ready. Logs are in $log_dir"
@@ -325,20 +382,26 @@ if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]] && command -v notify-send >/dev/null 
   notify-send "Certifyd Core" "Starting the local dashboard…" >/dev/null 2>&1 || true
 fi
 
+set_launcher_status "Validating local data…"
 (
   cd "$api_dir"
   "$node_bin" "$prisma_cli" validate --schema "$schema_path"
   if [[ ! -d "$api_dir/node_modules/.prisma/client" ]]; then
+    set_launcher_status "Preparing the local database client…"
     "$node_bin" "$prisma_cli" generate --schema "$schema_path"
   fi
+  set_launcher_status "Applying local database updates…"
   "$node_bin" "$prisma_cli" db push --schema "$schema_path" --skip-generate
 )
 
 if check_health; then
+  set_launcher_status "Core became ready while preparing. Opening the dashboard…"
   open_browser
+  close_launcher_splash
   exit 0
 fi
 
+set_launcher_status "Starting the Certifyd Core service…"
 (
   cd "$api_dir"
   nohup "$node_bin" --import tsx src/server.ts >"$stdout_log" 2>"$stderr_log" &
@@ -346,8 +409,11 @@ fi
 )
 
 started_pid="$(tr -dc '0-9' <"$pid_file" || true)"
+set_launcher_status "Waiting for the dashboard to become ready…"
 if [[ -n "$started_pid" ]] && wait_for_core_health 45 "$started_pid"; then
+  set_launcher_status "Core is ready. Opening the dashboard…"
   open_browser
+  close_launcher_splash
   exit 0
 fi
 

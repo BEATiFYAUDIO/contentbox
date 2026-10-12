@@ -16,9 +16,18 @@ failure_reported=0
 launcher_lock_held=0
 launcher_lock_dir=""
 
+set_launcher_status() {
+  local message="$1"
+  echo "[Certifyd Core] $message"
+  if [[ -n "${CERTIFYD_SPLASH_STATUS_FILE:-}" ]]; then
+    printf '%s\n' "$message" >"$CERTIFYD_SPLASH_STATUS_FILE"
+  fi
+}
+
 show_launch_failure() {
   local message="$1"
-  if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]]; then
+  set_launcher_status "$message"
+  if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" && "${CERTIFYD_NATIVE_SPLASH:-}" != "1" ]]; then
     osascript - "$message" <<'APPLESCRIPT' >/dev/null 2>&1 || true
 on run argv
   display alert "Certifyd Core" message (item 1 of argv) as critical
@@ -105,6 +114,7 @@ detect_lan_hosts() {
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+set_launcher_status "Checking the local runtime…"
 resources_dir="$script_dir"
 app_dir="$resources_dir/app"
 node_bin="$resources_dir/runtime/node/bin/node"
@@ -305,6 +315,7 @@ wait_for_core_health() {
 }
 
 if check_health; then
+  set_launcher_status "Core is already running. Opening the dashboard…"
   open_dashboard
   exit 0
 fi
@@ -312,7 +323,9 @@ fi
 if [[ -f "$pid_file" ]]; then
   existing_pid="$(tr -dc '0-9' <"$pid_file" || true)"
   if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1 && is_core_process "$existing_pid"; then
+    set_launcher_status "Waiting for the existing Core process…"
     if wait_for_core_health 45 "$existing_pid"; then
+      set_launcher_status "Core is ready. Opening the dashboard…"
       open_dashboard
       exit 0
     fi
@@ -321,16 +334,19 @@ if [[ -f "$pid_file" ]]; then
   rm -f "$pid_file"
 fi
 
-if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]]; then
+if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" && "${CERTIFYD_NATIVE_SPLASH:-}" != "1" ]]; then
   osascript -e 'display notification "Starting the local dashboard…" with title "Certifyd Core"' >/dev/null 2>&1 || true
 fi
 
+set_launcher_status "Validating local data…"
 (
   cd "$api_dir"
   "$node_bin" "$prisma_cli" validate --schema "$schema_path"
   if [[ ! -d "$api_dir/node_modules/.prisma/client" ]]; then
+    set_launcher_status "Preparing the local database client…"
     "$node_bin" "$prisma_cli" generate --schema "$schema_path"
   fi
+  set_launcher_status "Applying local database updates…"
   "$node_bin" "$prisma_cli" db push --schema "$schema_path" --skip-generate
 )
 
@@ -338,10 +354,12 @@ fi
 # database. The launcher lock prevents that today; retain this guard so future
 # preparation changes cannot create a second API process.
 if check_health; then
+  set_launcher_status "Core became ready while preparing. Opening the dashboard…"
   open_dashboard
   exit 0
 fi
 
+set_launcher_status "Starting the Certifyd Core service…"
 (
   cd "$api_dir"
   nohup "$node_bin" --import tsx src/server.ts >"$stdout_log" 2>"$stderr_log" &
@@ -349,7 +367,9 @@ fi
 )
 
 started_pid="$(tr -dc '0-9' <"$pid_file" || true)"
+set_launcher_status "Waiting for the dashboard to become ready…"
 if [[ -n "$started_pid" ]] && wait_for_core_health 45 "$started_pid"; then
+  set_launcher_status "Core is ready. Opening the dashboard…"
   open_dashboard
   exit 0
 fi

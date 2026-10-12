@@ -256,6 +256,9 @@ export default function App() {
   const [lightningAdminSnapshot, setLightningAdminSnapshot] = useState<LightningAdminSnapshot | null>(null);
   const appRefreshInFlightRef = useRef(false);
   const appRefreshLastAtRef = useRef(0);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const mobileNavButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mobileNavRef = useRef<HTMLElement | null>(null);
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -263,6 +266,48 @@ export default function App() {
       return false;
     }
   });
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const previousActive = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const drawer = mobileNavRef.current;
+    const focusable = drawer?.querySelector<HTMLElement>(
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    focusable?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobileNavOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !drawer) return;
+      const items = Array.from(
+        drawer.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      (previousActive || mobileNavButtonRef.current)?.focus();
+    };
+  }, [mobileNavOpen]);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [page]);
 
   // If advanced-nav preference has never been set, default it on for Advanced/LAN
   // postures so core commerce pages (Revenue, provider surfaces) remain discoverable.
@@ -746,10 +791,37 @@ export default function App() {
       : null;
 
   return (
-    <div className="h-screen overflow-hidden bg-neutral-950 text-neutral-100 flex">
+    <div className="dashboard-shell h-screen overflow-hidden bg-neutral-950 text-neutral-100 flex">
+      {!hideSidebar && mobileNavOpen ? (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          className="fixed inset-0 z-40 bg-black/70 md:hidden"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
       {/* Sidebar */}
       {!hideSidebar && (
-        <aside className="w-64 border-r border-neutral-900 bg-neutral-950/60 p-4 h-screen shrink-0 flex flex-col">
+        <aside
+          id="dashboard-navigation"
+          ref={mobileNavRef}
+          aria-label="Dashboard navigation"
+          className={[
+            "fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(20rem,88vw)] shrink-0 flex-col border-r border-neutral-800 bg-neutral-950 p-4 shadow-2xl transition-transform duration-200",
+            "md:static md:z-auto md:h-screen md:w-64 md:translate-x-0 md:border-neutral-900 md:bg-neutral-950/60 md:shadow-none",
+            mobileNavOpen ? "translate-x-0" : "-translate-x-full"
+          ].join(" ")}
+        >
+          <div className="mb-1 flex items-center justify-end md:hidden">
+            <button
+              type="button"
+              aria-label="Close navigation"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-neutral-800 text-2xl text-neutral-200"
+              onClick={() => setMobileNavOpen(false)}
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </div>
           <div className="flex items-center justify-center pt-1 pb-1">
             <a href={logoHref} className="block w-full">
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -763,7 +835,14 @@ export default function App() {
             </a>
           </div>
           
-          <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">
+          <div
+            className="mt-4 flex-1 overflow-y-auto hide-scrollbar pr-1 md:mt-6"
+            onClickCapture={(event) => {
+              if ((event.target as Element).closest("button:not(:disabled), a[href]")) {
+                setMobileNavOpen(false);
+              }
+            }}
+          >
             <div>
               <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Account</div>
               <div className="space-y-1">
@@ -975,16 +1054,36 @@ export default function App() {
       )}
 
       {/* Main content */}
-      <div className="flex-1 min-w-0 overflow-y-auto overscroll-none">
+      <div className="dashboard-content flex-1 min-w-0 overflow-x-hidden overflow-y-auto overscroll-none">
+        {!hideSidebar ? (
+          <div className="sticky top-0 z-30 flex min-h-16 items-center gap-3 border-b border-neutral-900 bg-neutral-950/95 px-4 py-2 backdrop-blur md:hidden">
+            <button
+              ref={mobileNavButtonRef}
+              type="button"
+              aria-label="Open navigation"
+              aria-controls="dashboard-navigation"
+              aria-expanded={mobileNavOpen}
+              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-neutral-800 text-xl"
+              onClick={() => setMobileNavOpen(true)}
+            >
+              <span aria-hidden="true">☰</span>
+            </button>
+            <img src={logo} alt="Certifyd Core" className="h-10 w-10 shrink-0 object-contain" />
+            <div className="min-w-0">
+              <div className="text-xs text-neutral-400">Certifyd Core</div>
+              <div className="truncate text-base font-semibold">{pageTitle}</div>
+            </div>
+          </div>
+        ) : null}
         <header className="border-b border-neutral-900">
-          <div className="mx-auto w-full max-w-screen-2xl px-4 py-4 sm:px-6 space-y-2">
+          <div className="mx-auto w-full max-w-screen-2xl space-y-2 px-4 py-3 sm:px-6 sm:py-4">
             {import.meta.env.DEV ? (
               <div className="rounded-md border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
                 Dashboard Dev Mode. API requests are proxied to the backend. Use the integrated node surface for real network testing.
               </div>
             ) : null}
-            <div className="text-sm text-neutral-400">Dashboard</div>
-            <div className="text-xl font-semibold">{pageTitle}</div>
+            <div className="hidden text-sm text-neutral-400 md:block">Dashboard</div>
+            <div className="hidden text-xl font-semibold md:block">{pageTitle}</div>
             {import.meta.env.DEV ? (
               <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
                 <span>Connected To:</span>
@@ -1106,7 +1205,7 @@ export default function App() {
         </header>
 
         {advancedInactive ? (
-            <div className="mx-6 mt-4 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center gap-2">
+            <div className="mx-4 mt-4 flex flex-wrap items-center gap-2 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200 sm:mx-6">
               <div className="flex-1 min-w-[200px]">
                 Sovereign creator mode requires a trusted provider connection or a permanent named link.
               </div>
@@ -1119,7 +1218,7 @@ export default function App() {
             </div>
           ) : null}
 
-        <main className="mx-auto w-full max-w-screen-2xl p-4 sm:p-6">
+        <main className="mx-auto w-full max-w-screen-2xl p-3 sm:p-6">
           {showAdvancedLocked ? (
             <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 p-6 text-sm text-amber-200">
               <div className="text-lg font-semibold mb-2">Advanced not active</div>

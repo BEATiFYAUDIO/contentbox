@@ -7,6 +7,148 @@ $ErrorActionPreference = "Stop"
 $script:LauncherLogDir = ""
 $script:LauncherMutex = $null
 $script:LauncherLockAcquired = $false
+$script:SplashWindow = $null
+$script:SplashStatus = $null
+$script:SplashProgress = $null
+$script:SplashActions = $null
+$script:SplashRetry = $null
+$script:SplashLogs = $null
+
+function Invoke-SplashEvents {
+  if ($null -eq $script:SplashWindow) { return }
+  try {
+    $script:SplashWindow.Dispatcher.Invoke(
+      [Action]{},
+      [System.Windows.Threading.DispatcherPriority]::Background
+    )
+  } catch {}
+}
+
+function Start-LauncherSplash($appDir) {
+  if ($env:CI -eq "true" -or $env:CERTIFYD_LAUNCHER_NO_UI -eq "1" -or $env:CERTIFYD_NO_BROWSER -eq "1") { return }
+  try {
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+    $window = New-Object System.Windows.Window
+    $window.Title = "Certifyd Core"
+    $window.Width = 420
+    $window.Height = 300
+    $window.ResizeMode = "NoResize"
+    $window.WindowStartupLocation = "CenterScreen"
+    $window.Background = [System.Windows.Media.Brushes]::Transparent
+    $window.WindowStyle = "None"
+    $window.AllowsTransparency = $true
+    $window.Topmost = $true
+
+    $border = New-Object System.Windows.Controls.Border
+    $border.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(8, 24, 32))
+    $border.BorderBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(39, 77, 98))
+    $border.BorderThickness = 1
+    $border.CornerRadius = 18
+    $border.Padding = 28
+
+    $stack = New-Object System.Windows.Controls.StackPanel
+    $stack.HorizontalAlignment = "Stretch"
+
+    $logo = New-Object System.Windows.Controls.Image
+    $logo.Width = 92
+    $logo.Height = 92
+    $logo.HorizontalAlignment = "Center"
+    $logo.Margin = "0,0,0,12"
+    $logoPath = Join-Path $appDir "assets\certifyd-core.png"
+    if (Test-Path $logoPath) {
+      $bitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+      $bitmap.BeginInit()
+      $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+      $bitmap.UriSource = New-Object System.Uri($logoPath)
+      $bitmap.EndInit()
+      $logo.Source = $bitmap
+    }
+
+    $title = New-Object System.Windows.Controls.TextBlock
+    $title.Text = "Certifyd Core"
+    $title.Foreground = [System.Windows.Media.Brushes]::White
+    $title.FontSize = 25
+    $title.FontWeight = "SemiBold"
+    $title.HorizontalAlignment = "Center"
+
+    $status = New-Object System.Windows.Controls.TextBlock
+    $status.Text = "Preparing the local dashboard…"
+    $status.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(192, 209, 220))
+    $status.FontSize = 14
+    $status.TextAlignment = "Center"
+    $status.TextWrapping = "Wrap"
+    $status.Margin = "0,10,0,16"
+
+    $progress = New-Object System.Windows.Controls.ProgressBar
+    $progress.IsIndeterminate = $true
+    $progress.Height = 5
+    $progress.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(79, 139, 255))
+    $progress.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(20, 48, 63))
+
+    $actions = New-Object System.Windows.Controls.StackPanel
+    $actions.Orientation = "Horizontal"
+    $actions.HorizontalAlignment = "Center"
+    $actions.Margin = "0,18,0,0"
+    $actions.Visibility = "Collapsed"
+
+    $retry = New-Object System.Windows.Controls.Button
+    $retry.Content = "Retry"
+    $retry.MinWidth = 100
+    $retry.Height = 36
+    $retry.Margin = "0,0,8,0"
+    $retry.Add_Click({
+      $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $PSCommandPath)
+      if ($Lan) { $arguments += "-Lan" }
+      Start-Process -FilePath "powershell.exe" -ArgumentList $arguments
+      $script:SplashWindow.Close()
+    })
+
+    $logs = New-Object System.Windows.Controls.Button
+    $logs.Content = "View Logs"
+    $logs.MinWidth = 100
+    $logs.Height = 36
+    $logs.Add_Click({
+      if ($script:LauncherLogDir -and (Test-Path $script:LauncherLogDir)) {
+        Start-Process explorer.exe -ArgumentList @($script:LauncherLogDir)
+      }
+    })
+
+    [void]$actions.Children.Add($retry)
+    [void]$actions.Children.Add($logs)
+    [void]$stack.Children.Add($logo)
+    [void]$stack.Children.Add($title)
+    [void]$stack.Children.Add($status)
+    [void]$stack.Children.Add($progress)
+    [void]$stack.Children.Add($actions)
+    $border.Child = $stack
+    $window.Content = $border
+    $script:SplashWindow = $window
+    $script:SplashStatus = $status
+    $script:SplashProgress = $progress
+    $script:SplashActions = $actions
+    $script:SplashRetry = $retry
+    $script:SplashLogs = $logs
+    $window.Show()
+    Invoke-SplashEvents
+  } catch {
+    $script:SplashWindow = $null
+  }
+}
+
+function Set-LauncherStatus($message) {
+  [Console]::WriteLine("[Certifyd Core] $message")
+  if ($null -ne $script:SplashStatus) {
+    $script:SplashStatus.Text = [string]$message
+    Invoke-SplashEvents
+  }
+}
+
+function Close-LauncherSplash {
+  if ($null -ne $script:SplashWindow) {
+    try { $script:SplashWindow.Close() } catch {}
+    $script:SplashWindow = $null
+  }
+}
 
 function Fail($message) {
   throw "[Certifyd Core] $message"
@@ -16,18 +158,23 @@ function Show-LaunchFailure($message) {
   $logHint = if ($script:LauncherLogDir) { "`n`nLogs: $script:LauncherLogDir" } else { "" }
   $details = "Certifyd Core could not start.`n`n$message$logHint"
   [Console]::Error.WriteLine($details)
+  if ($null -ne $script:SplashWindow) {
+    $script:SplashStatus.Text = $details
+    $script:SplashStatus.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(255, 171, 171))
+    $script:SplashProgress.Visibility = "Collapsed"
+    $script:SplashActions.Visibility = "Visible"
+    $script:SplashWindow.Topmost = $false
+    Invoke-SplashEvents
+    while ($script:SplashWindow.IsVisible) {
+      Invoke-SplashEvents
+      Start-Sleep -Milliseconds 100
+    }
+    return
+  }
   if ($env:CI -eq "true" -or $env:CERTIFYD_LAUNCHER_NO_UI -eq "1") { return }
   try {
     $shell = New-Object -ComObject WScript.Shell
     [void]$shell.Popup($details, 0, "Certifyd Core", 16)
-  } catch {}
-}
-
-function Show-StartingNotice {
-  if ($env:CI -eq "true" -or $env:CERTIFYD_LAUNCHER_NO_UI -eq "1") { return }
-  try {
-    $shell = New-Object -ComObject WScript.Shell
-    [void]$shell.Popup("Certifyd Core is starting. The dashboard will open when it is ready.", 3, "Certifyd Core", 64)
   } catch {}
 }
 
@@ -275,6 +422,8 @@ function Wait-ForCoreHealth($seconds, $process = $null) {
 }
 
 $appDir = Resolve-AppDir
+Start-LauncherSplash $appDir
+Set-LauncherStatus "Checking the local runtime…"
 $nodeExe = Join-Path $appDir "runtime\node\node.exe"
 $apiDir = Join-Path $appDir "apps\api"
 $schemaPath = Join-Path $apiDir "prisma\schema.prisma"
@@ -344,11 +493,12 @@ Write-EnvFile $envFile $envValues
 Apply-Env $envValues
 
 if (Test-Health) {
+  Set-LauncherStatus "Core is already running. Opening the dashboard…"
   Open-Dashboard $envValues["APP_BASE_URL"]
+  Close-LauncherSplash
   Release-LauncherLock
   exit 0
 }
-Show-StartingNotice
 
 $existingPid = 0
 if (Test-Path $pidFile) {
@@ -356,8 +506,11 @@ if (Test-Path $pidFile) {
   if ([int]::TryParse($rawPid, [ref]$existingPid) -and $existingPid -gt 0) {
     $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
     if ($null -ne $existing -and (Test-CoreProcess $existingPid $nodeExe)) {
+      Set-LauncherStatus "Waiting for the existing Core process…"
       if (Wait-ForCoreHealth 45 $existing) {
+        Set-LauncherStatus "Core is ready. Opening the dashboard…"
         Open-Dashboard $envValues["APP_BASE_URL"]
+        Close-LauncherSplash
         Release-LauncherLock
         exit 0
       }
@@ -371,19 +524,25 @@ if (-not (Test-Path $dbPath)) {
   New-Item -ItemType File -Path $dbPath | Out-Null
 }
 
+Set-LauncherStatus "Validating local data…"
 Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "validate", "--schema", $schemaPath)
 if (-not (Test-Path (Join-Path $apiDir "node_modules\.prisma\client"))) {
+  Set-LauncherStatus "Preparing the local database client…"
   Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "generate", "--schema", $schemaPath)
 }
+Set-LauncherStatus "Applying local database updates…"
 Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "db", "push", "--schema", $schemaPath)
 
 # A separately started healthy Core wins the race without spawning a duplicate.
 if (Test-Health) {
+  Set-LauncherStatus "Core became ready while preparing. Opening the dashboard…"
   Open-Dashboard $envValues["APP_BASE_URL"]
+  Close-LauncherSplash
   Release-LauncherLock
   exit 0
 }
 
+Set-LauncherStatus "Starting the Certifyd Core service…"
 $process = Start-Process `
   -FilePath $nodeExe `
   -ArgumentList @("--import", "tsx", "src/server.ts") `
@@ -395,8 +554,11 @@ $process = Start-Process `
 
 Set-Content -Path $pidFile -Value "$($process.Id)" -Encoding ASCII
 
+Set-LauncherStatus "Waiting for the dashboard to become ready…"
 if (Wait-ForCoreHealth 45 $process) {
+  Set-LauncherStatus "Core is ready. Opening the dashboard…"
   Open-Dashboard $envValues["APP_BASE_URL"]
+  Close-LauncherSplash
   Release-LauncherLock
   exit 0
 }
