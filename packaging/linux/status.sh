@@ -5,7 +5,15 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 node_bin="$script_dir/runtime/node/bin/node"
 data_root="${CONTENTBOX_ROOT:-"${XDG_DATA_HOME:-"$HOME/.local/share"}/contentbox"}"
 pid_file="$data_root/state/certifyd-core.pid"
+env_file="$data_root/config/api.env"
+if [[ -f "$env_file" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_file"
+  set +a
+fi
 port="${PORT:-4000}"
+app_url="${APP_BASE_URL:-http://127.0.0.1:$port}"
 health_url="http://127.0.0.1:$port/health"
 
 is_core_process() {
@@ -48,4 +56,4 @@ echo "  Data:   $data_root"
 echo "  PID:    $process_id"
 echo "  Alive:  $alive"
 echo "  Health: $health"
-echo "  URL:    http://127.0.0.1:$port"
+echo "  URL:    $app_url"

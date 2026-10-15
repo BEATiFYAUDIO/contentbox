@@ -58,9 +58,9 @@ The Start Menu/Desktop launcher:
 
 Existing databases and user data are never truncated, overwritten, replaced, or deleted by the launcher.
 
-For a dedicated LAN machine, use the `Certifyd Core (LAN Access)` Start Menu or
-Desktop shortcut. LAN mode binds the private dashboard/API to the local network,
-records detected LAN addresses in the private host allowlist, and opens the LAN
+Use the Certifyd Core tray menu to enable or refresh LAN access. LAN mode binds
+the private dashboard/API to the local network, records detected LAN addresses
+in the private host allowlist, and opens the LAN
 dashboard URL. The launcher also accepts `-Lan` for scripted use.
 
 ## Optional External Tools

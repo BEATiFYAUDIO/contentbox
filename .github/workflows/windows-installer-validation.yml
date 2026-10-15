@@ -218,11 +218,13 @@ jobs:
           Assert-Path (Join-Path $installDir "apps\api\src\server.ts")
           Assert-Path (Join-Path $installDir "apps\dashboard\dist\index.html")
           Assert-Path (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
+          Assert-Path (Join-Path $installDir "launcher\CertifydCore.Control.ps1")
+          Assert-Path (Join-Path $installDir "launcher\CertifydCore.Firewall.ps1")
           Assert-Path (Join-Path $installDir "launcher\CertifydCore.Stop.ps1")
           Assert-Path (Join-Path $installDir "launcher\CertifydCore.Status.ps1")
           Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core.lnk")
-          Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Stop Certifyd Core.lnk")
-          Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core Status.lnk")
+          if (Test-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Stop Certifyd Core.lnk")) { throw "Legacy Stop shortcut was not removed" }
+          if (Test-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core Status.lnk")) { throw "Legacy Status shortcut was not removed" }
           Assert-Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "Certifyd Core.lnk")
 
           "Silent install=PASS" | Tee-Object -Append windows-validation-summary.md

@@ -86,6 +86,7 @@ echo "[macos-package] Node: $node_version"
 
 rm -rf "$stage_root" "$dmg_root"
 mkdir -p "$cache_dir" "$package_dir" "$macos_dir" "$resources_dir" "$app_stage/apps/api" "$app_stage/apps/dashboard" "$runtime_stage" "$assets_stage"
+printf '%s\n' "$version" >"$app_stage/app-version.txt"
 
 if [[ ! -f "$node_tar" ]]; then
   echo "[macos-package] Downloading Node runtime: $node_url"

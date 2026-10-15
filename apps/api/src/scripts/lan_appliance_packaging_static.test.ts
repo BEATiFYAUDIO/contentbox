@@ -63,13 +63,17 @@ test("Windows packaged launcher preserves existing database configuration and de
   assert.doesNotMatch(launcher, /\$envValues\["CONTENTBOX_ROOT"\] = \$dataRoot\s*\r?\n\$envValues\["DATABASE_URL"\] = "file:\$\(Normalize-FileUrlPath \$dbPath\)"/);
 });
 
-test("packaged users have discoverable LAN launch paths", () => {
-  assert.match(read("packaging/linux/install-desktop.sh"), /Certifyd Core \(LAN Access\)/);
-  assert.match(read("packaging/linux/install-desktop.sh"), /start\.sh --lan/);
-  assert.match(read("packaging/windows/CertifydCore.iss"), /Certifyd Core \(LAN Access\)/);
-  assert.match(read("packaging/windows/CertifydCore.iss"), /-Lan/);
-  assert.match(read("scripts/build-macos-package.sh"), /Start Certifyd Core with LAN Access\.command/);
-  assert.match(read("scripts/build-macos-package.sh"), /CertifydCoreLauncher" --lan/);
+test("one packaged application exposes LAN controls without duplicate launchers", () => {
+  const linuxDesktop = read("packaging/linux/install-desktop.sh");
+  const windowsInstaller = read("packaging/windows/CertifydCore.iss");
+  const macLauncher = read("packaging/macos/CertifydCoreLauncher.c");
+
+  assert.match(linuxDesktop, /control\.sh" lan/);
+  assert.match(linuxDesktop, /rm -f "\$desktop_dir\/certifyd-core-lan\.desktop"/);
+  assert.match(windowsInstaller, /CertifydCore\.Control\.ps1/);
+  assert.match(windowsInstaller, /InstallDelete/);
+  assert.match(macLauncher, /Enable or Refresh LAN Access/);
+  assert.match(macLauncher, /NSStatusBar/);
 });
 
 test("LAN host selection prefers default-route style helpers and filters virtual interfaces", () => {
@@ -85,4 +89,21 @@ test("LAN host selection prefers default-route style helpers and filters virtual
     assert.match(source, /detect_primary_lan_host|Get-PrimaryLanHost/);
     assert.match(source, /is_virtual_interface|Test-VirtualInterface/);
   }
+});
+
+test("packaged launchers refresh only launcher-owned LAN addresses and retain opt-in", () => {
+  for (const source of [
+    read("packaging/linux/start.sh"),
+    read("packaging/macos/CertifydCoreLauncher.sh"),
+  ]) {
+    assert.match(source, /launcher-lan-hosts\.txt/);
+    assert.match(source, /subtract_host_lists/);
+    assert.match(source, /lan-enabled/);
+    assert.match(source, /APP_BASE_URL="http:\/\/127\.0\.0\.1:\$PORT"/);
+  }
+  const windows = read("packaging/windows/CertifydCore.Launcher.ps1");
+  assert.match(windows, /launcher-lan-hosts\.txt/);
+  assert.match(windows, /Remove-LauncherHosts/);
+  assert.match(windows, /lan-enabled/);
+  assert.match(windows, /http:\/\/127\.0\.0\.1:/);
 });

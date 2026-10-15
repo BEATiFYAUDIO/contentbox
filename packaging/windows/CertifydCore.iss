@@ -39,19 +39,21 @@ Source: "{#SourceDir}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion
 Source: "{#SourceDir}\assets\certifyd-core.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Certifyd Core\Certifyd Core"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
-Name: "{autoprograms}\Certifyd Core\Certifyd Core (LAN Access)"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"" -Lan"; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
-Name: "{autoprograms}\Certifyd Core\Stop Certifyd Core"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\launcher\CertifydCore.Stop.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
-Name: "{autoprograms}\Certifyd Core\Certifyd Core Status"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\launcher\CertifydCore.Status.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
-Name: "{autodesktop}\Certifyd Core"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"; Tasks: desktopicon
-Name: "{autodesktop}\Certifyd Core (LAN Access)"; Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"" -Lan"; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"; Tasks: desktopicon
+Name: "{autoprograms}\Certifyd Core\Certifyd Core"; Filename: "powershell.exe"; Parameters: "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Control.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"
+Name: "{autodesktop}\Certifyd Core"; Filename: "powershell.exe"; Parameters: "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Control.ps1"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\certifyd-core.ico"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 Name: "launchafterinstall"; Description: "Launch Certifyd Core after installation"; GroupDescription: "After install:"; Flags: checkedonce
 
 [Run]
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Launcher.ps1"""; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent; Tasks: launchafterinstall
+Filename: "powershell.exe"; Parameters: "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\launcher\CertifydCore.Control.ps1"""; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent; Tasks: launchafterinstall
+
+[InstallDelete]
+Type: files; Name: "{autodesktop}\Certifyd Core (LAN Access).lnk"
+Type: files; Name: "{autoprograms}\Certifyd Core\Certifyd Core (LAN Access).lnk"
+Type: files; Name: "{autoprograms}\Certifyd Core\Stop Certifyd Core.lnk"
+Type: files; Name: "{autoprograms}\Certifyd Core\Certifyd Core Status.lnk"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

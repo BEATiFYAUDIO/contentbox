@@ -169,8 +169,9 @@ jobs:
 
           desktop_root="$(mktemp -d)"
           XDG_DATA_HOME="$desktop_root" "$app/install-desktop.sh"
-          grep -Fq "Exec=\"$app/start.sh\"" "$desktop_root/applications/certifyd-core.desktop"
-          grep -Fq "Exec=\"$app/start.sh\" --lan" "$desktop_root/applications/certifyd-core-lan.desktop"
+          grep -Fq "Exec=\"$app/control.sh\" start" "$desktop_root/applications/certifyd-core.desktop"
+          grep -Fq "Exec=\"$app/control.sh\" lan" "$desktop_root/applications/certifyd-core.desktop"
+          test ! -e "$desktop_root/applications/certifyd-core-lan.desktop"
           test -f "$data_root/contentbox.db"
           db_hash_before="$(sha256sum "$data_root/contentbox.db" | awk '{print $1}')"
           db_size_before="$(stat -c '%s' "$data_root/contentbox.db")"

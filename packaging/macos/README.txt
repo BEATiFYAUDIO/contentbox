@@ -7,10 +7,9 @@ signed and Apple-notarized. Existing beta.11 downloads do not meet that standard
 If Gatekeeper blocks the app, stop and report the release version and warning.
 Do not disable Gatekeeper or remove quarantine attributes.
 
-For a dedicated LAN machine administered from another device on the same local
-network, open "Start Certifyd Core with LAN Access.command" from the disk image.
-LAN mode binds the private dashboard/API to the local network, records detected
-LAN addresses in the private host allowlist, and opens the LAN dashboard URL.
+Use the Certifyd Core menu-bar icon to enable or refresh LAN access. LAN mode
+binds the private dashboard/API to the local network, records detected LAN
+addresses in the private host allowlist, and opens the LAN dashboard URL.
 The app launcher also supports --lan for scripted use.
 
 The app includes its own Node runtime, API dependencies, Prisma client and
