@@ -7,6 +7,8 @@ import test from "node:test";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const launcher = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Launcher.ps1"), "utf8");
 const linuxLauncher = readFileSync(path.join(repoRoot, "packaging/linux/start.sh"), "utf8");
+const windowsControl = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Control.ps1"), "utf8");
+const windowsFirewall = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Firewall.ps1"), "utf8");
 
 test("Windows installed launcher gives visible failures and serializes repeated launches", () => {
   assert.match(launcher, /function Show-LaunchFailure/);
@@ -29,7 +31,7 @@ test("Windows installed launcher gives visible failures and serializes repeated 
 
 test("Windows installed launcher avoids duplicate initialization and opens only a healthy dashboard", () => {
   const firstHealth = launcher.indexOf("if (Test-Health)");
-  const startupFeedback = launcher.indexOf('Set-LauncherStatus "Validating local data…"', firstHealth);
+  const startupFeedback = launcher.indexOf('Set-LauncherStatus "Validating local data..."', firstHealth);
   const prismaValidate = launcher.indexOf("Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, \"validate\"");
 
   assert.ok(firstHealth >= 0, "launcher must check an existing healthy Core");
@@ -43,6 +45,26 @@ test("Windows installed launcher avoids duplicate initialization and opens only 
   assert.match(launcher, /Retry/);
   assert.match(launcher, /View Logs/);
   assert.doesNotMatch(launcher, /cloudflared|taskkill\.exe|Stop-Service|Restart-Service/i);
+});
+
+test("Windows controller remains available through startup failure and limits LAN firewall access", () => {
+  assert.match(windowsControl, /NotifyIcon/);
+  assert.match(windowsControl, /View Logs/);
+  assert.match(windowsControl, /Enable or Refresh LAN Access/);
+  assert.match(windowsControl, /FirstRunQuick/);
+  assert.doesNotMatch(windowsControl, /taskkill|Stop-Service|pkill|killall/i);
+  assert.match(windowsFirewall, /-Profile Private/);
+  assert.match(windowsFirewall, /-Program/);
+  assert.match(windowsFirewall, /-LocalPort/);
+});
+
+test("packaged launchers persist consented first-run Quick mode without overriding existing OFF", () => {
+  for (const source of [launcher, linuxLauncher]) {
+    assert.match(source, /FirstRunQuick|FIRST_RUN_QUICK/);
+    assert.match(source, /newInstallAtLaunch|new_install_at_launch/);
+    assert.match(source, /publicSharingConsent/);
+    assert.match(source, /publicSharingAutoStart/);
+  }
 });
 
 test("Linux packaged launcher serializes startup, validates process identity, and skips duplicate initialization", () => {
@@ -72,5 +94,18 @@ test("Linux stop and status scripts reject stale unrelated PIDs", () => {
     assert.match(source, /is_core_process/);
     assert.match(source, /src\/server\.ts/);
     assert.match(source, /ps -p "\$pid" -o command=/);
+  }
+});
+
+test("Windows and macOS stop and status scripts reject stale unrelated PIDs", () => {
+  for (const [platform, names] of [
+    ["windows", ["CertifydCore.Stop.ps1", "CertifydCore.Status.ps1"]],
+    ["macos", ["stop.sh", "status.sh"]]
+  ] as const) {
+    for (const name of names) {
+      const source = readFileSync(path.join(repoRoot, "packaging", platform, name), "utf8");
+      assert.match(source, /Test-CoreProcess|is_core_process/);
+      assert.match(source, /src\[|src\/server\.ts/);
+    }
   }
 });

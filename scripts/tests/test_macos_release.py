@@ -212,7 +212,7 @@ if sys.argv[1] == 'sign-app':
 
 
 class PrismaLauncher(unittest.TestCase):
-    def run_launcher(self, arch, missing=None, moved=False):
+    def run_launcher(self, arch, missing=None, moved=False, fail_push=False):
         with tempfile.TemporaryDirectory(prefix='prisma launcher ') as tmp:
             root = Path(tmp)
             app = root / 'Certifyd Core.app'
@@ -240,6 +240,8 @@ elif sys.argv[1].endswith('/prisma/build/index.js'):
     with open(os.environ['TEST_PRISMA_CALLS'], 'a') as f:
         f.write(json.dumps({'args': sys.argv[2:], 'schema': os.environ['PRISMA_SCHEMA_ENGINE_BINARY'],
                             'query': os.environ['PRISMA_QUERY_ENGINE_LIBRARY']}) + '\\n')
+    if os.environ.get('TEST_FAIL_PUSH') == '1' and sys.argv[2:4] == ['db', 'push']:
+        sys.exit(42)
 elif sys.argv[1] == '-e':
     sys.exit(0 if Path(os.environ['TEST_HEALTH_MARKER']).exists() else 1)
 elif sys.argv[1:3] == ['--import', 'tsx'] and sys.argv[3:] == ['src/server.ts']:
@@ -253,6 +255,8 @@ else:
             data = root / 'data'; (data / 'config').mkdir(parents=True)
             (data / 'state').mkdir()
             (data / 'config/api.env').write_text('PRISMA_SCHEMA_ENGINE_BINARY="/stale/schema"\nPRISMA_QUERY_ENGINE_LIBRARY="/stale/query"\n')
+            (data / 'contentbox.db').write_bytes(b'original-sqlite-data')
+            (resources / 'app/app-version.txt').write_text('0.2.0\n')
             # A live unrelated PID must never be trusted as the Core process.
             (data / 'state/certifyd-core.pid').write_text(str(os.getpid()))
             if moved:
@@ -265,7 +269,7 @@ else:
             health_marker = root / 'health-ready'
             env = {**os.environ, 'CONTENTBOX_ROOT': str(data), 'CERTIFYD_NO_BROWSER': '1',
                    'JWT_SECRET': 'test-only', 'TEST_NODE_ARCH': arch, 'TEST_PRISMA_CALLS': str(calls_file),
-                   'TEST_HEALTH_MARKER': str(health_marker)}
+                   'TEST_HEALTH_MARKER': str(health_marker), 'TEST_FAIL_PUSH': '1' if fail_push else '0'}
             result = subprocess.run(['bash', str(resources / 'CertifydCoreLauncher.sh')],
                                     env=env, capture_output=True, text=True)
             first_pid = (data / 'state/certifyd-core.pid').read_text().strip() if (data / 'state/certifyd-core.pid').exists() else ''
@@ -280,15 +284,19 @@ else:
                     os.kill(int(first_pid), 15)
                 except ProcessLookupError:
                     pass
-            return result, calls, str(engines), target
+            backup_files = list((data / 'backups/pre-upgrade').glob('*/contentbox.db'))
+            marker_exists = (data / 'state/database-prepared-version.txt').exists()
+            return result, calls, str(engines), target, (data / 'contentbox.db').read_bytes(), backup_files, marker_exists
 
     def test_prisma_uses_current_bundled_engines_for_both_architectures_and_after_move(self):
         for arch in ['x64', 'arm64']:
             for moved in [False, True]:
                 with self.subTest(arch=arch, moved=moved):
-                    result, calls, engines, target = self.run_launcher(arch, moved=moved)
+                    result, calls, engines, target, _, backups, marker_exists = self.run_launcher(arch, moved=moved)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(len(calls), 2)
+                    self.assertEqual(len(backups), 1)
+                    self.assertTrue(marker_exists)
                     self.assertEqual(calls[0]['args'][0], 'validate')
                     self.assertEqual(calls[1]['args'][:2], ['db', 'push'])
                     self.assertIn('--skip-generate', calls[1]['args'])
@@ -317,16 +325,25 @@ else:
         self.assertIn('CERTIFYD_LAUNCHER_NO_UI', source)
         self.assertIn('CERTIFYD_SPLASH_STATUS_FILE', source)
         self.assertIn('-framework Cocoa', build)
-        self.assertIn('set_launcher_status "Validating local data…"', shell)
-        self.assertIn('set_launcher_status "Waiting for the dashboard to become ready…"', shell)
+        self.assertIn('set_launcher_status "Validating local data..."', shell)
+        self.assertIn('set_launcher_status "Waiting for the dashboard to become ready', shell)
 
     def test_missing_bundled_engine_fails_before_prisma_can_download(self):
         for missing in ['schema', 'query']:
             with self.subTest(missing=missing):
-                result, calls, _, _ = self.run_launcher('arm64', missing=missing)
+                result, calls, _, _, _, _, _ = self.run_launcher('arm64', missing=missing)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f'Bundled Prisma {missing} engine missing', result.stderr)
                 self.assertEqual(calls, [])
+
+    def test_failed_database_preparation_preserves_recovery_point_and_does_not_mark_version(self):
+        result, calls, _, _, database, backups, marker_exists = self.run_launcher('arm64', fail_push=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls[-1]['args'][:2], ['db', 'push'])
+        self.assertEqual(database, b'original-sqlite-data')
+        self.assertEqual(len(backups), 1)
+        self.assertFalse(marker_exists)
+        self.assertIn('Recovery point:', result.stderr)
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'), 'native macOS compiler required')

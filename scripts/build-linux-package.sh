@@ -85,6 +85,7 @@ npm_bin="$runtime_stage/node/bin/npm"
 
 api_source="$repo_root/apps/api"
 api_target="$app_stage/apps/api"
+printf '%s\n' "$version" >"$app_stage/app-version.txt"
 for item in package.json package-lock.json tsconfig.json src prisma scripts upgrade-advanced.ps1; do
   if [[ -e "$api_source/$item" ]]; then
     cp -a "$api_source/$item" "$api_target/$item"
@@ -103,8 +104,9 @@ cp "$repo_root/packaging/linux/start.sh" "$app_stage/start.sh"
 cp "$repo_root/packaging/linux/stop.sh" "$app_stage/stop.sh"
 cp "$repo_root/packaging/linux/status.sh" "$app_stage/status.sh"
 cp "$repo_root/packaging/linux/install-desktop.sh" "$app_stage/install-desktop.sh"
+cp "$repo_root/packaging/linux/control.sh" "$app_stage/control.sh"
 cp "$repo_root/packaging/linux/README.md" "$app_stage/README.md"
-chmod +x "$app_stage/start.sh" "$app_stage/stop.sh" "$app_stage/status.sh" "$app_stage/install-desktop.sh"
+chmod +x "$app_stage/start.sh" "$app_stage/stop.sh" "$app_stage/status.sh" "$app_stage/control.sh" "$app_stage/install-desktop.sh"
 
 icon_source="$repo_root/apps/dashboard/src/assets/certifyd_icon_logo_only.svg"
 icon_png="$assets_stage/certifyd-core.png"

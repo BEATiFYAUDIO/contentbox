@@ -38,7 +38,5 @@ Optional desktop integration:
 ./install-desktop.sh
 ```
 
-This installs both normal local and LAN access launchers:
-
-- `Certifyd Core`
-- `Certifyd Core (LAN Access)`
+This installs one `Certifyd Core` launcher. Its desktop actions provide Open,
+LAN access, Restart, Stop, and View Logs controls without adding GUI dependencies.
