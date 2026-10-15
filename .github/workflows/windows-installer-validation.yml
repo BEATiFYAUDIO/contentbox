@@ -266,7 +266,14 @@ jobs:
           if ($shortcut.TargetPath -notmatch '(?i)powershell\.exe$' -or $shortcut.Arguments -notlike '*CertifydCore.Control.ps1*') {
             throw "Desktop shortcut does not target the installed Certifyd Core tray controller."
           }
-          Start-Process -FilePath $shortcut.TargetPath -ArgumentList $shortcut.Arguments -WorkingDirectory $shortcut.WorkingDirectory
+          $windowsPowerShellVersion = (& powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()').Trim()
+          if (-not $windowsPowerShellVersion.StartsWith('5.1')) {
+            throw "Expected Windows PowerShell 5.1, found $windowsPowerShellVersion."
+          }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1") -Lan
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installed LAN launcher failed under Windows PowerShell 5.1 with exit code $LASTEXITCODE."
+          }
           if (-not (Wait-ForHealth -Seconds 75)) {
             Get-Content (Join-Path $dataRoot "logs\certifyd-core.err.log") -ErrorAction SilentlyContinue
             throw "Core did not pass /health after launch."
@@ -284,7 +291,7 @@ jobs:
 
           "Core start=PASS" | Tee-Object -Append windows-validation-summary.md
           "Beta 18 in-place upgrade=PASS" | Tee-Object -Append windows-validation-summary.md
-          "Installed desktop shortcut target under Windows PowerShell 5.1=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Installed LAN launcher under Windows PowerShell $windowsPowerShellVersion=PASS" | Tee-Object -Append windows-validation-summary.md
           "/health=PASS" | Tee-Object -Append windows-validation-summary.md
           "Dashboard=PASS" | Tee-Object -Append windows-validation-summary.md
           "Database exists=PASS" | Tee-Object -Append windows-validation-summary.md
@@ -311,6 +318,8 @@ jobs:
             throw "Installed Core API process owns a visible console window."
           }
           "Core API console hidden=PASS" | Tee-Object -Append windows-validation-summary.md
+          Start-Process -FilePath $shortcut.TargetPath -ArgumentList $shortcut.Arguments -WorkingDirectory $shortcut.WorkingDirectory
+          Start-Sleep -Seconds 3
           $controllerProcesses = @(Get-CimInstance Win32_Process | Where-Object {
             $_.Name -ieq "powershell.exe" -and
             $_.CommandLine -like "*CertifydCore.Control.ps1*" -and
@@ -319,6 +328,7 @@ jobs:
           if ($controllerProcesses.Count -ne 1) {
             throw "Desktop shortcut left $($controllerProcesses.Count) tray controller processes; expected exactly one."
           }
+          "Installed desktop shortcut tray-controller command=PASS" | Tee-Object -Append windows-validation-summary.md
           $controllerProcess = Get-Process -Id $controllerProcesses[0].ProcessId -ErrorAction Stop
           if ($controllerProcess.MainWindowHandle -ne 0) {
             throw "Installed tray controller owns a visible console window."
