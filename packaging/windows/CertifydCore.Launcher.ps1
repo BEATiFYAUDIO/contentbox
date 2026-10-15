@@ -535,7 +535,7 @@ $lanOptInFile = Join-Path $stateDir "lan-enabled"
 if ($envValues["CONTENTBOX_PRIVATE_BIND"] -eq "public" -or (Test-Path $lanOptInFile)) { $Lan = $true }
 if ($Lan) {
   Set-Content -Path $lanOptInFile -Value "enabled" -Encoding ASCII
-  $lanHosts = Get-LanHosts
+  $lanHosts = @(Get-LanHosts)
   $lanPrimaryHost = if ($lanHosts.Count -gt 0) { $lanHosts[0] } else { "" }
   $launcherHostsFile = Join-Path $stateDir "launcher-lan-hosts.txt"
   $previousLauncherHosts = if (Test-Path $launcherHostsFile) { Get-Content $launcherHostsFile } else { @() }
