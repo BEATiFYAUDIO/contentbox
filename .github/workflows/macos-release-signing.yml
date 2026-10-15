@@ -65,6 +65,9 @@ jobs:
           git -C "$RUNNER_TEMP/extension-source" diff --exit-code
           test -d "$RUNNER_TEMP/unpacked/Certifyd.app"
           test -d "$RUNNER_TEMP/unpacked/entitlements"
+          test -d "$RUNNER_TEMP/unpacked/safari-source"
+          mkdir -p "$RUNNER_TEMP/extension-source/dist"
+          ditto "$RUNNER_TEMP/unpacked/safari-source" "$RUNNER_TEMP/extension-source/dist/safari-source"
 
       - name: Sign, notarize, staple, and validate Safari
         id: signed
