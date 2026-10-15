@@ -210,9 +210,34 @@ jobs:
           $env:LOCALAPPDATA = $ciLocalAppData
           $dataRoot = Join-Path $ciLocalAppData "ContentBox"
           $dbPath = Join-Path $dataRoot "contentbox.db"
+          $desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Certifyd Core.lnk"
 
           "## Silent install and runtime validation" | Tee-Object -Append windows-validation-summary.md
-          Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Silent install"
+          $beta18Installer = Join-Path $env:RUNNER_TEMP "Certifyd-Core-Setup-0.1.0-beta.18-win-x64.exe"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/BEATiFYAUDIO/contentbox/releases/download/v0.1.0-beta.18/Certifyd-Core-Setup-0.1.0-beta.18-win-x64.exe" -OutFile $beta18Installer
+          $beta18Hash = (Get-FileHash $beta18Installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($beta18Hash -ne "17de26ddd9c1bd59549b5539d5312736ea3ad4af13f8bafbfe2a001cd30fb717") {
+            throw "Downloaded Beta 18 installer checksum did not match the published release."
+          }
+          Invoke-ExeChecked $beta18Installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Beta 18 install"
+          New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot "config"), (Join-Path $dataRoot "state") | Out-Null
+          Set-Content -Path (Join-Path $dataRoot "upgrade-preservation-marker.txt") -Value "preserve Beta 18 user data" -Encoding UTF8
+          @(
+            "DB_MODE=basic",
+            "CONTENTBOX_ROOT=$dataRoot",
+            "DATABASE_URL=file:$($dbPath.Replace('\', '/'))",
+            "CONTENTBOX_PRIVATE_BIND=public",
+            "CONTENTBOX_PRIVATE_ALLOWED_HOSTS=127.0.0.1,localhost,192.168.10.25",
+            "PUBLIC_MODE=off",
+            "PORT=4000",
+            "APP_BASE_URL=http://192.168.10.25:4000",
+            "JWT_SECRET=ci-only-ephemeral-launcher-validation-secret"
+          ) | Set-Content -Path (Join-Path $dataRoot "config\api.env") -Encoding UTF8
+          Set-Content -Path (Join-Path $dataRoot "state\lan-enabled") -Value "enabled" -Encoding ASCII
+          Set-Content -Path (Join-Path $dataRoot "state\launcher-lan-hosts.txt") -Value "192.168.10.25" -Encoding ASCII
+
+          Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Beta 19 upgrade over Beta 18"
+          Assert-Path (Join-Path $dataRoot "upgrade-preservation-marker.txt")
 
           Assert-Path (Join-Path $installDir "runtime\node\node.exe")
           Assert-Path (Join-Path $installDir "apps\api\src\server.ts")
@@ -225,14 +250,19 @@ jobs:
           Assert-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core.lnk")
           if (Test-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Stop Certifyd Core.lnk")) { throw "Legacy Stop shortcut was not removed" }
           if (Test-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Certifyd Core\Certifyd Core Status.lnk")) { throw "Legacy Status shortcut was not removed" }
-          Assert-Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "Certifyd Core.lnk")
+          Assert-Path $desktopShortcut
 
           "Silent install=PASS" | Tee-Object -Append windows-validation-summary.md
           "Desktop and Start Menu shortcuts=PASS" | Tee-Object -Append windows-validation-summary.md
           "Install dir=$installDir" | Tee-Object -Append windows-validation-summary.md
           "CI LOCALAPPDATA=$ciLocalAppData" | Tee-Object -Append windows-validation-summary.md
 
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
+          # Exercise the normal installed shortcut and its LAN path under Windows
+          # PowerShell 5.1. This path previously collided with the read-only,
+          # case-insensitive $Host automatic variable.
+          $env:CERTIFYD_LAUNCHER_NO_UI = "1"
+          $env:CERTIFYD_NO_BROWSER = "1"
+          Start-Process -FilePath $desktopShortcut
           if (-not (Wait-ForHealth -Seconds 75)) {
             Get-Content (Join-Path $dataRoot "logs\certifyd-core.err.log") -ErrorAction SilentlyContinue
             throw "Core did not pass /health after launch."
@@ -249,6 +279,7 @@ jobs:
           }
 
           "Core start=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Beta 18 in-place upgrade and normal desktop shortcut launch=PASS" | Tee-Object -Append windows-validation-summary.md
           "/health=PASS" | Tee-Object -Append windows-validation-summary.md
           "Dashboard=PASS" | Tee-Object -Append windows-validation-summary.md
           "Database exists=PASS" | Tee-Object -Append windows-validation-summary.md
@@ -270,6 +301,24 @@ jobs:
           if ($matchingCoreProcesses.Count -ne 1) {
             throw "Repeated launcher invocation left $($matchingCoreProcesses.Count) installed Core API processes; expected exactly one."
           }
+          $coreProcess = Get-Process -Id $matchingCoreProcesses[0].ProcessId -ErrorAction Stop
+          if ($coreProcess.MainWindowHandle -ne 0) {
+            throw "Installed Core API process owns a visible console window."
+          }
+          "Core API console hidden=PASS" | Tee-Object -Append windows-validation-summary.md
+          $controllerProcesses = @(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -ieq "powershell.exe" -and
+            $_.CommandLine -like "*CertifydCore.Control.ps1*" -and
+            $_.CommandLine -like "*$installDir*"
+          })
+          if ($controllerProcesses.Count -ne 1) {
+            throw "Desktop shortcut left $($controllerProcesses.Count) tray controller processes; expected exactly one."
+          }
+          $controllerProcess = Get-Process -Id $controllerProcesses[0].ProcessId -ErrorAction Stop
+          if ($controllerProcess.MainWindowHandle -ne 0) {
+            throw "Installed tray controller owns a visible console window."
+          }
+          "Tray controller running without visible console=PASS" | Tee-Object -Append windows-validation-summary.md
           "Repeated launch single-process behavior=PASS" | Tee-Object -Append windows-validation-summary.md
 
           $statusOutput = "`n" | powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Status.ps1") 2>&1 | Out-String
@@ -291,6 +340,13 @@ jobs:
             if ($_.Exception.Message -eq "Core still responded after stop.") { throw }
           }
           "Stop=PASS" | Tee-Object -Append windows-validation-summary.md
+
+          # Stop only the tray controller started from this isolated install.
+          foreach ($controller in $controllerProcesses) {
+            Stop-Process -Id $controller.ProcessId -Force -ErrorAction SilentlyContinue
+          }
+          Remove-Item Env:CERTIFYD_LAUNCHER_NO_UI -ErrorAction SilentlyContinue
+          Remove-Item Env:CERTIFYD_NO_BROWSER -ErrorAction SilentlyContinue
 
           Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Silent reinstall"
           Assert-Path (Join-Path $dataRoot "ci-preservation-marker.txt")

@@ -239,10 +239,10 @@ function Normalize-HostList($values) {
   foreach ($value in $values) {
     if (-not $value) { continue }
     foreach ($part in ([string]$value -split '[,\s]+')) {
-      $host = $part.Trim().Trim('"').Trim("'")
-      if (-not $host -or $seen.ContainsKey($host)) { continue }
-      $seen[$host] = $true
-      $result += $host
+      $hostName = $part.Trim().Trim('"').Trim("'")
+      if (-not $hostName -or $seen.ContainsKey($hostName)) { continue }
+      $seen[$hostName] = $true
+      $result += $hostName
     }
   }
   return @($result)

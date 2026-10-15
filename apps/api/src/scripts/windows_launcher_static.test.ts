@@ -11,6 +11,7 @@ const windowsControl = readFileSync(path.join(repoRoot, "packaging/windows/Certi
 const windowsFirewall = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Firewall.ps1"), "utf8");
 
 test("Windows installed launcher gives visible failures and serializes repeated launches", () => {
+  assert.doesNotMatch(launcher, /\$host\s*=/i, "PowerShell's read-only $Host automatic variable must not be assigned");
   assert.match(launcher, /function Show-LaunchFailure/);
   assert.match(launcher, /WScript\.Shell/);
   assert.match(launcher, /Certifyd Core could not start/);
