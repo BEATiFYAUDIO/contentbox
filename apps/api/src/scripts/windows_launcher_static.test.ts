@@ -9,10 +9,14 @@ const launcher = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCor
 const linuxLauncher = readFileSync(path.join(repoRoot, "packaging/linux/start.sh"), "utf8");
 const windowsControl = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Control.ps1"), "utf8");
 const windowsFirewall = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Firewall.ps1"), "utf8");
+const windowsPowerShell51Regression = readFileSync(path.join(repoRoot, "scripts/tests/windows_launcher_powershell51.ps1"), "utf8");
 
 test("Windows installed launcher gives visible failures and serializes repeated launches", () => {
   assert.doesNotMatch(launcher, /\$host\s*=/i, "PowerShell's read-only $Host automatic variable must not be assigned");
   assert.match(launcher, /\$lanHosts\s*=\s*@\(Get-LanHosts\)/, "PowerShell 5.1 must retain a one-item LAN host result as an array");
+  assert.match(windowsPowerShell51Regression, /Assert-HostCount\s+@\(\)\s+0/);
+  assert.match(windowsPowerShell51Regression, /Assert-HostCount\s+@\("192\.168\.10\.25"\)\s+1/);
+  assert.match(windowsPowerShell51Regression, /Assert-HostCount\s+@\("192\.168\.10\.25",\s*"10\.0\.0\.8"\)\s+2/);
   assert.match(launcher, /function Show-LaunchFailure/);
   assert.match(launcher, /WScript\.Shell/);
   assert.match(launcher, /Certifyd Core could not start/);

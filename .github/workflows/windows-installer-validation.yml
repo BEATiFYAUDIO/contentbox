@@ -270,6 +270,11 @@ jobs:
           if (-not $windowsPowerShellVersion.StartsWith('5.1')) {
             throw "Expected Windows PowerShell 5.1, found $windowsPowerShellVersion."
           }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:GITHUB_WORKSPACE "scripts\tests\windows_launcher_powershell51.ps1") -LauncherPath (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows PowerShell 5.1 LAN host case regression failed with exit code $LASTEXITCODE."
+          }
+          "Windows PowerShell 5.1 zero/one/multiple LAN address cases=PASS" | Tee-Object -Append windows-validation-summary.md
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1") -Lan
           if ($LASTEXITCODE -ne 0) {
             throw "Installed LAN launcher failed under Windows PowerShell 5.1 with exit code $LASTEXITCODE."
