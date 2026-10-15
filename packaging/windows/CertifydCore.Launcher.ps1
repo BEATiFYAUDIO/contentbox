@@ -239,10 +239,10 @@ function Normalize-HostList($values) {
   foreach ($value in $values) {
     if (-not $value) { continue }
     foreach ($part in ([string]$value -split '[,\s]+')) {
-      $host = $part.Trim().Trim('"').Trim("'")
-      if (-not $host -or $seen.ContainsKey($host)) { continue }
-      $seen[$host] = $true
-      $result += $host
+      $hostName = $part.Trim().Trim('"').Trim("'")
+      if (-not $hostName -or $seen.ContainsKey($hostName)) { continue }
+      $seen[$hostName] = $true
+      $result += $hostName
     }
   }
   return @($result)
@@ -535,7 +535,7 @@ $lanOptInFile = Join-Path $stateDir "lan-enabled"
 if ($envValues["CONTENTBOX_PRIVATE_BIND"] -eq "public" -or (Test-Path $lanOptInFile)) { $Lan = $true }
 if ($Lan) {
   Set-Content -Path $lanOptInFile -Value "enabled" -Encoding ASCII
-  $lanHosts = Get-LanHosts
+  $lanHosts = @(Get-LanHosts)
   $lanPrimaryHost = if ($lanHosts.Count -gt 0) { $lanHosts[0] } else { "" }
   $launcherHostsFile = Join-Path $stateDir "launcher-lan-hosts.txt"
   $previousLauncherHosts = if (Test-Path $launcherHostsFile) { Get-Content $launcherHostsFile } else { @() }
