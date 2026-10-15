@@ -262,7 +262,11 @@ jobs:
           # case-insensitive $Host automatic variable.
           $env:CERTIFYD_LAUNCHER_NO_UI = "1"
           $env:CERTIFYD_NO_BROWSER = "1"
-          Start-Process -FilePath $desktopShortcut
+          $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($desktopShortcut)
+          if ($shortcut.TargetPath -notmatch '(?i)powershell\.exe$' -or $shortcut.Arguments -notlike '*CertifydCore.Control.ps1*') {
+            throw "Desktop shortcut does not target the installed Certifyd Core tray controller."
+          }
+          Start-Process -FilePath $shortcut.TargetPath -ArgumentList $shortcut.Arguments -WorkingDirectory $shortcut.WorkingDirectory
           if (-not (Wait-ForHealth -Seconds 75)) {
             Get-Content (Join-Path $dataRoot "logs\certifyd-core.err.log") -ErrorAction SilentlyContinue
             throw "Core did not pass /health after launch."
@@ -279,7 +283,8 @@ jobs:
           }
 
           "Core start=PASS" | Tee-Object -Append windows-validation-summary.md
-          "Beta 18 in-place upgrade and normal desktop shortcut launch=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Beta 18 in-place upgrade=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Installed desktop shortcut target under Windows PowerShell 5.1=PASS" | Tee-Object -Append windows-validation-summary.md
           "/health=PASS" | Tee-Object -Append windows-validation-summary.md
           "Dashboard=PASS" | Tee-Object -Append windows-validation-summary.md
           "Database exists=PASS" | Tee-Object -Append windows-validation-summary.md
