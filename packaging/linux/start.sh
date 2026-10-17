@@ -123,9 +123,14 @@ subtract_host_lists() {
     [[ -n "$item" ]] || continue
     remove=0
     while IFS= read -r old; do
-      [[ "$item" == "$old" ]] && remove=1 && break
+      if [[ "$item" == "$old" ]]; then
+        remove=1
+        break
+      fi
     done < <(printf '%s' "$removed" | tr ',' '\n')
-    [[ "$remove" -eq 0 ]] && printf '%s\n' "$item"
+    if [[ "$remove" -eq 0 ]]; then
+      printf '%s\n' "$item"
+    fi
   done < <(printf '%s' "$existing" | tr ',' '\n') | normalize_host_list
 }
 

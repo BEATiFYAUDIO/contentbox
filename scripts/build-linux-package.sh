@@ -67,6 +67,8 @@ echo "[linux-package] Repo: $repo_root"
 echo "[linux-package] Target: linux-$target_arch"
 echo "[linux-package] Node: $node_version"
 
+bash "$repo_root/packaging/linux/lan-host-list.test.sh"
+
 rm -rf "$stage_root"
 mkdir -p "$cache_dir" "$package_dir" "$app_stage/apps/api" "$app_stage/apps/dashboard" "$runtime_stage" "$assets_stage"
 
@@ -185,6 +187,7 @@ archive_path="$package_dir/$archive"
 rm -f "$archive_path" "$archive_path.sha256"
 tar -C "$stage_root" -czf "$archive_path" "Certifyd-Core-$version-linux-$target_arch"
 sha256sum "$archive_path" | tee "$archive_path.sha256"
+bash "$repo_root/scripts/build-linux-deb.sh" "$app_stage" "$target_arch" "$version" "$package_dir"
 
 echo "[linux-package] Done."
 echo "[linux-package] Package: $archive_path"

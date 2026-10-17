@@ -1,5 +1,15 @@
 # Certifyd Core Linux Package
 
+On Debian or a compatible desktop, open the `.deb` package with the graphical
+package installer. Then launch **Certifyd Core** from the application menu.
+Installing the package does not start Core or enable public sharing. Removing
+the package does not remove creator data in your home directory.
+
+If you used a portable Certifyd Core archive before, stop that copy before
+starting the installed application. The two copies must not use the same data
+directory and ports at the same time.
+
+The portable `.tar.gz` package remains available for advanced installations.
 Extract the archive and run:
 
 ```sh

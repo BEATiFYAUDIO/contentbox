@@ -101,6 +101,15 @@ jobs:
             echo "Source commit=$RELEASE_SOURCE_COMMIT"
           } | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
 
+      - name: Validate Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb=".dist/linux-${{ matrix.arch }}/package/Certifyd-Core-${RELEASE_VERSION}-linux-${{ matrix.arch }}.deb"
+          test -f "$deb"
+          bash packaging/linux/deb-package.test.sh "$deb" "${{ matrix.arch }}" "$RELEASE_VERSION"
+          echo "Debian metadata, architecture, desktop integration and data isolation=PASS" | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+
       - name: Extract and validate runtime
         shell: bash
         run: |
@@ -221,12 +230,38 @@ jobs:
             echo "DB size after=$db_size_after"
           } | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
 
+      - name: Install and remove Debian package without touching user data
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb=".dist/linux-${{ matrix.arch }}/package/Certifyd-Core-${RELEASE_VERSION}-linux-${{ matrix.arch }}.deb"
+          data_root="$(mktemp -d)"
+          port="$((${{ matrix.port }} + 10))"
+          printf 'preserve me\n' >"$data_root/existing-creator-data.marker"
+          sudo dpkg -i "$deb"
+          test -x /opt/certifyd-core/start.sh
+          test -f /usr/share/applications/certifyd-core.desktop
+          test ! -f "$data_root/state/certifyd-core.pid"
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="$port" /opt/certifyd-core/start.sh
+          first_pid="$(tr -dc '0-9' <"$data_root/state/certifyd-core.pid")"
+          test -n "$first_pid"
+          curl -fsS "http://127.0.0.1:$port/health" >/dev/null
+          CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="$port" /opt/certifyd-core/start.sh
+          test "$(tr -dc '0-9' <"$data_root/state/certifyd-core.pid")" = "$first_pid"
+          CONTENTBOX_ROOT="$data_root" /opt/certifyd-core/stop.sh
+          sudo dpkg -r certifyd-core
+          test ! -e /opt/certifyd-core
+          test -f "$data_root/existing-creator-data.marker"
+          test -f "$data_root/contentbox.db"
+          echo "Debian install, startup, repeat launch, removal and user-data preservation=PASS" | tee -a "linux-${{ matrix.arch }}-validation-summary.md"
+
       - name: Upload Linux package artifact
         uses: actions/upload-artifact@v4
         with:
           name: certifyd-core-linux-${{ matrix.arch }}-${{ env.RELEASE_VERSION }}
           path: |
             .dist/linux-${{ matrix.arch }}/package/*.tar.gz
+            .dist/linux-${{ matrix.arch }}/package/*.deb
             .dist/linux-${{ matrix.arch }}/package/*.sha256
             linux-${{ matrix.arch }}-validation-summary.md
           if-no-files-found: error
