@@ -527,7 +527,7 @@ export class TunnelManager {
       if (quickConfigPath) args.push("--config", quickConfigPath);
       args.push("--url", targetUrl, "--no-autoupdate");
       if (protocol) args.push("--protocol", protocol);
-      this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
+      this.opts.logger?.info?.(`cloudflared args: ${args.map((arg, index) => args[index - 1] === "--token" ? "[redacted]" : arg).join(" ")}`);
       const child = (this.opts.spawnProcess || spawn)(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
       this.proc = child;
       this.activeMode = "quick";
@@ -707,7 +707,7 @@ export class TunnelManager {
       if (input.configPath) args.push("--config", input.configPath);
       args.push(input.tunnelName);
     }
-    this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
+    this.opts.logger?.info?.(`cloudflared args: ${args.map((arg, index) => args[index - 1] === "--token" ? "[redacted]" : arg).join(" ")}`);
 
     const child = (this.opts.spawnProcess || spawn)(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     this.proc = child;

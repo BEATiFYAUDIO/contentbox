@@ -49,6 +49,18 @@ export function parseLinuxCloudflaredService(output: string): CloudflaredService
   }];
 }
 
+/** SysV status is an independent service signal when systemd is unavailable. */
+export function parseSysVCloudflaredService(installed: boolean, exitCode: number | null): CloudflaredServiceRecord[] {
+  if (!installed) return [];
+  return [{
+    platform: "linux",
+    name: "cloudflared (SysV)",
+    state: exitCode === 0 ? "running" : exitCode === 3 ? "stopped" : "unknown",
+    pid: null,
+    commandLine: ""
+  }];
+}
+
 /** Parse `launchctl list` rows and keep only Cloudflare tunnel jobs. */
 export function parseMacCloudflaredServices(output: string): CloudflaredServiceRecord[] {
   return String(output || "")
@@ -68,6 +80,17 @@ export function parseMacCloudflaredServices(output: string): CloudflaredServiceR
     });
 }
 
+export function parseMacSystemCloudflaredService(label: string, output: string): CloudflaredServiceRecord {
+  const pid = parsePid(String(output || "").match(/^\s*pid\s*=\s*(\d+)/m)?.[1]);
+  return {
+    platform: "darwin",
+    name: label,
+    state: pid ? "running" : "unknown",
+    pid,
+    commandLine: label
+  };
+}
+
 export function serviceInspectionSummary(records: readonly CloudflaredServiceRecord[]) {
   const running = records.filter((record) => record.state === "running");
   return {
@@ -77,6 +100,14 @@ export function serviceInspectionSummary(records: readonly CloudflaredServiceRec
     runningServiceCount: running.length,
     servicePids: running.map((record) => record.pid).filter((pid): pid is number => Boolean(pid))
   };
+}
+
+/** Avoid launching a competing connector when ownership cannot be proven. */
+export function shouldDeferToExternalConnector(input: {
+  serviceRunning: boolean;
+  externalProcessRunning: boolean;
+}) {
+  return input.serviceRunning || input.externalProcessRunning;
 }
 
 export function evaluateNamedRouteEvidence(input: {
