@@ -151,9 +151,7 @@ type Identity = {
   };
 };
 
-const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
 const STORAGE_PUBLIC_BUY_ORIGIN = "contentbox.publicBuyOrigin";
-const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
 
 function readStoredValue(key: string): string {
   if (typeof window === "undefined") return "";
@@ -626,9 +624,7 @@ export default function ContentLibraryPage({
   const discoveryPublishAllowed = capabilities?.publishToDiscovery ?? capabilities?.publicShare ?? canPublicShare;
   const discoveryFreeListingAllowedBase = isBasicTier || discoveryPublishAllowed;
   const apiBase = getApiBase();
-  const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
-  const envPublicStudioOrigin = ((import.meta as any).env?.VITE_PUBLIC_STUDIO_ORIGIN || "").toString().trim();
 
   const [items, setItems] = React.useState<ContentItem[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -771,15 +767,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const routingOfflineReason = "Public routing is offline. Start or restore tunnel sharing in Tunnel & routing.";
   const networkPublishReasonResolved = publicRoutingOnline ? networkPublishReason : routingOfflineReason;
   const discoveryPublishReasonResolved = publicRoutingOnline ? discoveryPublishReason : routingOfflineReason;
-  const [publicBusy, setPublicBusy] = React.useState(false);
-  const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
-  const [publicAdvancedOpen, setPublicAdvancedOpen] = React.useState(false);
-  const [publicConsentOpen, setPublicConsentOpen] = React.useState(false);
-  const [publicConsentDontAskAgain, setPublicConsentDontAskAgain] = React.useState(false);
-  const [publicConsentBusy, setPublicConsentBusy] = React.useState(false);
-  const [, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
-  const [, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
   const [publicOriginFromApi, setPublicOriginFromApi] = React.useState<string>("");
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
@@ -1187,84 +1175,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const res = await api<any>("/api/public/status", "GET");
       setPublicStatus(res || null);
-      if (res?.state === "ACTIVE" && res?.publicOrigin) {
-        setPublicOrigin(res.publicOrigin);
-      }
     } catch {
       // ignore
-    }
-  }
-
-  function formatPublicError(code?: string | null) {
-    if (!code) return "We couldn’t start sharing from this device.";
-    if (code === "consent_required") return "Please approve the download to enable public link.";
-    if (code === "cloudflared_download_failed") return "Unable to download helper tool. Check your connection and try again.";
-    if (code === "cloudflared_unavailable") return "Helper tool unavailable. Try again.";
-    return "We couldn’t start sharing from this device.";
-  }
-
-  async function postPublicGo(consent?: boolean, dontAskAgain?: boolean) {
-    const token = getToken();
-    const body = consent ? { consent: true, dontAskAgain: Boolean(dontAskAgain) } : {};
-    const res = await fetch(`${apiBase}/api/public/go`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
-      },
-      body: JSON.stringify(body)
-    });
-    const text = await res.text();
-    let data: any = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text ? { error: text } : null;
-    }
-    return { ok: res.ok, data };
-  }
-
-  async function startPublicLink() {
-    try {
-      setPublicBusy(true);
-      setPublicMsg(null);
-      const status = await api<any>("/api/public/status", "GET");
-      setPublicStatus(status || null);
-      if (status?.consentRequired) {
-        setPublicConsentOpen(true);
-        setPublicBusy(false);
-        return;
-      }
-      setPublicStatus({ state: "STARTING" });
-      const res = await postPublicGo();
-      setPublicStatus(res.data || null);
-      if (!res.ok) {
-        setPublicMsg(formatPublicError(res.data?.lastError));
-      }
-      if (res.data?.state === "ACTIVE" && res.data?.publicOrigin) {
-        setPublicOrigin(res.data.publicOrigin);
-      }
-    } catch (e: any) {
-      setPublicStatus({ state: "ERROR" });
-      setPublicMsg(formatPublicError(null));
-    } finally {
-      setPublicBusy(false);
-    }
-  }
-
-  async function stopPublicLink() {
-    try {
-      setPublicBusy(true);
-      setPublicMsg(null);
-      await api("/api/public/stop", "POST");
-      setPublicStatus({ state: "STOPPED" });
-      setPublicOrigin("");
-      setPublicBuyOrigin("");
-      setPublicStudioOrigin("");
-    } catch (e: any) {
-      setPublicMsg(e?.message || "Failed to stop public link.");
-    } finally {
-      setPublicBusy(false);
     }
   }
 
@@ -1282,29 +1194,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function confirmPublicConsent() {
-    try {
-      setPublicConsentBusy(true);
-      setPublicMsg(null);
-      setPublicStatus({ state: "STARTING" });
-      const res = await postPublicGo(true, publicConsentDontAskAgain);
-      setPublicStatus(res.data || null);
-      if (!res.ok) {
-        setPublicMsg(formatPublicError(res.data?.lastError));
-      }
-      if (res.data?.state === "ACTIVE" && res.data?.publicOrigin) {
-        setPublicOrigin(res.data.publicOrigin);
-      }
-    } catch {
-      setPublicStatus({ state: "ERROR" });
-      setPublicMsg(formatPublicError(null));
-    } finally {
-      setPublicConsentBusy(false);
-      setPublicConsentOpen(false);
-      setPublicBusy(false);
-    }
-  }
-
   React.useEffect(() => {
     const token = getToken();
     if (!token) return;
@@ -1313,9 +1202,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       try {
         const cfg = await api<any>("/api/public/config", "GET");
         if (cancelled || !cfg) return;
-        setPublicOrigin((prev) => String(cfg?.publicOrigin || "").trim() || prev);
         setPublicBuyOrigin((prev) => String(cfg?.publicBuyOrigin || "").trim() || prev);
-        setPublicStudioOrigin((prev) => String(cfg?.publicStudioOrigin || "").trim() || prev);
       } catch {
         // keep existing fallbacks
       }
@@ -2628,47 +2515,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
   return (
     <div className="space-y-6">
-      {publicConsentOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-          <div className="w-full max-w-md rounded-xl border border-neutral-800 bg-neutral-950 p-4">
-            <div className="text-sm font-medium">Enable Public Link</div>
-            <div className="mt-2 text-xs text-neutral-400 space-y-2">
-              <div>To create a public link, Certifyd Creator needs to download a small helper tool to this device.</div>
-              <div>It will be stored inside your Certifyd Creator data folder and can be removed anytime.</div>
-              <div>This link works while Certifyd Creator is running and may change after restart.</div>
-            </div>
-            <label className="mt-3 flex items-center gap-2 text-xs text-neutral-400" htmlFor="public-consent-dont-ask">
-              <input
-                id="public-consent-dont-ask"
-                name="publicConsentDontAskAgain"
-                type="checkbox"
-                className="h-3 w-3"
-                checked={publicConsentDontAskAgain}
-                onChange={(e) => setPublicConsentDontAskAgain(e.target.checked)}
-              />
-              Don’t ask again on this device
-            </label>
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                onClick={() => setPublicConsentOpen(false)}
-                disabled={publicConsentBusy}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="text-xs rounded-lg border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
-                onClick={confirmPublicConsent}
-                disabled={publicConsentBusy}
-              >
-                {publicConsentBusy ? "Starting…" : "Download & Enable"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
       <div>
         <div className="text-lg font-semibold">Works catalog</div>
         <div className="text-sm text-neutral-400">Create Certifyd Works, connect Legacy works, and keep your catalog organized.</div>
@@ -5233,244 +5079,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           <div className="text-xs text-neutral-300 font-medium">Share</div>
                         </div>
                         <div className="mt-2 text-xs text-neutral-400 space-y-2">
-                          {(() => {
-                            const status = String(publicStatus?.status || "offline");
-                            const isStarting = status === "starting";
-                            const isOn = status === "online";
-                            const isError = status === "error";
-                            const isOffline = status === "offline";
-                            const isLocalOnly = publicStatus?.mode === "off";
-                            const originBase = isOn ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
-                            const publicUrl = originBase ? `${originBase.replace(/\/$/, "")}/p/${it.id}` : "";
-                            return (
-                              <div className="rounded-md border border-neutral-800 bg-neutral-900/30 p-3 space-y-2">
-                                <div className="flex items-center gap-2 text-xs text-neutral-300 font-medium">
-                                  <span>Public Link</span>
-                                  <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[10px] text-neutral-400">
-                                    {publicStatus?.mode === "named"
-                                      ? `Permanent (${publicStatus?.tunnelName || "Named"})`
-                                      : publicStatus?.mode === "quick"
-                                        ? "Temporary (Quick)"
-                                        : "Public: OFF / Local only"}
-                                  </span>
-                                </div>
-                                <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                                  <span
-                                    className={`rounded-full border px-2 py-0.5 ${
-                                      isOn
-                                        ? "border-emerald-900 bg-emerald-950/30 text-emerald-200"
-                                        : isStarting
-                                          ? "border-amber-900 bg-amber-950/30 text-amber-200"
-                                          : isError
-                                            ? "border-red-900 bg-red-950/30 text-red-200"
-                                            : "border-neutral-800 bg-neutral-950 text-neutral-400"
-                                    }`}
-                                  >
-                                    {status === "online"
-                                      ? "ONLINE"
-                                      : status === "starting"
-                                        ? "STARTING"
-                                        : status === "error"
-                                          ? "ERROR"
-                                          : "OFFLINE"}
-                                  </span>
-                                  <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
-                                    DDNS disabled
-                                  </span>
-                                </div>
-
-                                {isOffline ? (
-                                  <>
-                                    <div className="text-xs text-neutral-400">
-                                      {isLocalOnly
-                                        ? "Public: OFF / Local only. Set PUBLIC_MODE=quick to enable a temporary public test URL."
-                                        : publicStatus?.mode === "named"
-                                        ? "Permanent identity link (stable hostname)."
-                                        : "Temporary link (changes on restart)."}
-                                    </div>
-                                    {publicStatus?.message ? (
-                                      <div className="text-xs text-neutral-500">{publicStatus.message}</div>
-                                    ) : null}
-                                    {it.status !== "published" ? (
-                                      <div className="text-xs text-neutral-500">Publish to generate a public buy link.</div>
-                                    ) : null}
-                                    {publicStatus?.mode === "quick" ? (
-                                      <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
-                                    ) : null}
-                                    {publicStatus?.mode === "quick" && publicStatus?.namedConfigured ? (
-                                      <div className="text-xs text-amber-300">
-                                        Named tunnel configured, but local runtime is still in quick mode.
-                                      </div>
-                                    ) : null}
-                                    {!isLocalOnly ? (
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={startPublicLink}
-                                        disabled={publicBusy || isStarting || isOn}
-                                      >
-                                        Enable Public Link
-                                      </button>
-                                    ) : null}
-                                  </>
-                                ) : null}
-
-                                {isStarting ? (
-                                  <>
-                                    <div className="flex items-center gap-2 text-xs text-neutral-300">
-                                      <span className="inline-block h-3 w-3 rounded-full border border-neutral-500 border-t-transparent animate-spin" />
-                                      Starting public link…
-                                    </div>
-                                    <div className="text-xs text-neutral-400">Keep Certifyd Creator open.</div>
-                                  </>
-                                ) : null}
-
-                                {isOn ? (
-                                  <>
-                                    <label className="text-xs text-neutral-400" htmlFor={`public-link-${it.id}`}>
-                                      Public link
-                                    </label>
-                                    {it.status === "published" ? (
-                                      <div className="flex items-center gap-2">
-                                        <input
-                                          id={`public-link-${it.id}`}
-                                          name={`publicLink-${it.id}`}
-                                          readOnly
-                                          className="w-full rounded-md bg-neutral-950 border border-neutral-800 px-2 py-1 text-xs text-neutral-200"
-                                          value={publicUrl || "—"}
-                                          autoComplete="off"
-                                        />
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                          onClick={() => publicUrl && window.open(publicUrl, "_blank", "noopener,noreferrer")}
-                                          disabled={!publicUrl}
-                                        >
-                                          Open
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                          onClick={() => publicUrl && copyText(publicUrl)}
-                                          disabled={!publicUrl}
-                                        >
-                                          Copy link
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <div className="text-xs text-neutral-500">Publish this item to share it publicly.</div>
-                                    )}
-                                    <div className="text-xs text-neutral-400">
-                                      {publicStatus?.mode === "named"
-                                        ? "Identity link stays the same even when offline."
-                                        : "This link works while Certifyd Creator is running on this device."}
-                                    </div>
-                                    {publicStatus?.mode === "quick" ? (
-                                      <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
-                                    ) : (
-                                      <div className="text-xs text-neutral-500">If offline, recipients may see a connection error.</div>
-                                    )}
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={stopPublicLink}
-                                        disabled={publicBusy}
-                                      >
-                                        Stop sharing
-                                      </button>
-                                    </div>
-                                  </>
-                                ) : null}
-
-                                {isError ? (
-                                  <>
-                                    <div className="text-xs text-neutral-300 font-medium">Public link unavailable</div>
-                                    <div className="text-xs text-neutral-400">
-                                      {publicMsg || publicStatus?.message || "We couldn’t start sharing from this device."}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={startPublicLink}
-                                        disabled={publicBusy || isStarting || isOn}
-                                      >
-                                        Try again
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={() => setPublicAdvancedOpen((v) => !v)}
-                                      >
-                                        View details
-                                      </button>
-                                    </div>
-                                  </>
-                                ) : null}
-
-                                <div>
-                                  <button
-                                    type="button"
-                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                    onClick={() => setPublicAdvancedOpen((v) => !v)}
-                                  >
-                                    {publicAdvancedOpen ? "Hide details" : "Advanced"}
-                                  </button>
-                                </div>
-
-                                {publicAdvancedOpen ? (
-                                  <div className="text-[11px] text-neutral-500 space-y-1">
-                                    <div>Status: <span className="text-neutral-300">{status}</span></div>
-                                    <div>
-                                      Last check:{" "}
-                                      <span className="text-neutral-300">
-                                        {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
-                                      </span>
-                                    </div>
-                                    <div>Public origin: <span className="text-neutral-300 break-all">{publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span></div>
-                                    <div>Last error: <span className="text-neutral-300 break-all">{publicStatus?.lastError || publicMsg || "—"}</span></div>
-                                    <div>Consent required: <span className="text-neutral-300">{publicStatus?.consentRequired ? "yes" : "no"}</span></div>
-                                    <div>cloudflared available: <span className="text-neutral-300">{publicStatus?.cloudflared?.available ? "yes" : "no"}</span></div>
-                                    <div>cloudflared path: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.managedPath || "—"}</span></div>
-                                    <div>cloudflared version: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.version || "—"}</span></div>
-                                    <label className="flex items-center gap-2" htmlFor={`public-autostart-${it.id}`}>
-                                      <input
-                                        id={`public-autostart-${it.id}`}
-                                        name={`publicAutostart-${it.id}`}
-                                        type="checkbox"
-                                        className="h-3 w-3"
-                                        checked={Boolean(publicStatus?.autoStartEnabled)}
-                                        onChange={async (e) => {
-                                          try {
-                                            await api("/api/public/autostart", "POST", { enabled: e.target.checked });
-                                            await refreshPublicStatus();
-                                          } catch {
-                                            setPublicMsg("Failed to update auto-start setting.");
-                                          }
-                                        }}
-                                      />
-                                      Auto-start Public Link on launch
-                                    </label>
-                                    <button
-                                      type="button"
-                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                      onClick={async () => {
-                                        try {
-                                          await api("/api/public/consent/reset", "POST");
-                                          await refreshPublicStatus();
-                                        } catch {
-                                          setPublicMsg("Failed to reset consent.");
-                                        }
-                                      }}
-                                    >
-                                      Reset Public Link consent
-                                    </button>
-                                  </div>
-                                ) : null}
-                              </div>
-                            );
-                          })()}
+                          {it.status === "published" && publicStatus?.status === "online" && (publicStatus.canonicalOrigin || publicStatus.publicOrigin) ? (
+                            <div className="text-xs text-neutral-400">
+                              Public link: <a className="text-sky-300 break-all" href={`${String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").replace(/\/$/, "")}/p/${it.id}`} target="_blank" rel="noopener noreferrer">Open work</a>
+                            </div>
+                          ) : null}
 
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
