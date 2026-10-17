@@ -3707,6 +3707,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           <div className="min-w-0 flex-1 space-y-3">
                             <div>
                               <div className="font-medium text-neutral-200">{it.title}</div>
+                              {publicationManifestSha256 ? (
+                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-neutral-300">
+                                  <span>Publication hash: <span className="break-all font-mono text-purple-200">{publicationManifestSha256}</span></span>
+                                  <button type="button" className="rounded border border-neutral-700 px-2 py-0.5 hover:bg-neutral-900" onClick={() => copyText(publicationManifestSha256)}>
+                                    Copy
+                                  </button>
+                                </div>
+                              ) : null}
                               <div className="mt-1 text-xs text-neutral-400">
                                 {publicationManifestSha256
                                   ? "Proven Legacy Work with a Publication Manifest. The Publication Hash is evidence metadata, not a media hash."
@@ -3891,6 +3899,79 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         );
                       })()}
 
+                      {(publishMsg[it.id] || (it.status === "published" && (networkPublishByContent[it.id]?.hasReceipt || networkPublishByContent[it.id]?.manifestHash || manifestSha256))) ? (
+                        <section className="space-y-2 rounded-lg border border-emerald-900/50 bg-emerald-950/10 px-3 py-3">
+                          <div className="text-xs font-medium text-emerald-200">Publication &amp; Proof</div>
+                      {it.status === "published" && (networkPublishByContent[it.id]?.manifestHash || manifestSha256) ? (
+                        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 text-xs text-neutral-200">
+                          <span>Publication hash: <span className="break-all font-mono">{networkPublishByContent[it.id]?.manifestHash || manifestSha256}</span></span>
+                          <button type="button" className="rounded border border-emerald-800 px-2 py-0.5 hover:bg-emerald-950/40" onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || manifestSha256)}>
+                            Copy
+                          </button>
+                        </div>
+                      ) : null}
+                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
+                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
+                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
+                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+                              <div>
+                                Status: <span className="text-emerald-200">Published</span>
+                              </div>
+                              <div>
+                                Published at:{" "}
+                                <span className="text-neutral-200">
+                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>
+                                  Media Hash:{" "}
+                                  <span className="text-neutral-200 break-all">
+                                    {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
+                                  </span>
+                                </span>
+                                {(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256) ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                                    onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "")}
+                                  >
+                                    Copy
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>
+                                  Publish receipt ID:{" "}
+                                  <span className="text-neutral-200 break-all">{networkPublishByContent[it.id]?.receiptId || "—"}</span>
+                                </span>
+                                {networkPublishByContent[it.id]?.receiptId ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                                    onClick={() => copyText(networkPublishByContent[it.id]?.receiptId || "")}
+                                  >
+                                    Copy
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div>
+                                Provider node ID:{" "}
+                                <span className="text-neutral-200 break-all">
+                                  {networkPublishByContent[it.id]?.providerNodeId || "—"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                          {publishMsg[it.id] ? (
+                            <div className="text-xs text-neutral-400">{publishMsg[it.id]}</div>
+                          ) : null}
+                        </section>
+                      ) : null}
+                      <details className="rounded-lg border border-neutral-800 bg-neutral-950/30 px-3 py-2">
+                        <summary className="cursor-pointer text-xs font-medium text-neutral-200">Advanced file and split details</summary>
+                        <div className="mt-3 space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="text-xs text-neutral-400">
                           Repo: <span className="text-neutral-300">{it.repoPath || "not set"}</span>
@@ -4131,6 +4212,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           </div>
                         )}
                       </div>
+
+                        </div>
+                      </details>
 
                       {/* Lineage summary */}
                       {(() => {
@@ -4768,8 +4852,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       {/* Network visibility panel */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="text-xs text-neutral-300 font-medium">Monetization</div>
-                        <div className="mt-2 rounded-md border border-sky-900/40 bg-sky-950/20 p-3">
-                          <div className="text-xs font-medium text-sky-200">Payment / Access Proof</div>
+                        <details className="mt-2 rounded-md border border-sky-900/40 bg-sky-950/20 p-3">
+                          <summary className="cursor-pointer text-xs font-medium text-sky-200">Payment and access details</summary>
                           <div className="mt-2 grid gap-1 text-xs text-neutral-300">
                             <div>
                               Access model: <span className="text-neutral-100">{monetizationAccessLabel}</span>
@@ -4796,7 +4880,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               Last payment method: <span className="text-neutral-100">{lastSale?.paidVia || "—"}</span>
                             </div>
                           </div>
-                        </div>
+                        </details>
                         <div className="mt-2 grid gap-3 md:grid-cols-3">
                           <div className="md:col-span-1">
                             <label className="block text-xs text-neutral-400 mb-1" htmlFor={`priceSats-${it.id}`}>
@@ -5075,8 +5159,394 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       ) : null}
 
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="text-xs text-neutral-300 font-medium">Credits &amp; Rights</div>
+                        <div className="mt-2 text-xs text-neutral-400">Owner: <span className="text-neutral-200">{ownerLabel}</span></div>
+                        {splitsAllowed && split ? (
+                          <div className="mt-1 text-xs text-neutral-300">Royalty split: {split.status === "locked" ? "Locked" : "Draft"} (v{split.versionNumber})</div>
+                        ) : null}
+                        <div className="mt-2 space-y-2 text-xs text-neutral-400">
+                          {creditsLoading[it.id] ? (
+                            <div>Loading credits…</div>
+                          ) : (creditsByContent[it.id] || []).length === 0 ? (
+                            <div className="text-neutral-500">No credits yet.</div>
+                          ) : (
+                            (creditsByContent[it.id] || []).map((c) => (
+                              <div key={c.id} className="flex items-center justify-between gap-3">
+                                <div className="text-neutral-200">
+                                  {c.name} — {c.role}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                    onClick={async () => {
+                                      const name = window.prompt("Credit name", c.name || "");
+                                      if (!name) return;
+                                      const role = window.prompt("Role", c.role || "");
+                                      if (!role) return;
+                                      try {
+                                        await api(`/content/${it.id}/credits/${c.id}`, "PATCH", { name, role });
+                                        await loadCredits(it.id);
+                                      } catch (e: any) {
+                                        setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to update credit." }));
+                                      }
+                                    }}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                    onClick={async () => {
+                                      if (!window.confirm("Remove this credit?")) return;
+                                      try {
+                                        await api(`/content/${it.id}/credits/${c.id}`, "DELETE");
+                                        await loadCredits(it.id);
+                                      } catch (e: any) {
+                                        setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to remove credit." }));
+                                      }
+                                    }}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <label className="sr-only" htmlFor={`credit-name-${it.id}`}>
+                            Credit name
+                          </label>
+                          <input
+                            id={`credit-name-${it.id}`}
+                            name={`creditName-${it.id}`}
+                            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
+                            placeholder="Name"
+                            value={creditNameDraft[it.id] || ""}
+                            onChange={(e) => setCreditNameDraft((m) => ({ ...m, [it.id]: e.target.value }))}
+                            autoComplete="name"
+                          />
+                          <label className="sr-only" htmlFor={`credit-role-${it.id}`}>
+                            Credit role
+                          </label>
+                          <input
+                            id={`credit-role-${it.id}`}
+                            name={`creditRole-${it.id}`}
+                            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
+                            placeholder="Role (Writer, Producer, Mix, Mastering, etc.)"
+                            value={creditRoleDraft[it.id] || ""}
+                            onChange={(e) => setCreditRoleDraft((m) => ({ ...m, [it.id]: e.target.value }))}
+                            autoComplete="off"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                          onClick={async () => {
+                            const name = (creditNameDraft[it.id] || "").trim();
+                            const role = (creditRoleDraft[it.id] || "").trim();
+                            if (!name || !role) {
+                              setCreditMsg((m) => ({ ...m, [it.id]: "Name and role required." }));
+                              return;
+                            }
+                            try {
+                              await api(`/content/${it.id}/credits`, "POST", { name, role });
+                              setCreditNameDraft((m) => ({ ...m, [it.id]: "" }));
+                              setCreditRoleDraft((m) => ({ ...m, [it.id]: "" }));
+                              setCreditMsg((m) => ({ ...m, [it.id]: "Saved." }));
+                              await loadCredits(it.id);
+                            } catch (e: any) {
+                              setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to add credit." }));
+                            }
+                          }}
+                        >
+                          Add credit
+                        </button>
+                        {creditMsg[it.id] ? <div className="mt-1 text-xs text-amber-300">{creditMsg[it.id]}</div> : null}
+                      </div>
+
+                      <section className="space-y-3">
+                        <h3 className="text-xs font-semibold text-neutral-200">Visibility &amp; Sharing</h3>
+                      {/* Network visibility panel */}
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-xs text-neutral-300 font-medium">Work visibility</div>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`text-[10px] px-2 py-1 rounded-full border ${
+                                storefrontStatus === "LISTED"
+                                  ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                                  : storefrontStatus === "UNLISTED"
+                                    ? "border-amber-900 text-amber-200 bg-amber-950/30"
+                                    : "border-neutral-800 text-neutral-400 bg-neutral-950/60"
+                              }`}
+                            >
+                              {visibilityLabel(storefrontStatus)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {parentLinkByContent[it.id] && parentLinkByContent[it.id]?.requiresApproval ? (
+                          <div className="mt-2 text-xs text-neutral-400">
+                            Clearance for public release:{" "}
+                            <span className="text-neutral-200">
+                              {parentLinkByContent[it.id]?.approvedAt ? "Cleared" : "Pending clearance"}
+                            </span>
+                          </div>
+                        ) : null}
+                        {parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt ? (
+                          <div className="mt-1 text-xs text-amber-300">
+                            Public network release is locked until clearance. Private direct-link access still works.
+                          </div>
+                        ) : null}
+                        {parentLinkByContent[it.id]?.requiresApproval &&
+                        !parentLinkByContent[it.id]?.approvedAt &&
+                        isOwner ? (
+                          <div className="mt-2 space-y-2 text-xs text-neutral-500">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                                onClick={() =>
+                                  requestClearanceForContent(
+                                    it.id,
+                                    parentLinkByContent[it.id]!.linkId,
+                                    deriveClearanceRequestMode(parentLinkByContent[it.id])
+                                  )
+                                }
+                                disabled={!crossNodeAllowed}
+                                title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
+                              >
+                                {clearanceRequestActionLabel(parentLinkByContent[it.id])}
+                              </button>
+                              {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
+                                <button
+                                  type="button"
+                                  className="text-[11px] rounded border border-amber-900 px-2 py-0.5 text-amber-200 hover:bg-amber-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  onClick={() =>
+                                    requestClearanceForContent(
+                                      it.id,
+                                      parentLinkByContent[it.id]!.linkId,
+                                      deriveClearanceRequestMode(parentLinkByContent[it.id])
+                                    )
+                                  }
+                                  disabled={!crossNodeAllowed}
+                                  title={!crossNodeAllowed ? clearanceReason : "Retry request"}
+                                >
+                                  Retry
+                                </button>
+                              ) : null}
+                            </div>
+                            {!crossNodeAllowed ? (
+                              <div className="text-[11px] text-amber-300">
+                                {clearanceReason}{" "}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    window.history.pushState({}, "", "/config");
+                                    window.location.reload();
+                                  }}
+                                  className="underline text-amber-200 hover:text-amber-100"
+                                >
+                                  Set up named link
+                                </button>
+                              </div>
+                            ) : null}
+                            {clearanceRequestMsgByContent[it.id] ? (
+                              <div className="text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
+                            ) : null}
+                            {parentLinkByContent[it.id]?.clearanceRequest ? (
+                              <div className="text-[11px] text-neutral-400">
+                                Clearance requested:{" "}
+                                {titleCase(String(parentLinkByContent[it.id]!.clearanceRequest.status || "pending"))}
+                                {" "}•{" "}
+                                {formatDateLabel(parentLinkByContent[it.id]!.clearanceRequest.requestedAt)}
+                              </div>
+                            ) : null}
+                            {clearanceRequestMetaByContent[it.id]?.lastAttemptAt ? (
+                              <div className="text-[11px] text-neutral-500">
+                                Last attempt: {new Date(clearanceRequestMetaByContent[it.id]!.lastAttemptAt as string).toLocaleString()}
+                              </div>
+                            ) : null}
+                            {clearanceLinksByContent[it.id]?.length ? (
+                              <div className="space-y-1 text-[11px] text-neutral-400">
+                                <div className="text-neutral-500">Clearance links:</div>
+                                {clearanceLinksByContent[it.id]!.map((l, idx) => (
+                                  <div key={idx} className="flex items-center gap-2">
+                                    <span className="truncate">{l.email}</span>
+                                    <button
+                                      type="button"
+                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                      onClick={() => navigator.clipboard.writeText(l.url)}
+                                    >
+                                      Copy approval link
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        <div className="mt-2 grid gap-3 md:grid-cols-3">
+                          <div className="md:col-span-1">
+                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`storefront-status-${it.id}`}>
+                              Visibility
+                            </label>
+                            <select
+                              id={`storefront-status-${it.id}`}
+                              name={`storefrontStatus-${it.id}`}
+                              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
+                              value={storefrontStatus}
+                              onChange={(e) =>
+                                updateStorefrontStatus(it.id, e.target.value as "DISABLED" | "UNLISTED" | "LISTED")
+                              }
+                              disabled={
+                                busy ||
+                                (parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt)
+                              }
+                            >
+                              <option value="DISABLED">Hidden</option>
+                              <option value="UNLISTED">Direct Link</option>
+                              <option value="LISTED">Discoverable</option>
+                            </select>
+                          </div>
+
+                          <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
+                            <div>Hidden: not reachable from public network routes.</div>
+                            <div>Direct Link: reachable by direct link (not discoverable).</div>
+                            <div>Discoverable: reachable and available for discovery surfaces.</div>
+                          </div>
+                        </div>
+
+                        <details className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/30 px-3 py-2">
+                          <summary className="cursor-pointer text-xs font-medium text-neutral-200">Advanced visibility checks</summary>
+                          <div className="mt-3 space-y-3">
+                        <div className="mt-3 space-y-2 text-xs text-neutral-400">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              Public metadata: <span className="text-neutral-300 break-all">{publicMetaUrl}</span>
+                            </div>
+                            <button
+                              type="button"
+                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={() => copyText(publicMetaUrl)}
+                            >
+                              Copy link
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              Public access: <span className="text-neutral-300 break-all">{publicAccessUrl}</span>
+                            </div>
+                            <button
+                              type="button"
+                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={() => copyText(publicAccessUrl)}
+                            >
+                              Copy link
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
+                          <div className="font-medium text-neutral-300 mb-1">Payment capability</div>
+                          {identitiesLoading ? (
+                            <div>Loading payout destinations…</div>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              <span
+                                className={`rounded-full border px-2 py-1 ${
+                                  onchainAvailable
+                                    ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                                    : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
+                                }`}
+                              >
+                                On-chain: {onchainAvailable ? "Available" : "Not configured"}
+                              </span>
+                              <span
+                                className={`rounded-full border px-2 py-1 ${
+                                  lightningAvailable
+                                    ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                                    : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
+                                }`}
+                              >
+                                Lightning: {lightningAvailable ? "Available" : "Not configured"}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-medium text-neutral-300">Network Visibility Payload</div>
+                            <button
+                              type="button"
+                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={async () => {
+                                setStorefrontPreviewLoading((m) => ({ ...m, [it.id]: true }));
+                                try {
+                                  const res = await fetch(publicMetaUrl);
+                                  const text = await res.text();
+                                  let json: any = null;
+                                  try {
+                                    json = text ? JSON.parse(text) : null;
+                                  } catch {
+                                    json = { error: text || "Invalid response" };
+                                  }
+                                  setStorefrontPreview((m) => ({ ...m, [it.id]: json }));
+                                } catch (e: any) {
+                                  setStorefrontPreview((m) => ({ ...m, [it.id]: { error: e?.message || "Failed to fetch" } }));
+                                } finally {
+                                  setStorefrontPreviewLoading((m) => ({ ...m, [it.id]: false }));
+                                }
+                              }}
+                            >
+                              {storefrontPreviewLoading[it.id] ? "Loading…" : "Preview network payload"}
+                            </button>
+                          </div>
+                          {storefrontPreview[it.id] ? (
+                            <pre className="mt-2 whitespace-pre-wrap break-words text-[11px] text-neutral-200">
+                              {JSON.stringify(storefrontPreview[it.id], null, 2)}
+                            </pre>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-3 flex items-center justify-between gap-3">
+                          <div className="text-xs text-neutral-500">
+                            {storefrontStatus === "DISABLED"
+                              ? "Enable network visibility (Direct Link or Discoverable) to test public purchase flow."
+                              : it.status !== "published"
+                                ? "Publish content to generate a manifest before purchase."
+                                : !manifestSha256
+                                  ? "Manifest missing."
+                                  : "Ready to validate the public purchase flow."}
+                          </div>
+                          <button
+                            type="button"
+                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                            onClick={() =>
+                              setTestPurchaseFor({
+                                contentId: it.id,
+                                manifestSha256,
+                                storefrontStatus,
+                                contentStatus: it.status
+                              })
+                            }
+                            disabled={(!isAuthed && storefrontStatus === "DISABLED") || it.status !== "published" || !manifestSha256}
+                          >
+                            Test public purchase flow
+                          </button>
+                        </div>
+                          </div>
+                        </details>
+                      </div>
+
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="flex items-center justify-between gap-2">
-                          <div className="text-xs text-neutral-300 font-medium">Share</div>
+                          <div className="text-xs text-neutral-300 font-medium">Work links</div>
                         </div>
                         <div className="mt-2 text-xs text-neutral-400 space-y-2">
                           {it.status === "published" && publicStatus?.status === "online" && (publicStatus.canonicalOrigin || publicStatus.publicOrigin) ? (
@@ -5085,6 +5555,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             </div>
                           ) : null}
 
+                          <details className="rounded-lg border border-neutral-800 px-3 py-2">
+                            <summary className="cursor-pointer text-xs font-medium text-neutral-200">Buy, local, embed &amp; P2P links</summary>
+                            <div className="mt-2 space-y-2">
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (activeOrigin || publicOriginFromApi || "").trim();
@@ -5117,9 +5590,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <>
                                 {isBasicTier ? null : (
                                   <>
-                                    <div className="flex items-center justify-between gap-2">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
                                       <div className="text-[11px] text-neutral-500">Buy links</div>
-                                      <div className="flex items-center gap-2">
+                                      <div className="flex flex-wrap items-center gap-2">
                                         {(["public", "config"] as const).map((tab) => {
                                           const active = (buyLinksTabByContent[it.id] || "public") === tab;
                                           return (
@@ -5138,7 +5611,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                                 }))
                                               }
                                             >
-                                              {tab === "public" ? "Hide" : "Show"}
+                                              {tab === "public" ? "Public buy link" : "Local, embed & P2P"}
                                             </button>
                                           );
                                         })}
@@ -5336,442 +5809,19 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               </>
                             );
                           })()}
+                            </div>
+                          </details>
                         </div>
                       </div>
 
-                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="text-xs text-neutral-300 font-medium">Credits</div>
-                        <div className="mt-2 space-y-2 text-xs text-neutral-400">
-                          {creditsLoading[it.id] ? (
-                            <div>Loading credits…</div>
-                          ) : (creditsByContent[it.id] || []).length === 0 ? (
-                            <div className="text-neutral-500">No credits yet.</div>
-                          ) : (
-                            (creditsByContent[it.id] || []).map((c) => (
-                              <div key={c.id} className="flex items-center justify-between gap-3">
-                                <div className="text-neutral-200">
-                                  {c.name} — {c.role}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                    onClick={async () => {
-                                      const name = window.prompt("Credit name", c.name || "");
-                                      if (!name) return;
-                                      const role = window.prompt("Role", c.role || "");
-                                      if (!role) return;
-                                      try {
-                                        await api(`/content/${it.id}/credits/${c.id}`, "PATCH", { name, role });
-                                        await loadCredits(it.id);
-                                      } catch (e: any) {
-                                        setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to update credit." }));
-                                      }
-                                    }}
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                    onClick={async () => {
-                                      if (!window.confirm("Remove this credit?")) return;
-                                      try {
-                                        await api(`/content/${it.id}/credits/${c.id}`, "DELETE");
-                                        await loadCredits(it.id);
-                                      } catch (e: any) {
-                                        setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to remove credit." }));
-                                      }
-                                    }}
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                              </div>
-                            ))
-                          )}
-                        </div>
 
-                        {publishMsg[it.id] ? (
-                          <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div>
-                        ) : null}
-                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
-                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
-                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
-                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
-                              <div>
-                                Status: <span className="text-emerald-200">Published</span>
-                              </div>
-                              <div>
-                                Published at:{" "}
-                                <span className="text-neutral-200">
-                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
-                                </span>
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span>
-                                  Media Hash:{" "}
-                                  <span className="text-neutral-200 break-all">
-                                    {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
-                                  </span>
-                                </span>
-                                {(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256) ? (
-                                  <button
-                                    type="button"
-                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
-                                    onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "")}
-                                  >
-                                    Copy
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span>
-                                  Publish receipt ID:{" "}
-                                  <span className="text-neutral-200 break-all">{networkPublishByContent[it.id]?.receiptId || "—"}</span>
-                                </span>
-                                {networkPublishByContent[it.id]?.receiptId ? (
-                                  <button
-                                    type="button"
-                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
-                                    onClick={() => copyText(networkPublishByContent[it.id]?.receiptId || "")}
-                                  >
-                                    Copy
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div>
-                                Provider node ID:{" "}
-                                <span className="text-neutral-200 break-all">
-                                  {networkPublishByContent[it.id]?.providerNodeId || "—"}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
 
-                        <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          <label className="sr-only" htmlFor={`credit-name-${it.id}`}>
-                            Credit name
-                          </label>
-                          <input
-                            id={`credit-name-${it.id}`}
-                            name={`creditName-${it.id}`}
-                            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
-                            placeholder="Name"
-                            value={creditNameDraft[it.id] || ""}
-                            onChange={(e) => setCreditNameDraft((m) => ({ ...m, [it.id]: e.target.value }))}
-                            autoComplete="name"
-                          />
-                          <label className="sr-only" htmlFor={`credit-role-${it.id}`}>
-                            Credit role
-                          </label>
-                          <input
-                            id={`credit-role-${it.id}`}
-                            name={`creditRole-${it.id}`}
-                            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
-                            placeholder="Role (Writer, Producer, Mix, Mastering, etc.)"
-                            value={creditRoleDraft[it.id] || ""}
-                            onChange={(e) => setCreditRoleDraft((m) => ({ ...m, [it.id]: e.target.value }))}
-                            autoComplete="off"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                          onClick={async () => {
-                            const name = (creditNameDraft[it.id] || "").trim();
-                            const role = (creditRoleDraft[it.id] || "").trim();
-                            if (!name || !role) {
-                              setCreditMsg((m) => ({ ...m, [it.id]: "Name and role required." }));
-                              return;
-                            }
-                            try {
-                              await api(`/content/${it.id}/credits`, "POST", { name, role });
-                              setCreditNameDraft((m) => ({ ...m, [it.id]: "" }));
-                              setCreditRoleDraft((m) => ({ ...m, [it.id]: "" }));
-                              setCreditMsg((m) => ({ ...m, [it.id]: "Saved." }));
-                              await loadCredits(it.id);
-                            } catch (e: any) {
-                              setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to add credit." }));
-                            }
-                          }}
-                        >
-                          Add credit
-                        </button>
-                        {creditMsg[it.id] ? <div className="mt-1 text-xs text-amber-300">{creditMsg[it.id]}</div> : null}
-                      </div>
 
-                      {/* Network visibility panel */}
-                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-xs text-neutral-300 font-medium">Network Visibility</div>
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`text-[10px] px-2 py-1 rounded-full border ${
-                                storefrontStatus === "LISTED"
-                                  ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
-                                  : storefrontStatus === "UNLISTED"
-                                    ? "border-amber-900 text-amber-200 bg-amber-950/30"
-                                    : "border-neutral-800 text-neutral-400 bg-neutral-950/60"
-                              }`}
-                            >
-                              {visibilityLabel(storefrontStatus)}
-                            </span>
-                          </div>
-                        </div>
+                      </section>
 
-                        {parentLinkByContent[it.id] && parentLinkByContent[it.id]?.requiresApproval ? (
-                          <div className="mt-2 text-xs text-neutral-400">
-                            Clearance for public release:{" "}
-                            <span className="text-neutral-200">
-                              {parentLinkByContent[it.id]?.approvedAt ? "Cleared" : "Pending clearance"}
-                            </span>
-                          </div>
-                        ) : null}
-                        {parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt ? (
-                          <div className="mt-1 text-xs text-amber-300">
-                            Public network release is locked until clearance. Private direct-link access still works.
-                          </div>
-                        ) : null}
-                        {parentLinkByContent[it.id]?.requiresApproval &&
-                        !parentLinkByContent[it.id]?.approvedAt &&
-                        isOwner ? (
-                          <div className="mt-2 space-y-2 text-xs text-neutral-500">
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                                onClick={() =>
-                                  requestClearanceForContent(
-                                    it.id,
-                                    parentLinkByContent[it.id]!.linkId,
-                                    deriveClearanceRequestMode(parentLinkByContent[it.id])
-                                  )
-                                }
-                                disabled={!crossNodeAllowed}
-                                title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
-                              >
-                                {clearanceRequestActionLabel(parentLinkByContent[it.id])}
-                              </button>
-                              {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
-                                <button
-                                  type="button"
-                                  className="text-[11px] rounded border border-amber-900 px-2 py-0.5 text-amber-200 hover:bg-amber-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  onClick={() =>
-                                    requestClearanceForContent(
-                                      it.id,
-                                      parentLinkByContent[it.id]!.linkId,
-                                      deriveClearanceRequestMode(parentLinkByContent[it.id])
-                                    )
-                                  }
-                                  disabled={!crossNodeAllowed}
-                                  title={!crossNodeAllowed ? clearanceReason : "Retry request"}
-                                >
-                                  Retry
-                                </button>
-                              ) : null}
-                            </div>
-                            {!crossNodeAllowed ? (
-                              <div className="text-[11px] text-amber-300">
-                                {clearanceReason}{" "}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    window.history.pushState({}, "", "/config");
-                                    window.location.reload();
-                                  }}
-                                  className="underline text-amber-200 hover:text-amber-100"
-                                >
-                                  Set up named link
-                                </button>
-                              </div>
-                            ) : null}
-                            {clearanceRequestMsgByContent[it.id] ? (
-                              <div className="text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
-                            ) : null}
-                            {parentLinkByContent[it.id]?.clearanceRequest ? (
-                              <div className="text-[11px] text-neutral-400">
-                                Clearance requested:{" "}
-                                {titleCase(String(parentLinkByContent[it.id]!.clearanceRequest.status || "pending"))}
-                                {" "}•{" "}
-                                {formatDateLabel(parentLinkByContent[it.id]!.clearanceRequest.requestedAt)}
-                              </div>
-                            ) : null}
-                            {clearanceRequestMetaByContent[it.id]?.lastAttemptAt ? (
-                              <div className="text-[11px] text-neutral-500">
-                                Last attempt: {new Date(clearanceRequestMetaByContent[it.id]!.lastAttemptAt as string).toLocaleString()}
-                              </div>
-                            ) : null}
-                            {clearanceLinksByContent[it.id]?.length ? (
-                              <div className="space-y-1 text-[11px] text-neutral-400">
-                                <div className="text-neutral-500">Clearance links:</div>
-                                {clearanceLinksByContent[it.id]!.map((l, idx) => (
-                                  <div key={idx} className="flex items-center gap-2">
-                                    <span className="truncate">{l.email}</span>
-                                    <button
-                                      type="button"
-                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                      onClick={() => navigator.clipboard.writeText(l.url)}
-                                    >
-                                      Copy approval link
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-
-                        <div className="mt-2 grid gap-3 md:grid-cols-3">
-                          <div className="md:col-span-1">
-                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`storefront-status-${it.id}`}>
-                              Visibility
-                            </label>
-                            <select
-                              id={`storefront-status-${it.id}`}
-                              name={`storefrontStatus-${it.id}`}
-                              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
-                              value={storefrontStatus}
-                              onChange={(e) =>
-                                updateStorefrontStatus(it.id, e.target.value as "DISABLED" | "UNLISTED" | "LISTED")
-                              }
-                              disabled={
-                                busy ||
-                                (parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt)
-                              }
-                            >
-                              <option value="DISABLED">Hidden</option>
-                              <option value="UNLISTED">Direct Link</option>
-                              <option value="LISTED">Discoverable</option>
-                            </select>
-                          </div>
-
-                          <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
-                            <div>Hidden: not reachable from public network routes.</div>
-                            <div>Direct Link: reachable by direct link (not discoverable).</div>
-                            <div>Discoverable: reachable and available for discovery surfaces.</div>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 space-y-2 text-xs text-neutral-400">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              Public metadata: <span className="text-neutral-300 break-all">{publicMetaUrl}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={() => copyText(publicMetaUrl)}
-                            >
-                              Copy link
-                            </button>
-                          </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              Public access: <span className="text-neutral-300 break-all">{publicAccessUrl}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={() => copyText(publicAccessUrl)}
-                            >
-                              Copy link
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
-                          <div className="font-medium text-neutral-300 mb-1">Payment capability</div>
-                          {identitiesLoading ? (
-                            <div>Loading payout destinations…</div>
-                          ) : (
-                            <div className="flex flex-wrap gap-2">
-                              <span
-                                className={`rounded-full border px-2 py-1 ${
-                                  onchainAvailable
-                                    ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
-                                    : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
-                                }`}
-                              >
-                                On-chain: {onchainAvailable ? "Available" : "Not configured"}
-                              </span>
-                              <span
-                                className={`rounded-full border px-2 py-1 ${
-                                  lightningAvailable
-                                    ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
-                                    : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
-                                }`}
-                              >
-                                Lightning: {lightningAvailable ? "Available" : "Not configured"}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="font-medium text-neutral-300">Network Visibility Payload</div>
-                            <button
-                              type="button"
-                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={async () => {
-                                setStorefrontPreviewLoading((m) => ({ ...m, [it.id]: true }));
-                                try {
-                                  const res = await fetch(publicMetaUrl);
-                                  const text = await res.text();
-                                  let json: any = null;
-                                  try {
-                                    json = text ? JSON.parse(text) : null;
-                                  } catch {
-                                    json = { error: text || "Invalid response" };
-                                  }
-                                  setStorefrontPreview((m) => ({ ...m, [it.id]: json }));
-                                } catch (e: any) {
-                                  setStorefrontPreview((m) => ({ ...m, [it.id]: { error: e?.message || "Failed to fetch" } }));
-                                } finally {
-                                  setStorefrontPreviewLoading((m) => ({ ...m, [it.id]: false }));
-                                }
-                              }}
-                            >
-                              {storefrontPreviewLoading[it.id] ? "Loading…" : "Preview network payload"}
-                            </button>
-                          </div>
-                          {storefrontPreview[it.id] ? (
-                            <pre className="mt-2 whitespace-pre-wrap break-words text-[11px] text-neutral-200">
-                              {JSON.stringify(storefrontPreview[it.id], null, 2)}
-                            </pre>
-                          ) : null}
-                        </div>
-
-                        <div className="mt-3 flex items-center justify-between gap-3">
-                          <div className="text-xs text-neutral-500">
-                            {storefrontStatus === "DISABLED"
-                              ? "Enable network visibility (Direct Link or Discoverable) to test public purchase flow."
-                              : it.status !== "published"
-                                ? "Publish content to generate a manifest before purchase."
-                                : !manifestSha256
-                                  ? "Manifest missing."
-                                  : "Ready to validate the public purchase flow."}
-                          </div>
-                          <button
-                            type="button"
-                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                            onClick={() =>
-                              setTestPurchaseFor({
-                                contentId: it.id,
-                                manifestSha256,
-                                storefrontStatus,
-                                contentStatus: it.status
-                              })
-                            }
-                            disabled={(!isAuthed && storefrontStatus === "DISABLED") || it.status !== "published" || !manifestSha256}
-                          >
-                            Test public purchase flow
-                          </button>
-                        </div>
-                      </div>
-
+                      <details className="rounded-lg border border-neutral-800 bg-neutral-950/30 px-3 py-2">
+                        <summary className="cursor-pointer text-xs font-medium text-neutral-200">History and audit</summary>
+                        <div className="mt-3 space-y-3">
                       <HistoryFeed
                         title="Content history"
                         items={auditByContent[it.id] || []}
@@ -5790,6 +5840,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         exportName={`content-audit-${it.id}.json`}
                         eventFilter="content"
                       />
+                        </div>
+                      </details>
 
                     </div>
                   )}
