@@ -187,6 +187,7 @@ archive_path="$package_dir/$archive"
 rm -f "$archive_path" "$archive_path.sha256"
 tar -C "$stage_root" -czf "$archive_path" "Certifyd-Core-$version-linux-$target_arch"
 sha256sum "$archive_path" | tee "$archive_path.sha256"
+bash "$repo_root/scripts/build-linux-deb.sh" "$app_stage" "$target_arch" "$version" "$package_dir"
 
 echo "[linux-package] Done."
 echo "[linux-package] Package: $archive_path"
