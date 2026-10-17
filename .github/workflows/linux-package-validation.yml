@@ -169,7 +169,10 @@ jobs:
 
           desktop_root="$(mktemp -d)"
           XDG_DATA_HOME="$desktop_root" "$app/install-desktop.sh"
+          grep -Fq "Exec=\"$app/tray.sh\"" "$desktop_root/applications/certifyd-core.desktop"
           grep -Fq "Exec=\"$app/control.sh\" start" "$desktop_root/applications/certifyd-core.desktop"
+          env -u DISPLAY -u WAYLAND_DISPLAY CERTIFYD_NO_BROWSER=1 CONTENTBOX_ROOT="$data_root" PORT="${{ matrix.port }}" "$app/tray.sh"
+          test "$(tr -dc '0-9' <"$data_root/state/certifyd-core.pid")" = "$first_pid"
           grep -Fq "Exec=\"$app/control.sh\" lan" "$desktop_root/applications/certifyd-core.desktop"
           test ! -e "$desktop_root/applications/certifyd-core-lan.desktop"
           test -f "$data_root/contentbox.db"
@@ -208,6 +211,7 @@ jobs:
             echo "Second launch single-process behavior=PASS"
             echo "Stale PID ownership safety=PASS"
             echo "Desktop entries with quoted paths=PASS"
+            echo "Tray fallback start without duplicate process=PASS"
             echo "Stop/status=PASS"
             echo "Restart/persistence=PASS"
             echo "Moved package=PASS"
