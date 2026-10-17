@@ -38,5 +38,9 @@ Optional desktop integration:
 ./install-desktop.sh
 ```
 
-This installs one `Certifyd Core` launcher. Its desktop actions provide Open,
-LAN access, Restart, Stop, and View Logs controls without adding GUI dependencies.
+This installs one `Certifyd Core` launcher. On desktops with GTK 3 and a
+StatusNotifier/AppIndicator host, it also provides a tray menu with Core health,
+Open Dashboard, Start Core, Stop Core, View Logs, and Quit. The desktop actions
+remain available when a tray is unsupported. Stopping Core closes its public
+listener and any Core-owned tunnel process; it does not stop an OS-managed
+cloudflared service. No terminal window is needed for the desktop launcher.

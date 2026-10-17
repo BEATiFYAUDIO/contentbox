@@ -12,15 +12,19 @@ cat >"$desktop_file" <<EOF
 Type=Application
 Name=Certifyd Core
 Comment=Launch Certifyd Core local dashboard
-Exec="$script_dir/control.sh" start
+Exec="$script_dir/tray.sh"
 Icon=$icon_path
 Terminal=false
 Categories=Utility;
-Actions=Open;LAN;Restart;Stop;Logs;
+Actions=Open;Start;LAN;Restart;Stop;Logs;
 
 [Desktop Action Open]
 Name=Open Dashboard
 Exec="$script_dir/control.sh" open
+
+[Desktop Action Start]
+Name=Start Core
+Exec="$script_dir/control.sh" start
 
 [Desktop Action LAN]
 Name=Enable or Refresh LAN Access

@@ -148,8 +148,11 @@ test("Named selection is persisted only after the current route verification suc
     serverSource.indexOf("async function handleNamedPublicStart")
   );
   assert.match(selector, /namedVerificationStillCurrent/);
-  assert.match(selector, /setPublicSharingModeOverride\("named"\)/);
-  assert.ok(selector.indexOf("namedVerificationStillCurrent") < selector.indexOf('setPublicSharingModeOverride("named")'));
+  assert.match(selector, /activateVerifiedNamedSharing/);
+  assert.match(selector, /publicSharingModeOverride: "named"/);
+  assert.match(selector, /publicSharingConsent:/);
+  assert.match(selector, /publicSharingAutoStart: true/);
+  assert.match(selector, /writeLocalState\(next\)/);
 });
 
 test("dedicated Named start cannot fall through to Quick startup", () => {

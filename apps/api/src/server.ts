@@ -76,6 +76,7 @@ import {
   getNamedTunnelConfig,
   isNamedConfigured,
   resolveEffectivePublicMode,
+  publicAvailability,
   resolvePublicModeSelection,
   shouldAutoStartSelectedQuick,
   type PublicMode,
@@ -103,6 +104,8 @@ import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
 import { validateNodeMode, writeNodeConfig, writeProductTier } from "./lib/nodeConfig.js";
 import { deriveActivationStatusMessageFromNetwork, deriveUserNetworkStatusFromState } from "./lib/userNetworkStatus.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
+import { activateVerifiedNamedSharing } from "./lib/namedSharingActivation.js";
+import { findCloudflaredBinary } from "./lib/cloudflaredBinaryDetection.js";
 import {
   classifyNamedControlOwnership,
   findExactConfiguredTunnel,
@@ -111,9 +114,12 @@ import {
 } from "./lib/namedTunnelSafety.js";
 import {
   parseLinuxCloudflaredService,
+  parseSysVCloudflaredService,
   parseMacCloudflaredServices,
+  parseMacSystemCloudflaredService,
   parseWindowsCloudflaredServices,
   serviceInspectionSummary,
+  shouldDeferToExternalConnector,
   evaluateNamedRouteEvidence,
   type CloudflaredServiceRecord
 } from "./lib/cloudflaredServiceInspection.js";
@@ -1907,13 +1913,16 @@ const tunnelManager = new TunnelManager({
 });
 const publicServerLifecycle = new PublicServerLifecycle();
 const publicLifecycleMutex = new AsyncLifecycleMutex();
+let quickRouteHealth: { origin: string; checkedAt: number; sameInstance: boolean } | null = null;
+let quickRouteProbe: Promise<void> | null = null;
 
 function resolveCloudflaredCmdFast(): string | null {
-  const envPath = String(process.env.CLOUDFLARED_PATH || "").trim();
-  if (envPath && fsSync.existsSync(envPath)) return envPath;
-  const localBin = path.join(CLOUDFLARED_BIN_DIR, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
-  if (fsSync.existsSync(localBin)) return localBin;
-  return null;
+  return findCloudflaredBinary({
+    configuredPath: String(process.env.CLOUDFLARED_PATH || "").trim(),
+    managedDir: CLOUDFLARED_BIN_DIR,
+    platform: process.platform,
+    pathEnv: process.env.PATH
+  });
 }
 
 function resolveCloudflaredCmd(): string | null {
@@ -1972,8 +1981,8 @@ function getCloudflaredStatus(): { available: boolean; managedPath: string | nul
     ? { available: false, managedPath: null, version: null }
     : {
         available: true,
-        managedPath: resolved === "cloudflared" ? null : resolved,
-        version: null
+        managedPath: resolved,
+        version: readCloudflaredVersionSync(resolved)
       };
   cloudflaredStatusCache = {
     expiresAt: now + CLOUDFLARED_STATUS_CACHE_TTL_MS,
@@ -2023,7 +2032,10 @@ function writeLocalState(next: LocalState) {
     const tmp = `${STATE_FILE}.tmp`;
     fsSync.writeFileSync(tmp, JSON.stringify(next, null, 2));
     fsSync.renameSync(tmp, STATE_FILE);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getPublicSharingConsent() {
@@ -10706,27 +10718,46 @@ function inspectCloudflaredServices(): CloudflaredServiceRecord[] {
     return parseWindowsCloudflaredServices(output);
   }
   if (process.platform === "linux") {
+    let systemdRecords: CloudflaredServiceRecord[] = [];
     try {
       const result = spawnSync(
         "systemctl",
         ["show", "cloudflared.service", "--property=Id,LoadState,ActiveState,MainPID,ExecStart", "--no-pager"],
         { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS }
       );
-      return parseLinuxCloudflaredService(String(result.stdout || ""));
+      if (!result.error && result.status === 0) systemdRecords = parseLinuxCloudflaredService(String(result.stdout || ""));
+    } catch {}
+    if (systemdRecords.length) return systemdRecords;
+    const script = "/etc/init.d/cloudflared";
+    if (!fsSync.existsSync(script)) return [];
+    try {
+      const result = spawnSync(script, ["status"], { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS });
+      return parseSysVCloudflaredService(true, result.error ? null : result.status);
     } catch {
-      return [];
+      return parseSysVCloudflaredService(true, null);
     }
   }
   if (process.platform === "darwin") {
+    const records: CloudflaredServiceRecord[] = [];
     try {
       const result = spawnSync("launchctl", ["list"], {
         encoding: "utf8",
         timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS
       });
-      return parseMacCloudflaredServices(String(result.stdout || ""));
-    } catch {
-      return [];
-    }
+      records.push(...parseMacCloudflaredServices(String(result.stdout || "")));
+    } catch {}
+    try {
+      for (const file of fsSync.readdirSync("/Library/LaunchDaemons").filter((name) => /cloudflared.*\.plist$/i.test(name))) {
+        const label = file.replace(/\.plist$/i, "");
+        if (records.some((record) => record.name === label)) continue;
+        const result = spawnSync("launchctl", ["print", `system/${label}`], {
+          encoding: "utf8",
+          timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS
+        });
+        records.push(parseMacSystemCloudflaredService(label, result.status === 0 ? String(result.stdout || "") : ""));
+      }
+    } catch {}
+    return records;
   }
   return [];
 }
@@ -10753,9 +10784,6 @@ function detectTunnelControlMode() {
       serviceScriptHasToken =
         /tunnel\s+run\s+--token/i.test(script) ||
         /--token\s+["'$]?\w+/i.test(script);
-      if (serviceScriptHasToken || /cloudflared\s+tunnel\s+run/i.test(script)) {
-        processRecords.push({ commandLine: script, serviceManaged: true });
-      }
     } catch {}
   }
 
@@ -10924,7 +10952,7 @@ function getTunnelControlModeCached(force = false): ReturnType<typeof detectTunn
 
 function shouldDeferNamedTunnelToServiceControl() {
   const tc = getTunnelControlModeCached();
-  const shouldDefer = tc.mode === "service_token" && Boolean(tc.activeServiceTokenProcess);
+  const shouldDefer = shouldDeferToExternalConnector(tc);
   return { shouldDefer, tunnelControl: tc };
 }
 
@@ -11040,7 +11068,9 @@ async function reconcileNamedTunnelOwnershipUnlocked(force = false) {
   lastNamedOwnershipReconcileAt = now;
 
   const defer = shouldDeferNamedTunnelToServiceControl();
-  if (!defer.shouldDefer) return;
+  // Only an exact matching service warrants reconciling an owned connector.
+  // An unrelated or unidentified external service must never be stopped here.
+  if (!defer.tunnelControl.activeServiceTokenProcess) return;
 
   const st = tunnelManager.status();
   if (st.status === "ACTIVE" || st.status === "STARTING") {
@@ -11216,9 +11246,9 @@ function derivePublicHostInvariant(input: {
   };
 }
 
-function getPublicStatus() {
+function getPublicStatus(reconcileOwnership = true) {
   const defer = shouldDeferNamedTunnelToServiceControl();
-  if (defer.shouldDefer) {
+  if (reconcileOwnership && defer.shouldDefer) {
     reconcileNamedTunnelOwnership();
   }
   const state = getPublicLinkState();
@@ -11242,7 +11272,9 @@ function getPublicStatus() {
   const namedRuntime = tunnelManager.status();
   const namedOwnership = tunnelControl.activeAppManagedTokenProcess
     ? "core-managed"
-    : tunnelControl.activeServiceTokenProcess || tunnelControl.serviceRunning || tunnelControl.externalProcessRunning
+    : tunnelControl.activeServiceTokenProcess ||
+        ((tunnelControl.serviceRunning || tunnelControl.externalProcessRunning) &&
+          namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeVerified)
       ? "external-service"
       : "unknown";
   const startupGraceState = getServiceManagedNamedStartupGraceState({
@@ -11312,6 +11344,32 @@ function getPublicStatus() {
   return {
     mode: state.mode,
     status: state.status,
+    connection: {
+      type: state.mode === "quick" ? "temporary" : state.mode === "named" ? "permanent" : "none",
+      authority: state.mode === "quick" ? "core-managed" : namedOwnership,
+      serviceInstalled: tunnelControl.serviceDetected,
+      serviceRunning: tunnelControl.serviceRunning,
+      connectorConnected: state.mode === "quick"
+        ? quickState.status === "ACTIVE"
+        : state.mode === "named"
+          ? namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.ok === true
+          : false
+    },
+    sharing: { enabled: state.mode !== "off", consentGranted },
+    explicitActivationRequired: modeSelection.source === "default" && namedConfigured,
+    listener: {
+      status: publicServerLifecycle.isStarted() ? "listening" : "not_listening",
+      port: PUBLIC_HTTP_PORT
+    },
+    availability: publicAvailability({
+      mode: state.mode,
+      status: state.status,
+      listenerStarted: publicServerLifecycle.isStarted(),
+      routeMatchesThisCore: state.mode === "named"
+        ? namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeVerified
+        : quickRouteHealth?.origin === state.canonicalOrigin && quickRouteHealth.sameInstance &&
+          Date.now() - quickRouteHealth.checkedAt < 60_000
+    }),
     canonicalOrigin: state.canonicalOrigin,
     canonicalOriginConfigured,
     canonicalOriginReachable,
@@ -11327,6 +11385,7 @@ function getPublicStatus() {
     tunnelName: namedCfg?.tunnelName || null,
     namedTokenStored: Boolean(getNamedTunnelToken()),
     namedConfigured,
+    configuredNamedOrigin: namedCfg?.publicOrigin || null,
     tunnelState: {
       configured: namedConfigured,
       identityVerified: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.identityVerified,
@@ -11646,6 +11705,17 @@ async function checkPublicRoute(publicOrigin: string): Promise<{ reachable: bool
   } catch {
     return { reachable: false, sameInstance: false };
   }
+}
+
+async function refreshQuickRouteHealth(origin: string): Promise<void> {
+  if (quickRouteProbe) return quickRouteProbe;
+  quickRouteProbe = (async () => {
+    const result = await checkPublicRoute(origin);
+    if (tunnelManager.status().publicOrigin !== origin) return;
+    quickRouteHealth = { origin, checkedAt: Date.now(), sameInstance: result.sameInstance };
+    publicStatusCache = null;
+  })();
+  try { await quickRouteProbe; } finally { quickRouteProbe = null; }
 }
 
 async function listCloudflaredTunnels(): Promise<{
@@ -18882,19 +18952,33 @@ registerWitnessRoutes(app, { prisma, requireAuth });
 registerCertifydArRoutes(app, { prisma, requireAuth });
 
 // Public exposure control
-app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/public/status", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const refresh = req.query?.refresh === "1";
+  const observe = req.query?.observe === "1";
+  if (refresh) {
+    cloudflaredStatusCache = null;
+    tunnelControlModeCache = null;
+    publicStatusCache = null;
+  }
   const state = getPublicLinkState();
+  if (state.mode === "quick" && state.canonicalOrigin && state.status === "online" &&
+      (!quickRouteHealth || quickRouteHealth.origin !== state.canonicalOrigin ||
+        Date.now() - quickRouteHealth.checkedAt > 20_000)) {
+    await refreshQuickRouteHealth(state.canonicalOrigin).catch(() => {});
+  }
   if (state.mode === "named" && state.canonicalOrigin) {
     await ensureNamedHealthFresh(state.canonicalOrigin, true).catch(() => false);
+    if (observe) return reply.send(getPublicStatus(false));
     return reply.send(getPublicStatusCached(true));
   }
+  if (observe) return reply.send(getPublicStatus(false));
   const nodeMode = getNodeMode();
   if (state.mode === "quick" && nodeMode === "basic") {
     const defer = shouldDeferNamedTunnelToServiceControl();
     const namedConfigured = Boolean(getNamedTunnelConfig());
     if (namedConfigured || defer.shouldDefer) {
       if (defer.shouldDefer) reconcileNamedTunnelOwnership();
-      return reply.send(getPublicStatusCached());
+      return reply.send(getPublicStatusCached(refresh));
     }
     const consent = getPublicSharingConsent();
     const consentGranted = consent.granted || consent.dontAskAgain;
@@ -18905,7 +18989,7 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
       }
     }
   }
-  return reply.send(getPublicStatusCached());
+  return reply.send(getPublicStatusCached(refresh));
 });
 
 function getNodeModeStatus() {
@@ -23118,11 +23202,28 @@ function namedVerificationStillCurrent(snapshot: ReturnType<PublicStateEpoch["ca
   return publicStateEpoch.isCurrent(snapshot, currentNamedHealthCacheKey());
 }
 
-function selectVerifiedNamedMode(snapshot: ReturnType<PublicStateEpoch["capture"]>): boolean {
-  if (!namedVerificationStillCurrent(snapshot)) return false;
-  setNamedTunnelDisabled(false);
-  setPublicSharingModeOverride("named");
-  return true;
+function selectVerifiedNamedMode(snapshot: ReturnType<PublicStateEpoch["capture"]>) {
+  return activateVerifiedNamedSharing({
+    isCurrent: () => namedVerificationStillCurrent(snapshot),
+    persistSelection: () => {
+      const state = readLocalState();
+      const next: LocalState = {
+        ...state,
+        publicSharingConsent: {
+          granted: true,
+          dontAskAgain: Boolean(state.publicSharingConsent?.dontAskAgain),
+          grantedAt: state.publicSharingConsent?.grantedAt || new Date().toISOString()
+        },
+        publicSharingAutoStart: true,
+        namedTunnelDisabled: false,
+        publicSharingModeOverride: "named"
+      };
+      if (!writeLocalState(next)) return false;
+      publicStateEpoch.invalidate();
+      publicStatusCache = null;
+      return true;
+    }
+  });
 }
 
 async function handleNamedPublicStart(reply: any) {
@@ -23135,13 +23236,33 @@ async function handleNamedPublicStart(reply: any) {
   }
   try {
     return await withNamedVerificationWindow(async (verification) => {
+      let switchedFromQuick = false;
+      const stopOwnedQuickForSwitch = async () => {
+        if (tunnelManager.activeTransport() !== "quick") return true;
+        const stopped = await tunnelManager.stop();
+        switchedFromQuick = stopped.status === "STOPPED";
+        return switchedFromQuick;
+      };
+      const restoreQuickAfterFailedSwitch = async () => {
+        if (!switchedFromQuick) return null;
+        if (tunnelManager.activeTransport() === "named") await tunnelManager.stop();
+        const restored = await tunnelManager.startQuick();
+        return restored.status === "ACTIVE" ? null : restored.lastError || "Quick Tunnel recovery failed";
+      };
       const alreadyOnline = await ensureNamedHealthFresh(cfg.publicOrigin, true);
       if (alreadyOnline) {
-        if (!selectVerifiedNamedMode(verification)) {
+        if (!(await stopOwnedQuickForSwitch())) {
+          return reply.code(503).send({ ...getPublicStatusCached(true), lastError: "quick_tunnel_stop_failed" });
+        }
+        const activation = selectVerifiedNamedMode(verification);
+        if (activation !== "activated") {
+          await restoreQuickAfterFailedSwitch();
           return reply.code(409).send({
             ...getPublicStatusCached(true),
-            lastError: "named_verification_stale",
-            message: "Named Tunnel verification was discarded because public routing changed while the check was running."
+            lastError: activation === "save_failed" ? "named_selection_not_saved" : "named_verification_stale",
+            message: activation === "save_failed"
+              ? "Named route verified, but Certifyd could not save public-sharing consent and mode. Check local data permissions and retry."
+              : "Named Tunnel verification was discarded because public routing changed while the check was running."
           });
         }
         return reply.send({
@@ -23187,33 +23308,53 @@ async function handleNamedPublicStart(reply: any) {
         });
       }
 
+      if (!(await stopOwnedQuickForSwitch())) {
+        return reply.code(503).send({ ...getPublicStatusCached(true), lastError: "quick_tunnel_stop_failed" });
+      }
       const current = tunnelManager.status();
       let status = current;
       if (!((current.status === "ACTIVE" || current.status === "STARTING") && current.publicOrigin === cfg.publicOrigin)) {
-        status = await tunnelManager.startNamed({
-          publicOrigin: cfg.publicOrigin,
-          tunnelName: String(cfg.tunnelName || "").trim(),
-          configPath,
-          token: namedToken
-        });
+        try {
+          status = await tunnelManager.startNamed({
+            publicOrigin: cfg.publicOrigin,
+            tunnelName: String(cfg.tunnelName || "").trim(),
+            configPath,
+            token: namedToken
+          });
+        } catch (error: any) {
+          const recoveryError = await restoreQuickAfterFailedSwitch();
+          return reply.code(503).send({
+            ...getPublicStatusCached(true),
+            lastError: "named_tunnel_failed",
+            message: recoveryError || String(error?.message || "Named Tunnel failed to start")
+          });
+        }
       }
       if (status.status === "ACTIVE") {
         const connected = await ensureNamedHealthFresh(cfg.publicOrigin, true).catch(() => false);
-        if (connected && selectVerifiedNamedMode(verification)) {
+        const activation = connected ? selectVerifiedNamedMode(verification) : "stale";
+        if (connected && activation === "activated") {
           return reply.send({
             ...getPublicStatusCached(true),
             discoveredTunnelName
           });
         }
+        const recoveryError = await restoreQuickAfterFailedSwitch();
         return reply.code(503).send({
           ...getPublicStatusCached(true),
-          lastError: namedVerificationStillCurrent(verification) ? "named_route_unverified" : "named_verification_stale",
-          message: "Named connector started, but the durable route could not be verified to this Core instance."
+          lastError: activation === "save_failed" ? "named_selection_not_saved"
+            : namedVerificationStillCurrent(verification) ? "named_route_unverified" : "named_verification_stale",
+          message: recoveryError
+            ? `Named route not verified; temporary link recovery failed: ${recoveryError}`
+            : activation === "save_failed"
+              ? "Named route verified, but Certifyd could not save public-sharing consent and mode. Check local data permissions and retry."
+              : "Named connector started, but the durable route could not be verified to this Core instance."
         });
       }
+      const recoveryError = await restoreQuickAfterFailedSwitch();
       return reply.code(503).send({
         ...getPublicStatus(),
-        lastError: status.lastError || "named_tunnel_failed"
+        lastError: recoveryError || status.lastError || "named_tunnel_failed"
       });
     });
   } catch (error: any) {

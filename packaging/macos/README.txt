@@ -11,6 +11,9 @@ Use the Certifyd Core menu-bar icon to enable or refresh LAN access. LAN mode
 binds the private dashboard/API to the local network, records detected LAN
 addresses in the private host allowlist, and opens the LAN dashboard URL.
 The app launcher also supports --lan for scripted use.
+The menu-bar control also shows Core health and provides Open Dashboard, Start
+Core, Stop Core, View Logs, and Quit. Closing the dashboard browser does not
+stop Core. Stopping Core does not stop an OS-managed cloudflared service.
 
 The app includes its own Node runtime, API dependencies, Prisma client and
 engines, and prebuilt dashboard. Users do not need Git, system Node.js, npm

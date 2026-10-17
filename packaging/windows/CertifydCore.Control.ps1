@@ -52,6 +52,22 @@ function Stop-Core {
   Invoke-Script $stopScript @() -Wait
 }
 
+function Test-CoreHealth {
+  $port = Read-EnvValue "PORT" "4000"
+  try {
+    $pidFile = Join-Path $dataRoot "state\certifyd-core.pid"
+    if (-not (Test-Path $pidFile)) { return $false }
+    $processId = 0
+    if (-not [int]::TryParse((Get-Content $pidFile -Raw).Trim(), [ref]$processId)) { return $false }
+    $record = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop | Select-Object -First 1
+    if ($null -eq $record) { return $false }
+    if ([System.IO.Path]::GetFullPath([string]$record.ExecutablePath) -ine [System.IO.Path]::GetFullPath($nodeExe)) { return $false }
+    if ([string]$record.CommandLine -notmatch 'src[\\/]server\.ts') { return $false }
+    $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2
+    return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
+  } catch { return $false }
+}
+
 function Enable-LanFirewall {
   if (-not (Test-Path $firewallScript)) { return }
   $arguments = @(
@@ -82,7 +98,10 @@ function Add-MenuItem($label, $handler) {
   return $item
 }
 
-[void](Add-MenuItem "Open Dashboard" { Open-Dashboard })
+$healthItem = Add-MenuItem "Checking Core..." {}
+$healthItem.Enabled = $false
+[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+[void](Add-MenuItem "Open Dashboard" { if (Test-CoreHealth) { Open-Dashboard } else { Start-Core } })
 [void](Add-MenuItem "Copy LAN Address" {
   try { [System.Windows.Forms.Clipboard]::SetText((Get-DashboardUrl)) } catch {}
 })
@@ -100,8 +119,9 @@ function Add-MenuItem($label, $handler) {
   }
 })
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+$startItem = Add-MenuItem "Start Core" { Start-Core }
 [void](Add-MenuItem "Restart Core" { Stop-Core; Start-Core })
-[void](Add-MenuItem "Stop Core" { Stop-Core })
+$stopItem = Add-MenuItem "Stop Core" { Stop-Core }
 [void](Add-MenuItem "View Logs" {
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   Start-Process explorer.exe -ArgumentList @("`"$logDir`"")
@@ -114,7 +134,14 @@ function Add-MenuItem($label, $handler) {
 })
 
 $notify.ContextMenuStrip = $menu
-$notify.add_DoubleClick({ Open-Dashboard })
+$menu.add_Opening({
+  $running = Test-CoreHealth
+  $healthItem.Text = if ($running) { "Core running" } else { "Core stopped or unavailable" }
+  $startItem.Enabled = -not $running
+  $stopItem.Enabled = $running
+  $notify.Text = if ($running) { "Certifyd Core - running" } else { "Certifyd Core - stopped" }
+})
+$notify.add_DoubleClick({ if (Test-CoreHealth) { Open-Dashboard } else { Start-Core } })
 
 $isNewInstall = -not (Test-Path $envFile) -and -not (Test-Path $dbFile) -and -not (Test-Path $stateFile)
 $lan = $false

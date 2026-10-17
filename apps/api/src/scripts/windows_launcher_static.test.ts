@@ -8,6 +8,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const launcher = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Launcher.ps1"), "utf8");
 const linuxLauncher = readFileSync(path.join(repoRoot, "packaging/linux/start.sh"), "utf8");
 const windowsControl = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Control.ps1"), "utf8");
+const macMenu = readFileSync(path.join(repoRoot, "packaging/macos/CertifydCoreLauncher.c"), "utf8");
+const linuxTray = readFileSync(path.join(repoRoot, "packaging/linux/tray.py"), "utf8");
+const linuxDesktop = readFileSync(path.join(repoRoot, "packaging/linux/install-desktop.sh"), "utf8");
 const windowsFirewall = readFileSync(path.join(repoRoot, "packaging/windows/CertifydCore.Firewall.ps1"), "utf8");
 const windowsPowerShell51Regression = readFileSync(path.join(repoRoot, "scripts/tests/windows_launcher_powershell51.ps1"), "utf8");
 
@@ -55,6 +58,9 @@ test("Windows installed launcher avoids duplicate initialization and opens only 
 
 test("Windows controller remains available through startup failure and limits LAN firewall access", () => {
   assert.match(windowsControl, /NotifyIcon/);
+  assert.match(windowsControl, /Start Core/);
+  assert.match(windowsControl, /Test-CoreHealth/);
+  assert.match(windowsControl, /Get-CimInstance Win32_Process/);
   assert.match(windowsControl, /View Logs/);
   assert.match(windowsControl, /Enable or Refresh LAN Access/);
   assert.match(windowsControl, /FirstRunQuick/);
@@ -62,6 +68,21 @@ test("Windows controller remains available through startup failure and limits LA
   assert.match(windowsFirewall, /-Profile Private/);
   assert.match(windowsFirewall, /-Program/);
   assert.match(windowsFirewall, /-LocalPort/);
+});
+
+test("desktop controllers expose health and separate Core stop from public-sharing controls", () => {
+  assert.match(linuxDesktop, /Exec="\$script_dir\/tray\.sh"/);
+  assert.match(linuxDesktop, /Name=Start Core/);
+  assert.match(linuxTray, /Core stopped or unavailable/);
+  assert.match(linuxTray, /fcntl\.flock/);
+  assert.match(linuxTray, /def healthy\(\)/);
+  assert.match(linuxTray, /control\("stop" if action == "quit" else action\)/);
+  assert.doesNotMatch(linuxTray, /systemctl|service cloudflared|pkill|killall/);
+  assert.match(macMenu, /Start Core/);
+  assert.match(macMenu, /refreshCoreHealth/);
+  assert.match(macMenu, /flock\(controllerLock/);
+  assert.match(macMenu, /Core stopped or unavailable/);
+  assert.doesNotMatch(macMenu, /systemctl|service cloudflared|pkill|killall/);
 });
 
 test("packaged launchers persist consented first-run Quick mode without overriding existing OFF", () => {
