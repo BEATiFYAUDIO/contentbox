@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, getApiBase } from "../lib/api";
 import { getToken } from "../lib/auth";
+import CloudflareAudiencePanel from "./CloudflareAudiencePanel";
 
 type Range = "7d" | "30d" | "90d" | "all";
 type Coverage = "unknown" | "partial" | "observed";
@@ -112,8 +113,8 @@ export default function AudiencePage() {
       <div className="flex flex-wrap items-center gap-2"><button type="button" className={button} disabled={loading} onClick={reload}>Refresh</button>
         <label className="text-sm text-neutral-300">Format <select className={button} value={exportFormat} disabled={!!exporting} onChange={(event) => setExportFormat(event.target.value as "csv" | "json")}><option value="csv">CSV</option><option value="json">JSON</option></select></label>
         <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("page")}>{exporting === "page" ? "Exporting…" : "Export current page"}</button>
-        <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("all")}>{exporting === "all" ? "Preparing full export…" : "Export all Audience data"}</button></div></header>
-    <p className="text-xs text-neutral-400">Exports use the selected date range. Full exports include every owned work and account totals once. Reports are not restorable Core backups.</p>
+        <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("all")}>{exporting === "all" ? "Preparing full export…" : "Export all native Audience data"}</button></div></header>
+    <p className="text-xs text-neutral-400">Exports use the selected date range. Full exports include every owned work and account totals once. Cloudflare aggregates are not included yet. Reports are not restorable Core backups.</p>
     {exportError && <p className="text-sm text-rose-300" role="alert">{exportError}</p>}
     <div className="flex flex-wrap gap-2" role="group" aria-label="Audience date range">{ranges.map((r) => <button key={r.value} type="button" aria-pressed={range === r.value} onClick={() => selectRange(r.value)} className={`${button} ${range === r.value ? "border-sky-500 bg-sky-950 text-sky-100" : ""}`}>{r.label}</button>)}</div>
     {loading && <div className={`${panel} p-6 text-sm text-neutral-400`} role="status">Loading audience data…</div>}
@@ -139,5 +140,6 @@ export default function AudiencePage() {
         {report.pagination.totalPages > 1 && <div className="flex items-center justify-between gap-3 border-t border-neutral-800 p-4 text-sm"><button type="button" className={button} disabled={page <= 1} onClick={() => selectPage(page - 1)}>Previous</button><span>Page {page} of {report.pagination.totalPages}</span><button type="button" className={button} disabled={page >= report.pagination.totalPages} onClick={() => selectPage(page + 1)}>Next</button></div>}
       </section>
     </>}
+    <CloudflareAudiencePanel range={range} refresh={refresh} />
   </div>;
 }
