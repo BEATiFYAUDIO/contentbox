@@ -41,6 +41,7 @@ import {
 import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics.js";
 import { audienceExportFilename, serializeAudienceExport } from "./lib/audienceExport.js";
 import { AudienceAllExportChangedError, AudienceAllExportLimitError, buildAudienceAllFile } from "./lib/audienceExportAll.js";
+import { CloudflareAudienceError, fetchCloudflareAudienceAggregates, normalizeCloudflareAudienceScope, verifyCloudflareAudienceAccess } from "./lib/cloudflareAudience.js";
 import { createSqliteBackup } from "./lib/sqliteBackup.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
@@ -50295,6 +50296,138 @@ app.get("/audience/export-all", { preHandler: [requireAuth] }, async (req: any, 
   reply.header("Content-Length", String(output.size));
   reply.header("Cache-Control", "private, no-store");
   return reply.send(stream);
+});
+
+const cloudflareAudienceSyncing = new Set<string>();
+const cloudflareAudienceErrorStatus = (error: unknown) => error instanceof CloudflareAudienceError ? error.code : "unavailable";
+
+app.get("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const row = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+  if (!row) return reply.send({ configured: false, status: "disconnected" });
+  const cachedDays = await prisma.cloudflareAnalyticsSnapshot.count({
+    where: { userId, zoneId: row.zoneId, hostname: row.hostname, metric: "traffic", committed: true,
+      ...(row.lastSyncAt ? { fetchedAt: { lte: row.lastSyncAt } } : { id: "__never__" }) }
+  });
+  return reply.send({ configured: true, zoneId: row.zoneId, accountId: row.accountId, hostname: row.hostname,
+    status: row.lastStatus || "configured", error: row.lastError, lastCheckedAt: row.lastCheckedAt,
+    lastSyncAt: row.lastSyncAt, cachedDays, tokenConfigured: true });
+});
+
+app.patch("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body || {}) as Record<string, unknown>;
+  const scope = normalizeCloudflareAudienceScope(body);
+  const token = typeof body.token === "string" ? body.token.trim() : "";
+  if (!scope || token.length < 20 || token.length > 4096 || /\s/.test(token)) {
+    return reply.code(400).send({ error: "A zone ID, creator hostname, and Analytics Read token are required." });
+  }
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics operation is in progress." });
+  cloudflareAudienceSyncing.add(userId);
+  try {
+    let capabilities: Awaited<ReturnType<typeof verifyCloudflareAudienceAccess>>;
+    try { capabilities = await verifyCloudflareAudienceAccess(token, scope); }
+    catch (error) { return reply.code(error instanceof CloudflareAudienceError && error.code === "unauthorized" ? 403 : 503)
+      .send({ error: "Cloudflare Analytics could not be verified for this zone.", code: cloudflareAudienceErrorStatus(error) }); }
+    const encrypted = encryptSecret(Buffer.from(token, "utf8"));
+    await prisma.cloudflareAnalyticsConnection.upsert({ where: { userId },
+      create: { userId, zoneId: scope.zoneId, accountId: scope.accountId, hostname: scope.hostname,
+        tokenCiphertext: encrypted.ciphertextB64, tokenIv: encrypted.ivB64, tokenTag: encrypted.tagB64,
+        lastCheckedAt: new Date(), lastStatus: "connected" },
+      update: { zoneId: scope.zoneId, accountId: scope.accountId, hostname: scope.hostname,
+        tokenCiphertext: encrypted.ciphertextB64, tokenIv: encrypted.ivB64, tokenTag: encrypted.tagB64,
+        lastCheckedAt: new Date(), lastStatus: "connected", lastError: null, lastSyncAt: null }
+    });
+    return reply.send({ ok: true, zoneId: scope.zoneId, hostname: scope.hostname, capabilities });
+  } finally { cloudflareAudienceSyncing.delete(userId); }
+});
+
+app.delete("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics refresh is in progress." });
+  await prisma.cloudflareAnalyticsConnection.deleteMany({ where: { userId } });
+  return reply.send({ ok: true, cachedAggregatesPreserved: true });
+});
+
+app.post("/api/settings/cloudflare-analytics/refresh", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics refresh is already in progress." });
+  cloudflareAudienceSyncing.add(userId);
+  let stagedAt: Date | null = null;
+  try {
+    const connection = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+    if (!connection) return reply.code(404).send({ error: "Cloudflare Analytics is not connected." });
+    if (connection.lastSyncAt && Date.now() - connection.lastSyncAt.getTime() < 5 * 60_000) {
+      return reply.code(429).send({ error: "Cloudflare Analytics was refreshed recently. Try again in a few minutes." });
+    }
+    const token = decryptSecret({ ciphertextB64: connection.tokenCiphertext,
+      ivB64: connection.tokenIv, tagB64: connection.tokenTag }).toString("utf8");
+    const scope = { zoneId: connection.zoneId, accountId: connection.accountId, hostname: connection.hostname };
+    const capabilities = await verifyCloudflareAudienceAccess(token, scope);
+    const fetchedAt = new Date(Math.max(Date.now(), (connection.lastSyncAt?.getTime() || 0) + 1));
+    stagedAt = fetchedAt;
+    const snapshots = await fetchCloudflareAudienceAggregates(token, scope, { now: fetchedAt, webAnalytics: capabilities.webAnalytics });
+    for (let index = 0; index < snapshots.length; index++) {
+      const snapshot = snapshots[index];
+      const rowsJson = JSON.stringify(snapshot.rows);
+      if (Buffer.byteLength(rowsJson) > 128 * 1024) throw new CloudflareAudienceError("invalid_response");
+      const data = { rowsJson, sampleInterval: snapshot.sampleInterval, coverage: snapshot.coverage, fetchedAt };
+      await prisma.cloudflareAnalyticsSnapshot.create({ data: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, source: snapshot.source, metric: snapshot.metric, day: snapshot.day, ...data } });
+      if (index % 25 === 24) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    await prisma.$transaction([
+      prisma.cloudflareAnalyticsSnapshot.updateMany({ where: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, fetchedAt }, data: { committed: true } }),
+      prisma.cloudflareAnalyticsConnection.update({ where: { userId }, data: {
+        lastCheckedAt: fetchedAt, lastSyncAt: fetchedAt, lastStatus: "connected", lastError: null } })
+    ]);
+    for (const source of ["cloudflare_http", "cloudflare_web_analytics"]) {
+      const sourceDays = snapshots.filter((row) => row.source === source).map((row) => row.day);
+      if (!sourceDays.length) continue;
+      await prisma.cloudflareAnalyticsSnapshot.deleteMany({ where: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, source, day: { gte: sourceDays.sort()[0] },
+        fetchedAt: { not: fetchedAt } } }).catch(() => {});
+    }
+    return reply.send({ ok: true, cachedDays: snapshots.filter((row) => row.metric === "traffic").length,
+      webAnalytics: capabilities.webAnalytics, fetchedAt });
+  } catch (error) {
+    const code = cloudflareAudienceErrorStatus(error);
+    if (stagedAt) await prisma.cloudflareAnalyticsSnapshot.deleteMany({ where: {
+      userId, fetchedAt: stagedAt, committed: false } }).catch(() => {});
+    await prisma.cloudflareAnalyticsConnection.updateMany({ where: { userId },
+      data: { lastCheckedAt: new Date(), lastStatus: "error", lastError: code } });
+    return reply.code(code === "unauthorized" ? 403 : code === "rate_limited" ? 429 : 503)
+      .send({ error: "Cloudflare Analytics refresh failed. Native Audience remains available.", code });
+  } finally { cloudflareAudienceSyncing.delete(userId); }
+});
+
+app.get("/api/audience/cloudflare/cache", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const connection = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+  if (!connection) return reply.send({ configured: false, snapshots: [] });
+  const rows = await prisma.cloudflareAnalyticsSnapshot.findMany({
+    where: { userId, zoneId: connection.zoneId, hostname: connection.hostname, committed: true,
+      ...(connection.lastSyncAt ? { fetchedAt: { lte: connection.lastSyncAt } } : { id: "__never__" }) },
+    orderBy: [{ day: "desc" }, { source: "asc" }, { metric: "asc" }, { fetchedAt: "desc" }], take: 600
+  });
+  let remainingBytes = 1024 * 1024;
+  let truncated = rows.length === 600;
+  const snapshots: Array<{ source: string; metric: string; day: string; rows: unknown;
+    sampleInterval: number | null; coverage: string; fetchedAt: Date }> = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const key = `${row.source}:${row.metric}:${row.day}`;
+    if (seen.has(key)) continue;
+    remainingBytes -= Buffer.byteLength(row.rowsJson);
+    if (remainingBytes < 0) { truncated = true; break; }
+    seen.add(key);
+    snapshots.push({ source: row.source, metric: row.metric, day: row.day,
+      rows: JSON.parse(row.rowsJson), sampleInterval: row.sampleInterval,
+      coverage: row.coverage, fetchedAt: row.fetchedAt });
+  }
+  return reply.send({ configured: true, zoneId: connection.zoneId, hostname: connection.hostname,
+    lastSyncAt: connection.lastSyncAt, snapshots, truncated });
 });
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {

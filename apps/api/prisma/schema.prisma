@@ -164,6 +164,8 @@ model User {
   paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
   entitlements         Entitlement[] @relation("EntitlementBuyer")
   audienceEvents       AudienceEvent[]
+  cloudflareAnalyticsConnection CloudflareAnalyticsConnection?
+  cloudflareAnalyticsSnapshots CloudflareAnalyticsSnapshot[]
   remoteInvites        RemoteInvite[]
   salesAsSeller        Sale[] @relation("SaleSeller")
   salesConfirmed       Sale[] @relation("SaleConfirmer")
@@ -898,6 +900,45 @@ model MetadataProviderConfig {
   lastError              String?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
+}
+
+model CloudflareAnalyticsConnection {
+  userId          String   @id
+  zoneId          String
+  accountId       String?
+  hostname        String
+  tokenCiphertext String
+  tokenIv         String
+  tokenTag        String
+  lastCheckedAt   DateTime?
+  lastSyncAt      DateTime?
+  lastStatus      String?
+  lastError       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CloudflareAnalyticsSnapshot {
+  id             String   @id @default(cuid())
+  userId         String
+  zoneId         String
+  hostname       String
+  source         String
+  metric         String
+  day            String
+  rowsJson       String
+  sampleInterval Float?
+  coverage       String
+  fetchedAt      DateTime
+  committed      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, zoneId, hostname, source, metric, day, fetchedAt])
+  @@index([userId, zoneId, hostname, fetchedAt])
+  @@index([userId, source, metric, day])
 }
 
 model Entitlement {
