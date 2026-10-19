@@ -42,7 +42,7 @@ import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics
 import { audienceExportFilename, serializeAudienceExport } from "./lib/audienceExport.js";
 import { AudienceAllExportChangedError, AudienceAllExportLimitError, buildAudienceAllFile } from "./lib/audienceExportAll.js";
 import { cloudflareAudienceExportSource } from "./lib/cloudflareAudienceExportSource.js";
-import { CloudflareAudienceError, fetchCloudflareAudienceAggregates, normalizeCloudflareAudienceScope, verifyCloudflareAudienceAccess } from "./lib/cloudflareAudience.js";
+import { CloudflareAudienceError, fetchCloudflareAudienceAggregates, normalizeCloudflareAudienceScope, verifyCloudflareAudienceAccess, verifyCloudflareAudienceHostname } from "./lib/cloudflareAudience.js";
 import { createSqliteBackup } from "./lib/sqliteBackup.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
@@ -50308,12 +50308,20 @@ app.get("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, asy
   const userId = (req.user as JwtUser).sub;
   const row = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
   if (!row) return reply.send({ configured: false, status: "disconnected" });
+  let status = row.lastStatus || "configured";
+  if (status === "connected") {
+    try {
+      const token = decryptSecret({ ciphertextB64: row.tokenCiphertext,
+        ivB64: row.tokenIv, tagB64: row.tokenTag }).toString("utf8");
+      await verifyCloudflareAudienceHostname(token, { zoneId: row.zoneId, hostname: row.hostname });
+    } catch { status = "unverified"; }
+  }
   const cachedDays = await prisma.cloudflareAnalyticsSnapshot.count({
     where: { userId, zoneId: row.zoneId, hostname: row.hostname, metric: "traffic", committed: true,
       ...(row.lastSyncAt ? { fetchedAt: { lte: row.lastSyncAt } } : { id: "__never__" }) }
   });
   return reply.send({ configured: true, zoneId: row.zoneId, accountId: row.accountId, hostname: row.hostname,
-    status: row.lastStatus || "configured", error: row.lastError, lastCheckedAt: row.lastCheckedAt,
+    status, error: row.lastError, lastCheckedAt: row.lastCheckedAt,
     lastSyncAt: row.lastSyncAt, cachedDays, tokenConfigured: true });
 });
 

@@ -1,5 +1,6 @@
 /** Optional, aggregate-only Cloudflare reporting. Never requests visitor records. */
 export const CLOUDFLARE_GRAPHQL_URL = "https://api.cloudflare.com/client/v4/graphql";
+const CLOUDFLARE_ZONES_URL = "https://api.cloudflare.com/client/v4/zones";
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_GROUPS = 1000;
 const DAY_MS = 86_400_000;
@@ -75,9 +76,34 @@ async function graphql(token: string, query: string, variables: Record<string, u
   return result?.data;
 }
 
+export async function verifyCloudflareAudienceHostname(
+  token: string, scope: CloudflareAudienceScope, fetcher: typeof fetch = fetch
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetcher(`${CLOUDFLARE_ZONES_URL}/${scope.zoneId}`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(12_000)
+    });
+  } catch { throw new CloudflareAudienceError("unavailable"); }
+  if (response.status === 401 || response.status === 403) throw new CloudflareAudienceError("unauthorized");
+  if (response.status === 429) throw new CloudflareAudienceError("rate_limited");
+  if (!response.ok) throw new CloudflareAudienceError("unavailable");
+  const zone = await boundedJson(response);
+  const zoneName = typeof zone?.result?.name === "string" ? zone.result.name.toLowerCase() : "";
+  if (zone?.success !== true || typeof zone?.result?.id !== "string" ||
+      zone.result.id.toLowerCase() !== scope.zoneId ||
+      !normalizeCloudflareAudienceScope({ zoneId: scope.zoneId, hostname: zoneName })) {
+    throw new CloudflareAudienceError("invalid_response");
+  }
+  if (scope.hostname !== zoneName && !scope.hostname.endsWith(`.${zoneName}`)) {
+    throw new CloudflareAudienceError("unauthorized");
+  }
+}
+
 export async function verifyCloudflareAudienceAccess(
   token: string, scope: CloudflareAudienceScope, fetcher: typeof fetch = fetch
 ) {
+  await verifyCloudflareAudienceHostname(token, scope, fetcher);
   const zone = await graphql(token,
     `query($zoneTag: string) { viewer { zones(filter: { zoneTag: $zoneTag }) { settings { httpRequestsAdaptiveGroups { enabled notOlderThan maxDuration } } } } }`,
     { zoneTag: scope.zoneId }, fetcher);

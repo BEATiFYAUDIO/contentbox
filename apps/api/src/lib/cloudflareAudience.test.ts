@@ -22,7 +22,11 @@ test("connection scope rejects malformed IDs and hostnames", () => {
 
 test("verification checks the selected zone and optional account without returning a token", async () => {
   const queries: string[] = [];
-  const fetcher = (async (_url: string, init: RequestInit) => {
+  const fetcher = (async (url: string, init: RequestInit) => {
+    if (url.endsWith(`/zones/${zoneId}`)) {
+      assert.equal((init.headers as Record<string, string>).Authorization, "Bearer synthetic-secret");
+      return Response.json({ success: true, result: { id: zoneId, name: "beatifygroup.com" } });
+    }
     const body = JSON.parse(String(init.body));
     queries.push(body.query);
     assert.equal(init.headers && (init.headers as Record<string, string>).Authorization, "Bearer synthetic-secret");
@@ -37,6 +41,28 @@ test("verification checks the selected zone and optional account without returni
   assert.deepEqual(result, { http: true, webAnalytics: true, httpRetentionDays: 31, httpMaxQueryDays: 30 });
   assert.equal(queries.length, 2);
   assert.ok(!JSON.stringify(result).includes("synthetic-secret"));
+});
+
+test("connection rejects unrelated and deceptive hostnames before reporting Connected", async () => {
+  const requests: string[] = [];
+  const fetcher = (async (url: string) => {
+    requests.push(url);
+    return Response.json({ success: true, result: { id: zoneId, name: "beatifygroup.com" } });
+  }) as typeof fetch;
+  for (const hostname of ["unrelated.example.com", "evilbeatifygroup.com", "beatifygroup.com.evil.test"]) {
+    await assert.rejects(verifyCloudflareAudienceAccess("synthetic-secret", { ...scope, hostname }, fetcher),
+      (error: unknown) => error instanceof CloudflareAudienceError && error.code === "unauthorized");
+  }
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every((url) => url.endsWith(`/zones/${zoneId}`)));
+});
+
+test("connection rejects missing or mismatched zone identity", async () => {
+  for (const result of [null, { id: accountId, name: "beatifygroup.com" }]) {
+    const fetcher = (async () => Response.json({ success: true, result })) as typeof fetch;
+    await assert.rejects(verifyCloudflareAudienceAccess("synthetic-secret", scope, fetcher),
+      (error: unknown) => error instanceof CloudflareAudienceError && error.code === "invalid_response");
+  }
 });
 
 test("aggregate queries remain zone and hostname scoped, with Buy paths separate", async () => {

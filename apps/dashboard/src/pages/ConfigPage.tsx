@@ -622,7 +622,7 @@ export default function ConfigPage({
       setAnalyticsToken("");
       setCloudflareAnalytics(await api<CloudflareAnalyticsSettings>("/api/settings/cloudflare-analytics", "GET"));
       setAnalyticsMessage("Connection verified and saved. Refresh to cache available aggregates.");
-    } catch (error: any) { setAnalyticsMessage(error?.message || "Could not verify Cloudflare Analytics."); }
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Could not verify Cloudflare Analytics."); }
     finally { setAnalyticsBusy(false); }
   }
 
@@ -633,7 +633,7 @@ export default function ConfigPage({
       await api("/api/settings/cloudflare-analytics/refresh", "POST");
       setCloudflareAnalytics(await api<CloudflareAnalyticsSettings>("/api/settings/cloudflare-analytics", "GET"));
       setAnalyticsMessage("Aggregate cache refreshed. Native Audience remains separate.");
-    } catch (error: any) { setAnalyticsMessage(error?.message || "Refresh failed. Native Audience remains available."); }
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Refresh failed. Native Audience remains available."); }
     finally { setAnalyticsBusy(false); }
   }
 
@@ -645,7 +645,7 @@ export default function ConfigPage({
       setCloudflareAnalytics({ configured: false, status: "disconnected" });
       setAnalyticsToken("");
       setAnalyticsMessage("Connection removed. Previously cached aggregates are preserved locally.");
-    } catch (error: any) { setAnalyticsMessage(error?.message || "Could not disconnect Cloudflare Analytics."); }
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Could not disconnect Cloudflare Analytics."); }
     finally { setAnalyticsBusy(false); }
   }
 
