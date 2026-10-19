@@ -19,8 +19,12 @@ const key = (name: string) => name.normalize("NFKD").replace(/[\u0300-\u036f]/g,
   .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
 const countryByName = new Map<string, string | null>();
+const countryByCode = new Map<string, string>();
 
 for (const country of countries) {
+  if (/^[A-Z]{2}$/.test(country.iso2)) countryByCode.set(country.iso2, countryId(country));
+  // Natural Earth labels Taiwan CN-TW; Cloudflare reports its ISO code TW.
+  if (country.iso2 === "CN-TW") countryByCode.set("TW", countryId(country));
   const names = [country.name, ...(aliases[country.iso2] || [])];
   if (/^[A-Z]{2}$/.test(country.iso2)) names.push(displayNames.of(country.iso2) || "");
   for (const name of names) {
@@ -41,7 +45,7 @@ export function mapCountryTraffic(totals: CountryTotal[]) {
   const counts = new Map<string, number>();
   const unmatched: string[] = [];
   for (const item of totals) {
-    const iso2 = countryByName.get(key(item.label));
+    const iso2 = countryByCode.get(item.label.trim().toUpperCase()) ?? countryByName.get(key(item.label));
     if (!iso2 || !Number.isFinite(item.count) || item.count < 0) {
       unmatched.push(item.label);
       continue;
