@@ -164,6 +164,7 @@ model User {
   paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
   entitlements         Entitlement[] @relation("EntitlementBuyer")
   audienceEvents       AudienceEvent[]
+  audienceTrackingActivation AudienceTrackingActivation?
   cloudflareAnalyticsConnection CloudflareAnalyticsConnection?
   cloudflareAnalyticsSnapshots CloudflareAnalyticsSnapshot[]
   remoteInvites        RemoteInvite[]
@@ -837,6 +838,23 @@ model AudienceViewClaim {
 
   @@id([contentId, sessionId])
   @@index([lastRecordedAtMs])
+}
+
+model AudienceTrackingActivation {
+  userId      String   @id
+  activatedAt DateTime
+  freshAccount Boolean @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AudienceTrackingWindow {
+  id           String    @id @default(cuid())
+  startedAt    DateTime
+  coveredUntil DateTime
+  endedAt      DateTime?
+
+  @@index([startedAt, coveredUntil])
 }
 
 model Sale {

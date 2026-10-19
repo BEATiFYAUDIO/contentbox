@@ -84,7 +84,36 @@ export async function buildAudienceReport(
       AND a."createdAt" < ${now}`;
   const firstAt = first?.firstAt == null ? null : new Date(Number(first.firstAt));
   const conversionFrom = firstAt && firstAt > viewFrom ? firstAt : viewFrom;
-  const coverageFrom = firstAt && firstAt > retentionFrom ? firstAt : firstAt ? retentionFrom : null;
+  const activation = await db.audienceTrackingActivation.findUnique({ where: { userId }, select: { activatedAt: true, freshAccount: true } });
+  const trackingWindows = await db.audienceTrackingWindow.findMany({
+    where: { startedAt: { lt: now }, coveredUntil: { gt: viewFrom } },
+    orderBy: { startedAt: "asc" }, take: 1000,
+    select: { startedAt: true, coveredUntil: true, endedAt: true }
+  });
+  const coverageFrom = activation?.activatedAt ?? null;
+  const covered = (start: Date, end: Date): "unknown" | "partial" | "observed" => {
+    if (!activation || end <= start) return "unknown";
+    const finish = end.getTime();
+    let cursor = activation.freshAccount ? Math.max(start.getTime(), activation.activatedAt.getTime()) : start.getTime();
+    if (cursor >= finish) return activation.freshAccount ? "observed" : "unknown";
+    let gap = cursor < retentionFrom.getTime();
+    cursor = Math.max(cursor, retentionFrom.getTime());
+    let any = false;
+    for (const window of trackingWindows) {
+      const from = window.startedAt.getTime();
+      const through = window.endedAt ? window.coveredUntil.getTime()
+        : now.getTime() - window.coveredUntil.getTime() <= 120_000 ? now.getTime() : window.coveredUntil.getTime();
+      if (through <= cursor || from >= finish) continue;
+      if (from > cursor) gap = true;
+      cursor = Math.max(cursor, through);
+      any = true;
+      if (cursor >= finish) return gap ? "partial" : "observed";
+    }
+    return any ? "partial" : "unknown";
+  };
+  const reportCoverage = !activation ? "unknown" :
+    period.from ? covered(period.from, now) :
+    activation.freshAccount && activation.activatedAt >= retentionFrom ? covered(activation.activatedAt, now) : "partial";
   const conversionPaidWhere = Prisma.sql`${datedPaidWhere} AND p."paidAt" >= ${conversionFrom}`;
 
   const [works] = await db.$queryRaw<CountRow[]>`SELECT COUNT(*) AS n FROM "ContentItem" c WHERE ${owned}`;
@@ -143,8 +172,7 @@ export async function buildAudienceReport(
     const bucketEnd = granularity === "day"
       ? new Date(bucketStart.getTime() + DAY_MS)
       : new Date(Date.UTC(bucketStart.getUTCFullYear(), bucketStart.getUTCMonth() + 1, 1));
-    const viewCoverage = !coverageFrom || bucketEnd <= coverageFrom ? "unknown"
-      : bucketStart < coverageFrom ? "partial" : "observed";
+    const viewCoverage = covered(bucketStart, bucketEnd > now ? now : bucketEnd);
     const bucketViews = viewMap.get(bucket) || 0;
     const bucketPurchases = purchaseMap.get(bucket) || 0;
     return { bucket, views: viewCoverage === "unknown" ? null : bucketViews, viewCoverage,
@@ -178,10 +206,10 @@ export async function buildAudienceReport(
       periodDefinition: range === "all" ? "all available history" : "UTC calendar days including today",
       trendStart: trendFrom.toISOString(), granularity, viewRetentionStart: retentionFrom.toISOString(),
       earliestAvailableBuyPageViewAt: firstAt?.toISOString() || null,
-      trackingActivationAt: null,
+      trackingActivationAt: activation?.activatedAt.toISOString() || null,
       coverageFrom: coverageFrom?.toISOString() || null,
-      viewCoverage: !coverageFrom ? "unknown" : !period.from || period.from < coverageFrom ? "incomplete" : "observed_after_boundary",
-      coverageNote: "Tracking activation is unknown. Periods before the earliest available event or outside retained view history are not assumed to have zero views.",
+      viewCoverage: reportCoverage === "observed" ? "observed_after_boundary" : reportCoverage === "unknown" ? "unknown" : "incomplete",
+      coverageNote: "Tracking activation and operational windows establish observed coverage. Earlier periods, interrupted tracking, and expired retention are not assumed to have zero views.",
       conversionStart: firstAt ? conversionFrom.toISOString() : null,
       conversionDefinition: "paid CONTENT_PURCHASE intents in the comparable retained-view window divided by recorded Buy-page views; not unique-visitor conversion",
       viewDefinition: AUDIENCE_VIEW_DEFINITION,

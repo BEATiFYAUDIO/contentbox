@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { audienceConversion, audiencePeriod, buildAudienceReport, parseAudienceQuery } from "./audienceAnalytics.js";
+import { beginAudienceTracking, endAudienceTracking, heartbeatAudienceTracking } from "./audienceTrackingCoverage.js";
+import { createSqliteBackup } from "./sqliteBackup.js";
 
 const NOW = new Date("2026-10-19T12:00:00.000Z");
 const at = (value: string) => new Date(value);
@@ -15,6 +17,7 @@ async function withDatabase(run: (db: PrismaClient) => Promise<void>) {
   process.env.DATABASE_URL = `file:${path.join(dir, "report.db")}`;
   const db = new PrismaClient();
   try {
+    await db.$executeRawUnsafe(`CREATE TABLE "User" ("id" TEXT PRIMARY KEY)`);
     await db.$executeRawUnsafe(`CREATE TABLE "ContentItem" (
       "id" TEXT PRIMARY KEY, "ownerUserId" TEXT NOT NULL, "title" TEXT NOT NULL,
       "status" TEXT NOT NULL, "createdAt" DATETIME NOT NULL,
@@ -30,6 +33,12 @@ async function withDatabase(run: (db: PrismaClient) => Promise<void>) {
       "status" TEXT NOT NULL, "paidAt" DATETIME
     )`);
     await db.$executeRawUnsafe(`CREATE INDEX "payment_lookup" ON "PaymentIntent"("contentId", "status", "paidAt")`);
+    await db.$executeRawUnsafe(`CREATE TABLE "AudienceTrackingActivation" (
+      "userId" TEXT PRIMARY KEY, "activatedAt" DATETIME NOT NULL, "freshAccount" BOOLEAN NOT NULL DEFAULT false
+    )`);
+    await db.$executeRawUnsafe(`CREATE TABLE "AudienceTrackingWindow" (
+      "id" TEXT PRIMARY KEY, "startedAt" DATETIME NOT NULL, "coveredUntil" DATETIME NOT NULL, "endedAt" DATETIME
+    )`);
     await run(db);
   } finally {
     await db.$disconnect();
@@ -37,6 +46,11 @@ async function withDatabase(run: (db: PrismaClient) => Promise<void>) {
     else process.env.DATABASE_URL = original;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+async function coverage(db: PrismaClient, when: string, fresh = false, through = NOW, owner = "creator") {
+  await db.audienceTrackingActivation.create({ data: { userId: owner, activatedAt: at(when), freshAccount: fresh } });
+  await db.audienceTrackingWindow.create({ data: { startedAt: at(when), coveredUntil: through, endedAt: through } });
 }
 
 async function work(db: PrismaClient, id: string, owner = "creator", deleted = false) {
@@ -68,6 +82,7 @@ test("date ranges use inclusive UTC calendar starts and an exclusive now boundar
 
 test("reports reconcile owned works, paid timestamps, zero days, and incomplete coverage", async () => {
   await withDatabase(async (db) => {
+    await coverage(db, "2026-10-12T23:59:00.000Z");
     await work(db, "a"); await work(db, "b"); await work(db, "c");
     await work(db, "not-mine", "someone-else"); await work(db, "deleted", "creator", true);
     await view(db, "v-old", "a", "2026-10-12T23:59:59.999Z");
@@ -100,7 +115,7 @@ test("reports reconcile owned works, paid timestamps, zero days, and incomplete 
     assert.equal(report.series[5].views, 1);
     assert.equal(report.items[2].views, 0);
     assert.equal(report.items[2].purchases, 0);
-    assert.equal(report.metadata.trackingActivationAt, null);
+    assert.equal(report.metadata.trackingActivationAt, "2026-10-12T23:59:00.000Z");
     assert.equal(report.metadata.earliestAvailableBuyPageViewAt, "2026-10-12T23:59:59.999Z");
     assert.equal(report.metadata.viewCoverage, "observed_after_boundary");
     const all = await buildAudienceReport(db, "creator", false, "all", 1, NOW);
@@ -110,7 +125,7 @@ test("reports reconcile owned works, paid timestamps, zero days, and incomplete 
     assert.equal(all.conversionRate, 100, "older purchases must not inflate conversion over retained views");
     assert.equal(all.metadata.granularity, "month");
     assert.equal(all.metadata.viewCoverage, "incomplete");
-    assert.equal(all.metadata.trackingActivationAt, null);
+    assert.equal(all.metadata.trackingActivationAt, "2026-10-12T23:59:00.000Z");
     const basic = await buildAudienceReport(db, "creator", true, "7d", 1, NOW);
     assert.equal(basic.totalPurchases, null);
     assert.equal(basic.conversionRate, null);
@@ -120,6 +135,7 @@ test("reports reconcile owned works, paid timestamps, zero days, and incomplete 
 
 test("legacy-only history is separate and unknown view periods are not zero-filled", async () => {
   await withDatabase(async (db) => {
+    await coverage(db, "2026-10-19T09:00:00.000Z");
     await work(db, "a");
     await view(db, "legacy", "a", "2026-10-18T00:00:00.000Z", null);
     await purchase(db, "paid", "a", "2026-10-18T00:00:00.000Z");
@@ -128,13 +144,105 @@ test("legacy-only history is separate and unknown view periods are not zero-fill
     assert.equal(report.totalLegacyOpens, 1);
     assert.equal(report.totalPurchases, 1);
     assert.equal(report.conversionRate, null);
-    assert.equal(report.metadata.viewCoverage, "unknown");
-    assert.ok(report.series.every((point) => point.views === null && point.viewCoverage === "unknown"));
+    assert.equal(report.metadata.viewCoverage, "incomplete");
+    assert.ok(report.series.slice(0, 6).every((point) => point.views === null && point.viewCoverage === "unknown"));
+    assert.equal(report.series[6].viewCoverage, "partial");
+  });
+});
+
+test("fresh creator with no views has measured zero after activation", async () => {
+  await withDatabase(async (db) => {
+    await coverage(db, "2026-10-19T09:00:00.000Z", true);
+    for (const range of ["7d", "all"] as const) {
+      const report = await buildAudienceReport(db, "creator", true, range, 1, NOW);
+      assert.equal(report.metadata.viewCoverage, "observed_after_boundary");
+      assert.equal(report.totalViews, 0);
+      assert.ok(report.series.every((point) => point.views === 0 && point.viewCoverage === "observed"));
+    }
+  });
+});
+
+test("a healthy active tracker covers the current minute without a visitor event", async () => {
+  await withDatabase(async (db) => {
+    await db.audienceTrackingActivation.create({ data: { userId: "creator", activatedAt: at("2026-10-19T09:00:00.000Z"), freshAccount: true } });
+    await db.audienceTrackingWindow.create({ data: {
+      startedAt: at("2026-10-19T08:59:00.000Z"), coveredUntil: at("2026-10-19T11:59:00.000Z")
+    } });
+    const report = await buildAudienceReport(db, "creator", true, "7d", 1, NOW);
+    assert.equal(report.metadata.viewCoverage, "observed_after_boundary");
+    assert.equal(report.totalViews, 0);
+  });
+});
+
+test("restarts keep activation but offline gaps are incomplete, including zero-view gaps", async () => {
+  await withDatabase(async (db) => {
+    await coverage(db, "2026-10-18T00:00:00.000Z", true, at("2026-10-19T10:00:00.000Z"));
+    await db.audienceTrackingWindow.create({ data: {
+      startedAt: at("2026-10-19T11:00:00.000Z"), coveredUntil: NOW, endedAt: NOW
+    } });
+    const report = await buildAudienceReport(db, "creator", true, "7d", 1, NOW);
+    assert.equal(report.metadata.viewCoverage, "incomplete");
+    assert.equal(report.series.at(-1)?.viewCoverage, "partial");
+    assert.equal(report.metadata.trackingActivationAt, "2026-10-18T00:00:00.000Z");
+  });
+});
+
+test("retention expiry and missing activation never turn unmeasured history into zero", async () => {
+  await withDatabase(async (db) => {
+    const missing = await buildAudienceReport(db, "creator", true, "7d", 1, NOW);
+    assert.equal(missing.metadata.viewCoverage, "unknown");
+    await coverage(db, "2024-01-01T00:00:00.000Z", true);
+    assert.equal((await buildAudienceReport(db, "creator", true, "7d", 1, NOW)).metadata.viewCoverage, "observed_after_boundary");
+    assert.equal((await buildAudienceReport(db, "creator", true, "all", 1, NOW)).metadata.viewCoverage, "incomplete");
+  });
+});
+
+test("startup marker persists across restarts and disabled tracking creates no covered window", async () => {
+  await withDatabase(async (db) => {
+    await db.$executeRaw`INSERT INTO "User" ("id") VALUES ('creator')`;
+    const first = await beginAudienceTracking(db, true, at("2026-10-19T09:00:00.000Z"));
+    assert.ok(first);
+    await heartbeatAudienceTracking(db, first!, at("2026-10-19T09:01:00.000Z"));
+    await endAudienceTracking(db, first!, at("2026-10-19T09:01:30.000Z"));
+    assert.equal(await beginAudienceTracking(db, false, at("2026-10-19T10:00:00.000Z")), null);
+    const second = await beginAudienceTracking(db, true, at("2026-10-19T11:00:00.000Z"));
+    assert.ok(second);
+    assert.equal(await db.audienceTrackingActivation.count(), 1);
+    assert.equal((await db.audienceTrackingActivation.findUnique({ where: { userId: "creator" } }))?.activatedAt.toISOString(), "2026-10-19T09:00:00.000Z");
+    assert.equal((await buildAudienceReport(db, "creator", true, "7d", 1, NOW)).metadata.viewCoverage, "incomplete");
+  });
+});
+
+test("late heartbeat opens a new window rather than filling an offline interval", async () => {
+  await withDatabase(async (db) => {
+    await db.$executeRaw`INSERT INTO "User" ("id") VALUES ('creator')`;
+    const first = await beginAudienceTracking(db, true, at("2026-10-19T09:00:00.000Z"));
+    const second = await heartbeatAudienceTracking(db, first!, at("2026-10-19T10:00:00.000Z"));
+    assert.notEqual(first, second);
+    assert.equal((await db.audienceTrackingWindow.findUnique({ where: { id: first! } }))?.endedAt?.toISOString(), "2026-10-19T09:00:00.000Z");
+    assert.equal((await buildAudienceReport(db, "creator", true, "7d", 1, at("2026-10-19T10:01:00.000Z"))).metadata.viewCoverage, "incomplete");
+  });
+});
+
+test("activation and operational windows are included in a SQLite backup", async () => {
+  await withDatabase(async (db) => {
+    await coverage(db, "2026-10-19T09:00:00.000Z", true);
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "certifyd-audience-coverage-backup-"));
+    try {
+      const filename = await createSqliteBackup(db, directory, "coverage.sqlite");
+      const restored = new PrismaClient({ datasourceUrl: `file:${filename}` });
+      try {
+        assert.equal((await restored.audienceTrackingActivation.findUnique({ where: { userId: "creator" } }))?.freshAccount, true);
+        assert.equal(await restored.audienceTrackingWindow.count(), 1);
+        assert.equal((await buildAudienceReport(restored, "creator", true, "7d", 1, NOW)).metadata.viewCoverage, "observed_after_boundary");
+      } finally { await restored.$disconnect(); }
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 });
 
 test("30- and 90-day filters include UTC midnight and exclude the preceding instant", async () => {
   await withDatabase(async (db) => {
+    await coverage(db, "2026-07-21T23:00:00.000Z");
     await work(db, "a");
     await view(db, "before-90", "a", "2026-07-21T23:59:59.999Z");
     await view(db, "at-90", "a", "2026-07-22T00:00:00.000Z");
@@ -159,6 +267,7 @@ test("30- and 90-day filters include UTC midnight and exclude the preceding inst
 
 test("empty periods and later first events expose unknown coverage instead of fabricated zeros", async () => {
   await withDatabase(async (db) => {
+    await coverage(db, "2026-10-18T15:00:00.000Z");
     await work(db, "a");
     await view(db, "first", "a", "2026-10-18T15:00:00.000Z");
     await purchase(db, "older-paid", "a", "2026-10-15T00:00:00.000Z");

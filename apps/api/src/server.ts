@@ -40,6 +40,7 @@ import {
   verifyAudienceSession
 } from "./lib/audienceViews.js";
 import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics.js";
+import { beginAudienceTracking, endAudienceTracking, heartbeatAudienceTracking } from "./lib/audienceTrackingCoverage.js";
 import { audienceExportFilename, serializeAudienceExport } from "./lib/audienceExport.js";
 import { AudienceAllExportChangedError, AudienceAllExportLimitError, buildAudienceAllFile } from "./lib/audienceExportAll.js";
 import { cloudflareAudienceExportSource } from "./lib/cloudflareAudienceExportSource.js";
@@ -1595,6 +1596,9 @@ const audienceRateLimiter = new AudienceRateLimiter();
 let lastAudiencePruneMs = 0;
 let audiencePruneInFlight = false;
 let audienceRetentionTimer: ReturnType<typeof setInterval> | null = null;
+let audienceTrackingTimer: ReturnType<typeof setInterval> | null = null;
+let audienceTrackingWindowId: string | null = null;
+let audienceHeartbeatInFlight = false;
 async function runAudienceRetention() {
   if (audiencePruneInFlight) return;
   audiencePruneInFlight = true;
@@ -13724,7 +13728,7 @@ async function buildParentPublishAnchor(contentId: string): Promise<ParentPublis
 async function handlePublicAudienceInteraction(req: any, reply: any) {
   const contentId = validateAudienceViewBody(req.body);
   if (!contentId) return badRequest(reply, "Invalid audience view event");
-  if (!isAudienceCollectionEnabled(process.env.CONTENTBOX_AUDIENCE_ENABLED)) return reply.send({ ok: true, recorded: false, disabled: true });
+  if (!audienceTrackingWindowId || !isAudienceCollectionEnabled(process.env.CONTENTBOX_AUDIENCE_ENABLED)) return reply.send({ ok: true, recorded: false, disabled: true });
   if (isAutomatedAudienceRequest(req.headers || {})) return reply.send({ ok: true, recorded: false, filtered: true });
   const origin = asString(req.headers?.origin || "").trim();
   if (origin) {
@@ -15948,13 +15952,15 @@ app.post("/auth/signup", async (req, reply) => {
   const passwordHash = await bcrypt.hash(password, 10);
   const userCount = await prisma.user.count();
 
-  const user = await prisma.user.create({
-    data: {
-      email,
-      displayName: body.displayName?.trim() || null,
-      passwordHash
-    },
-    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: { email, displayName: body.displayName?.trim() || null, passwordHash },
+      select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
+    });
+    if (audienceTrackingWindowId) await tx.audienceTrackingActivation.create({
+      data: { userId: created.id, activatedAt: created.createdAt, freshAccount: true }
+    });
+    return created;
   });
 
   let recoveryKey: string | null = null;
@@ -54049,6 +54055,7 @@ async function start() {
   await ensurePayoutMethods();
   await preflightPrismaReadiness();
   await preflightDb();
+  audienceTrackingWindowId = await beginAudienceTracking(prisma, isAudienceCollectionEnabled(process.env.CONTENTBOX_AUDIENCE_ENABLED));
   scheduleReceiptIdBackfillBestEffort();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: PRIVATE_API_BIND_HOST });
@@ -54056,6 +54063,17 @@ async function start() {
   // removes at most one small batch per run and never blocks API startup.
   audienceRetentionTimer = setInterval(() => { void runAudienceRetention(); }, 60 * 60 * 1000);
   audienceRetentionTimer.unref();
+  if (audienceTrackingWindowId) {
+    audienceTrackingTimer = setInterval(() => {
+      if (audienceHeartbeatInFlight || !audienceTrackingWindowId) return;
+      audienceHeartbeatInFlight = true;
+      void heartbeatAudienceTracking(prisma, audienceTrackingWindowId)
+        .then((id) => { audienceTrackingWindowId = id; })
+        .catch((err) => app.log.warn({ err }, "audience.heartbeat_failed"))
+        .finally(() => { audienceHeartbeatInFlight = false; });
+    }, 60 * 1000);
+    audienceTrackingTimer.unref();
+  }
   // Run provider verification in the background so startup/health becomes
   // available immediately even when remote provider endpoints are slow.
   setTimeout(() => {
@@ -54114,6 +54132,11 @@ async function shutdownRuntime(signal: "SIGTERM" | "SIGINT") {
   if (runtimeShutdownStarted) return;
   runtimeShutdownStarted = true;
   if (audienceRetentionTimer) clearInterval(audienceRetentionTimer);
+  if (audienceTrackingTimer) clearInterval(audienceTrackingTimer);
+  if (audienceTrackingWindowId) {
+    try { await endAudienceTracking(prisma, audienceTrackingWindowId); }
+    catch (err) { app.log.warn({ err }, "audience.coverage_close_failed"); }
+  }
   try {
     await publicLifecycleMutex.runExclusive(async () => {
       await tunnelManager.stop();
