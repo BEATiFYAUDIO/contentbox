@@ -6,6 +6,7 @@ type AudienceItem = {
   title: string;
   status: string;
   views: number;
+  legacyOpens: number;
   purchases: number | null;
   conversionRate: number | null;
 };
@@ -14,15 +15,12 @@ type AudienceSummary = {
   posture?: "basic" | "sovereign";
   supportsCommerceMetrics?: boolean;
   totalViews: number;
+  totalLegacyOpens: number;
+  viewWindowDays: number;
   totalPurchases: number | null;
   conversionRate: number | null;
   items: AudienceItem[];
 };
-
-function formatPercent(value: number): string {
-  if (!Number.isFinite(value)) return "0.00%";
-  return `${value.toFixed(2)}%`;
-}
 
 function metricCard(label: string, value: string) {
   return (
@@ -57,8 +55,8 @@ export default function AudiencePage() {
     try {
       const payload = await api<AudienceSummary>("/audience/summary");
       setSummary(payload);
-    } catch (e: any) {
-      setError(String(e?.message || "Failed to load audience summary."));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load audience summary.");
     } finally {
       setLoading(false);
     }
@@ -74,7 +72,7 @@ export default function AudiencePage() {
         <header className="flex items-center justify-between gap-3 border-b border-neutral-800 px-4 py-3">
           <div>
             <h2 className="text-2xl font-semibold text-neutral-100">Audience</h2>
-            <div className="mt-1 text-sm text-neutral-400">Audience signals for your content.</div>
+            <div className="mt-1 text-sm text-neutral-400">Recorded Buy-page visits and historical activity for your content.</div>
           </div>
           <button
             className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-900"
@@ -87,19 +85,23 @@ export default function AudiencePage() {
 
         {!supportsCommerceMetrics ? (
           <div className="grid gap-3 px-4 py-4 md:grid-cols-3">
-            {metricCard("Views", String(summary?.totalViews || 0))}
+            {metricCard(`Buy-page views (${summary?.viewWindowDays || 395} days)`, String(summary?.totalViews || 0))}
             <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-4 py-3 text-sm text-neutral-400 md:col-span-2">
-              Basic mode shows local view activity. Connect a provider or node for commerce metrics.
+              Legacy recorded opens: {summary?.totalLegacyOpens || 0}. Basic mode does not show commerce metrics.
             </div>
           </div>
         ) : (
           <div className="grid gap-3 px-4 py-4 md:grid-cols-3">
-            {metricCard("Views", String(summary?.totalViews || 0))}
-            {metricCard("Purchases", String(summary?.totalPurchases || 0))}
-            {metricCard("Conversion", formatPercent(summary?.conversionRate || 0))}
+            {metricCard(`Buy-page views (${summary?.viewWindowDays || 395} days)`, String(summary?.totalViews || 0))}
+            {metricCard("Legacy recorded opens", String(summary?.totalLegacyOpens || 0))}
+            {metricCard("Paid purchase intents (lifetime)", String(summary?.totalPurchases || 0))}
           </div>
         )}
       </section>
+
+      {supportsCommerceMetrics && (
+        <p className="px-1 text-xs text-neutral-400">Conversion is unavailable: recorded visits and purchases cannot yet be linked to the same visitor cohort. Legacy opens use a different counting definition.</p>
+      )}
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950">
         <header className="border-b border-neutral-800 px-4 py-3">
@@ -118,9 +120,9 @@ export default function AudiencePage() {
               <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
                   <th className="px-4 py-3 font-medium">Content</th>
-                  <th className="px-4 py-3 font-medium">Views</th>
+                  <th className="px-4 py-3 font-medium">Buy-page views</th>
+                  <th className="px-4 py-3 font-medium">Legacy opens</th>
                   {supportsCommerceMetrics && <th className="px-4 py-3 font-medium">Purchases</th>}
-                  {supportsCommerceMetrics && <th className="px-4 py-3 font-medium">Conversion</th>}
                 </tr>
               </thead>
               <tbody>
@@ -131,8 +133,8 @@ export default function AudiencePage() {
                       <div className="text-xs text-neutral-500">{row.status}</div>
                     </td>
                     <td className="px-4 py-3 text-neutral-200">{row.views}</td>
+                    <td className="px-4 py-3 text-neutral-200">{row.legacyOpens || 0}</td>
                     {supportsCommerceMetrics && <td className="px-4 py-3 text-neutral-200">{row.purchases ?? 0}</td>}
-                    {supportsCommerceMetrics && <td className="px-4 py-3 text-neutral-200">{formatPercent(row.conversionRate || 0)}</td>}
                   </tr>
                 ))}
               </tbody>

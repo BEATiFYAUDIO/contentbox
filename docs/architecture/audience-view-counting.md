@@ -1,0 +1,11 @@
+# AUDIENCE Checkpoint A: view counting
+
+From this checkpoint onward, a **Buy-page view** means the rendered `/buy/:contentId` page became visible in a browser and submitted its one `view` event. It is not a unique person, play, download, checkout, or proof of attention. JavaScript-disabled visitors and blocked event requests are not counted. Browsers that reject the first-party cookie can still submit one event per page load, but repeat loads cannot be deduplicated across visits.
+
+The Buy page is the sole producer of new view events. Public metadata, offer, cover, and media requests do not count as views. The server accepts only a published existing content ID and a `view` event. Known crawler/prefetch user agents are filtered, as are authenticated owners when their valid bearer token is present. These checks cannot eliminate all bots or identify all owner visits.
+
+`AudienceEvent.definition = buy_page_v2` distinguishes new events from pre-checkpoint events, whose definition remains `NULL`. Legacy rows are neither rewritten nor deleted by the migration. The dashboard reports legacy opens separately and labels new Buy-page views as a rolling 395-day count. Lifetime paid purchase intents remain separately reported. Conversion is withheld because the existing purchase and view records do not describe the same visitor cohort or period.
+
+A signed, first-party, HttpOnly, SameSite=Lax session cookie lasts 30 days. The database atomically claims at most one view per content/session in a rolling 30-minute window. The claim and event insert share one transaction. No raw IP, user agent, referrer, or browser fingerprint is stored in the audience event. Public ingestion uses strict payload validation, same-origin browser signals where present, bounded request budgets, and an in-memory write queue; it does not trust forwarded IP headers.
+
+New v2 event rows older than 395 days and expired deduplication claims are removed in bounded background batches. Legacy events are excluded from this cleanup. `CONTENTBOX_AUDIENCE_ENABLED=0` disables new collection without affecting Buy-page delivery or checkout. Collection failures are handled by the separate best-effort browser request and do not gate offers, payments, receipts, downloads, or entitlements.
