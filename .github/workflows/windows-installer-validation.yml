@@ -11,6 +11,10 @@ on:
         description: Exact source commit/ref to package
         required: true
         default: 1f496f486fa1dee499f567388bf6accde8e04e83
+      audience_upgrade_only:
+        description: Run the disposable Audience existing-user upgrade gate using a previously built candidate
+        required: false
+        default: 'false'
   push:
     branches:
       - "temp/windows-installer-validation-*"
@@ -22,6 +26,7 @@ env:
 
 jobs:
   build-and-validate:
+    if: github.event_name != 'workflow_dispatch' || inputs.audience_upgrade_only != 'true'
     name: Build and validate Windows x64 installer
     runs-on: windows-latest
     timeout-minutes: 75
@@ -417,3 +422,45 @@ jobs:
             .dist/windows-x64/installer/*.exe
             windows-validation-summary.md
           if-no-files-found: error
+
+  audience-existing-user-upgrade:
+    if: github.event_name == 'workflow_dispatch' && inputs.audience_upgrade_only == 'true'
+    name: Validate existing account and commerce on Windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact validated candidate and released Beta 22
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $candidateDir = Join-Path $env:RUNNER_TEMP "audience-candidate"
+          $previousDir = Join-Path $env:RUNNER_TEMP "beta22-release"
+          New-Item -ItemType Directory -Force -Path $candidateDir, $previousDir | Out-Null
+          gh run download 39292525476 --repo BEATiFYAUDIO/contentbox --name certifyd-core-windows-installer-0.1.0-beta.23 --dir $candidateDir
+          if ($LASTEXITCODE -ne 0) { throw "Could not download validated Windows candidate." }
+          $candidate = Join-Path $candidateDir "Certifyd-Core-Setup-0.1.0-beta.23-win-x64.exe"
+          $candidateHash = (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($candidateHash -ne "e42721a2264fefd5f9567d7c03be94ba2b1cc968d8980e9ee1e2567b32fe423") {
+            throw "Candidate checksum mismatch."
+          }
+          gh release download v0.1.0-beta.22 --repo BEATiFYAUDIO/contentbox --pattern "Certifyd-Core-Setup-0.1.0-beta.22-win-x64.exe" --pattern "SHA256SUMS.txt" --dir $previousDir
+          if ($LASTEXITCODE -ne 0) { throw "Could not download published Beta 22." }
+          $previous = Join-Path $previousDir "Certifyd-Core-Setup-0.1.0-beta.22-win-x64.exe"
+          $expected = (Get-Content (Join-Path $previousDir "SHA256SUMS.txt") | Where-Object { $_ -match 'Certifyd-Core-Setup-0\.1\.0-beta\.22-win-x64\.exe' } | Select-Object -First 1) -split '\s+'
+          if (-not $expected[0] -or (Get-FileHash $previous -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected[0].ToLowerInvariant()) {
+            throw "Published Beta 22 checksum mismatch."
+          }
+          "AUDIENCE_CANDIDATE=$candidate" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BETA22_INSTALLER=$previous" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "Source commit=d62ad219213a9a003c1c8bde27806815aff1e09b"
+          "Candidate SHA-256=$candidateHash"
+      - name: Exercise disposable Windows existing-user upgrade
+        shell: pwsh
+        run: |
+          ./scripts/tests/windows_audience_existing_user_upgrade.ps1 -Beta22Installer $env:BETA22_INSTALLER -CandidateInstaller $env:AUDIENCE_CANDIDATE
