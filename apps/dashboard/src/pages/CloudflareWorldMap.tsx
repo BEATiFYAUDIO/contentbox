@@ -21,8 +21,8 @@ export default function CloudflareWorldMap({ totals }: { totals: { label: string
     return shades[level];
   };
 
-  return <div className="mt-4 min-w-0">
-    <div className="rounded-lg border border-neutral-800 bg-[#101827]">
+  return <div className="mt-5 min-w-0">
+    <div className="overflow-hidden rounded-lg border border-neutral-700 bg-[#101827] p-1 sm:p-2">
       <svg viewBox="0 0 1000 500" role="group" aria-label="Interactive world map of reported Cloudflare HTTP requests by country"
         className="block h-auto w-full" style={{ touchAction: "pan-y" }}>
         {countries.map((country) => {
@@ -45,11 +45,11 @@ export default function CloudflareWorldMap({ totals }: { totals: { label: string
         })}
       </svg>
     </div>
-    <p className="mt-2 text-sm text-neutral-200" role="status" aria-live="polite">
+    <p className="mt-3 text-sm text-neutral-100" role="status" aria-live="polite">
       {selected ? <><strong>{selected.name}</strong>: {selectedCount === undefined ? "No reported country data" : `${format(selectedCount)} reported HTTP requests`}</> :
         "Hover, tap, or focus a country to inspect its reported traffic."}
     </p>
-    <p className="mt-1 text-xs text-neutral-500">Blue indicates reported traffic; dark blue indicates a reported zero; gray means no country data. The map uses the same Cloudflare figures as the rankings.</p>
+    <p className="mt-2 text-xs leading-relaxed text-neutral-400">Blue indicates reported traffic; dark blue indicates a reported zero; gray means no country data. The map uses the same Cloudflare figures as the rankings.</p>
     {unmatched.length > 0 && <p className="mt-1 text-xs text-amber-300">{unmatched.length} reported country {unmatched.length === 1 ? "label could" : "labels could"} not be placed on the map; the rankings still show them.</p>}
   </div>;
 }
