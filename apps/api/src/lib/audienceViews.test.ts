@@ -139,6 +139,43 @@ test("a failed audience insert rolls back its claim and does not prevent retry",
   });
 });
 
+test("bounded audience load does not prevent concurrent commerce-table writes", async () => {
+  await withDatabase(async (audienceDb) => {
+    await audienceDb.$executeRawUnsafe(`CREATE TABLE "PaymentIntent" ("id" TEXT NOT NULL PRIMARY KEY, "status" TEXT NOT NULL)`);
+    await audienceDb.$executeRawUnsafe(`INSERT INTO "PaymentIntent" ("id", "status") VALUES ('synthetic-commerce-intent', 'pending')`);
+    const commerceDb = new PrismaClient();
+    const writeCommerce = async () => {
+      const times: number[] = [];
+      for (let n = 0; n < 30; n++) {
+        const start = performance.now();
+        await commerceDb.$executeRaw`UPDATE "PaymentIntent" SET "status" = ${n % 2 ? "pending" : "paid"} WHERE "id" = ${"synthetic-commerce-intent"}`;
+        times.push(performance.now() - start);
+      }
+      return times;
+    };
+    try {
+      const baseline = await writeCommerce();
+      const audience = Array.from({ length: 125 }, (_, n) => recordBuyPageView(
+        audienceDb,
+        "c12345678901234567890",
+        `aud_${n.toString(16).padStart(32, "0")}`
+      ));
+      const [loadedWrites, commerceTimes] = await Promise.all([Promise.allSettled(audience), writeCommerce()]);
+      const rejected = loadedWrites.filter((result) => result.status === "rejected");
+      assert.ok(rejected.length > 0, "the bounded audience queue should reject excess analytics work");
+      assert.ok(rejected.every((result) => String(result.reason?.message || "").includes("queue full")));
+      assert.equal(commerceTimes.length, 30, "every commerce write completed under audience load");
+      assert.equal(await audienceDb.audienceEvent.count(), loadedWrites.length - rejected.length);
+      const final = await commerceDb.$queryRaw<Array<{ status: string }>>`SELECT "status" FROM "PaymentIntent" WHERE "id" = ${"synthetic-commerce-intent"}`;
+      assert.equal(final[0]?.status, "pending");
+      // Timing is diagnostic rather than a brittle CI threshold.
+      console.log(`commerce write p95: baseline=${baseline.sort((a, b) => a - b)[28].toFixed(1)}ms, audience-load=${commerceTimes.sort((a, b) => a - b)[28].toFixed(1)}ms`);
+    } finally {
+      await commerceDb.$disconnect();
+    }
+  });
+});
+
 test("retention removes only old v2 records and expired claims, preserving legacy events", async () => {
   await withDatabase(async (db) => {
     const oldDate = new Date("2024-01-01T00:00:00.000Z");
