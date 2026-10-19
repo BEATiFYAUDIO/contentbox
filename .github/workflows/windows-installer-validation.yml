@@ -444,7 +444,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $candidateDir, $previousDir | Out-Null
           gh run download 39292525476 --repo BEATiFYAUDIO/contentbox --name certifyd-core-windows-installer-0.1.0-beta.23 --dir $candidateDir
           if ($LASTEXITCODE -ne 0) { throw "Could not download validated Windows candidate." }
-          $candidate = Join-Path $candidateDir "Certifyd-Core-Setup-0.1.0-beta.23-win-x64.exe"
+          $candidate = Get-ChildItem $candidateDir -Recurse -File -Filter "Certifyd-Core-Setup-0.1.0-beta.23-win-x64.exe" | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $candidate) { throw "Downloaded artifact did not contain the expected installer." }
           $candidateHash = (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($candidateHash -ne "e42721a2264fefd5f9567d7c03be94ba2b1cc968d8980e9ee1e2567b32fe423") {
             throw "Candidate checksum mismatch."
