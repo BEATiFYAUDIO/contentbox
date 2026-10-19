@@ -65,13 +65,13 @@ try {
     "APP_BASE_URL=http://127.0.0.1:4000",
     "JWT_SECRET=ci-only-disposable-audience-upgrade-secret"
   ) | Set-Content -Path (Join-Path $dataRoot "config\api.env") -Encoding UTF8
-  $configBefore = (Get-FileHash (Join-Path $dataRoot "config\api.env") -Algorithm SHA256).Hash
   Start-Core
   $signup = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:4000/auth/signup" -ContentType "application/json" -Body (@{ email = $email; password = $password; displayName = "Synthetic Upgrade Creator" } | ConvertTo-Json -Compress)
   if (-not $signup.user.id) { throw "Beta 22 signup failed." }
   if ((Invoke-Login).user.id -ne $signup.user.id) { throw "Beta 22 normal login failed." }
   "Beta 22 normal signup/login=PASS"
   Stop-Core
+  $configBefore = (Get-FileHash (Join-Path $dataRoot "config\api.env") -Algorithm SHA256).Hash
 
   # Seed only synthetic commerce records in the runner's disposable SQLite database.
   $env:DATABASE_URL = "file:$($dbPath.Replace('\', '/'))"
