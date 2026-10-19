@@ -29,8 +29,6 @@ import {
 import { createPaymentProvider } from "./lib/payments.js";
 import { dashboardAssetCacheControl } from "./lib/dashboardAssetCaching.js";
 import {
-  AUDIENCE_V2_RETENTION_DAYS,
-  AUDIENCE_VIEW_DEFINITION,
   AudienceRateLimiter,
   isAudienceCollectionEnabled,
   isAutomatedAudienceRequest,
@@ -40,6 +38,7 @@ import {
   validateAudienceViewBody,
   verifyAudienceSession
 } from "./lib/audienceViews.js";
+import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
@@ -50223,99 +50222,11 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
 }
 
 app.get("/audience/summary", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const query = parseAudienceQuery(req.query);
+  if (!query) return reply.code(400).send({ error: "Invalid audience query", code: "INVALID_AUDIENCE_QUERY", allowedRanges: ["7d", "30d", "90d", "all"] });
   const userId = (req.user as JwtUser).sub;
-  const productTier = resolveProductTier().productTier;
-  const isBasicPosture = productTier === "basic";
-  const ownedContent = await prisma.contentItem.findMany({
-    where: { ownerUserId: userId, deletedAt: null },
-    select: { id: true, title: true, status: true, createdAt: true, updatedAt: true },
-    orderBy: { updatedAt: "desc" }
-  });
-  const contentIds = ownedContent.map((row) => String(row.id || "").trim()).filter(Boolean);
-  if (contentIds.length === 0) {
-    return reply.send({
-      posture: isBasicPosture ? "basic" : "sovereign",
-      supportsCommerceMetrics: !isBasicPosture,
-      totalViews: 0,
-      totalLegacyOpens: 0,
-      viewWindowDays: AUDIENCE_V2_RETENTION_DAYS,
-      totalPurchases: isBasicPosture ? null : 0,
-      conversionRate: null,
-      items: []
-    });
-  }
-
-  const viewCutoff = new Date(Date.now() - AUDIENCE_V2_RETENTION_DAYS * 24 * 60 * 60 * 1000);
-  const viewCountsRaw = await prisma.audienceEvent.groupBy({
-    by: ["contentId"],
-    where: {
-      contentId: { in: contentIds },
-      eventType: "view" as any,
-      definition: AUDIENCE_VIEW_DEFINITION,
-      createdAt: { gte: viewCutoff }
-    },
-    _count: { _all: true }
-  });
-  const legacyCountsRaw = await prisma.audienceEvent.groupBy({
-    by: ["contentId"],
-    where: {
-      contentId: { in: contentIds },
-      eventType: "view" as any,
-      definition: null
-    },
-    _count: { _all: true }
-  });
-
-  const purchaseCountsRaw = isBasicPosture
-    ? []
-    : await prisma.paymentIntent.groupBy({
-        by: ["contentId"],
-        where: {
-          contentId: { in: contentIds },
-          purpose: "CONTENT_PURCHASE" as any,
-          status: "paid" as any
-        },
-        _count: { _all: true }
-      });
-
-  const viewCounts = new Map<string, number>();
-  for (const row of viewCountsRaw) viewCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
-  const legacyCounts = new Map<string, number>();
-  for (const row of legacyCountsRaw) legacyCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
-
-  const purchaseCounts = new Map<string, number>();
-  for (const row of purchaseCountsRaw) purchaseCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
-
-  const items = ownedContent.map((row) => {
-    const contentId = String(row.id || "");
-    const views = viewCounts.get(contentId) || 0;
-    const purchases = purchaseCounts.get(contentId) || 0;
-    return {
-      contentId,
-      title: String(row.title || "Untitled"),
-      status: String(row.status || "").toLowerCase(),
-      views,
-      legacyOpens: legacyCounts.get(contentId) || 0,
-      purchases: isBasicPosture ? null : purchases,
-      conversionRate: null,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt
-    };
-  });
-
-  const totalViews = items.reduce((sum, row) => sum + row.views, 0);
-  const totalLegacyOpens = items.reduce((sum, row) => sum + row.legacyOpens, 0);
-  const totalPurchases = items.reduce((sum, row) => sum + Number(row.purchases || 0), 0);
-  return reply.send({
-    posture: isBasicPosture ? "basic" : "sovereign",
-    supportsCommerceMetrics: !isBasicPosture,
-    totalViews,
-    totalLegacyOpens,
-    viewWindowDays: AUDIENCE_V2_RETENTION_DAYS,
-    totalPurchases: isBasicPosture ? null : totalPurchases,
-    conversionRate: null,
-    items
-  });
+  const isBasicPosture = resolveProductTier().productTier === "basic";
+  return reply.send(await buildAudienceReport(prisma, userId, isBasicPosture, query.range, query.page));
 });
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
