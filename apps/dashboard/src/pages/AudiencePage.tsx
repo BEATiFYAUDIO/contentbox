@@ -63,7 +63,8 @@ export default function AudiencePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [exporting, setExporting] = useState<"csv" | "json" | null>(null);
+  const [exportFormat, setExportFormat] = useState<"csv" | "json">("csv");
+  const [exporting, setExporting] = useState<"page" | "all" | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
@@ -82,11 +83,13 @@ export default function AudiencePage() {
     setRange(next); setPage(1); setExpanded(null);
     try { sessionStorage.setItem("certifyd.audience.range", next); } catch { /* Optional persistence. */ }
   };
-  const downloadExport = async (format: "csv" | "json") => {
+  const downloadExport = async (scope: "page" | "all") => {
     if (!report || exporting) return;
-    setExporting(format); setExportError(null);
+    setExporting(scope); setExportError(null);
     try {
-      const response = await fetch(`${getApiBase()}/audience/export?range=${range}&page=${page}&format=${format}`, {
+      const endpoint = scope === "all" ? "export-all" : "export";
+      const pageQuery = scope === "page" ? `&page=${page}` : "";
+      const response = await fetch(`${getApiBase()}/audience/${endpoint}?range=${range}${pageQuery}&format=${exportFormat}`, {
         headers: { Authorization: `Bearer ${getToken() || ""}` }
       });
       if (!response.ok) throw new Error(`Export failed (${response.status}). Please try again.`);
@@ -94,7 +97,7 @@ export default function AudiencePage() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `certifyd-audience-${range}-page-${page}-${new Date().toISOString().slice(0, 10)}.${format}`;
+      anchor.download = `certifyd-audience-${range}-${scope === "all" ? "all" : `page-${page}`}-${new Date().toISOString().slice(0, 10)}.${exportFormat}`;
       document.body.append(anchor);
       anchor.click();
       anchor.remove();
@@ -106,10 +109,11 @@ export default function AudiencePage() {
   const comparable = report?.metadata.viewCoverage === "observed_after_boundary";
   return <div className="space-y-4 pb-8 text-neutral-100">
     <header className={`${panel} flex flex-wrap items-center justify-between gap-3 p-4`}><div><h2 className="text-2xl font-semibold">Audience</h2><p className="mt-1 text-sm text-neutral-400">Understand how people find and buy your work.</p></div>
-      <div className="flex flex-wrap gap-2"><button type="button" className={button} disabled={loading} onClick={reload}>Refresh</button>
-        <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("csv")}>{exporting === "csv" ? "Exporting…" : "Export page CSV"}</button>
-        <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("json")}>{exporting === "json" ? "Exporting…" : "Export page JSON"}</button></div></header>
-    <p className="text-xs text-neutral-400">Exports include account totals and trends for the selected range, plus this page of up to 50 works. Download each page to keep every work. Reports are not restorable Core backups.</p>
+      <div className="flex flex-wrap items-center gap-2"><button type="button" className={button} disabled={loading} onClick={reload}>Refresh</button>
+        <label className="text-sm text-neutral-300">Format <select className={button} value={exportFormat} disabled={!!exporting} onChange={(event) => setExportFormat(event.target.value as "csv" | "json")}><option value="csv">CSV</option><option value="json">JSON</option></select></label>
+        <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("page")}>{exporting === "page" ? "Exporting…" : "Export current page"}</button>
+        <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("all")}>{exporting === "all" ? "Preparing full export…" : "Export all Audience data"}</button></div></header>
+    <p className="text-xs text-neutral-400">Exports use the selected date range. Full exports include every owned work and account totals once. Reports are not restorable Core backups.</p>
     {exportError && <p className="text-sm text-rose-300" role="alert">{exportError}</p>}
     <div className="flex flex-wrap gap-2" role="group" aria-label="Audience date range">{ranges.map((r) => <button key={r.value} type="button" aria-pressed={range === r.value} onClick={() => selectRange(r.value)} className={`${button} ${range === r.value ? "border-sky-500 bg-sky-950 text-sky-100" : ""}`}>{r.label}</button>)}</div>
     {loading && <div className={`${panel} p-6 text-sm text-neutral-400`} role="status">Loading audience data…</div>}

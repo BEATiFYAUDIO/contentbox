@@ -40,6 +40,7 @@ import {
 } from "./lib/audienceViews.js";
 import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics.js";
 import { audienceExportFilename, serializeAudienceExport } from "./lib/audienceExport.js";
+import { AudienceAllExportChangedError, AudienceAllExportLimitError, buildAudienceAllFile } from "./lib/audienceExportAll.js";
 import { createSqliteBackup } from "./lib/sqliteBackup.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
@@ -50260,6 +50261,40 @@ app.get("/audience/export", { preHandler: [requireAuth] }, async (req: any, repl
     }
     throw err;
   }
+});
+
+let audienceAllExportBusy = false;
+app.get("/audience/export-all", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const { format, ...queryValues } = (req.query || {}) as Record<string, unknown>;
+  const query = parseAudienceQuery(queryValues);
+  if (!query || query.page !== 1 || (format !== "csv" && format !== "json")) {
+    return reply.code(400).send({ error: "Invalid audience export query" });
+  }
+  if (audienceAllExportBusy) return reply.code(429).send({ error: "Another Audience export is running. Please retry shortly." });
+  audienceAllExportBusy = true;
+  let output: Awaited<ReturnType<typeof buildAudienceAllFile>>;
+  try {
+    const userId = (req.user as JwtUser).sub;
+    const isBasicPosture = resolveProductTier().productTier === "basic";
+    output = await buildAudienceAllFile((page, asOf) =>
+      buildAudienceReport(prisma, userId, isBasicPosture, query.range, page, asOf), format);
+  } catch (err) {
+    if (err instanceof AudienceAllExportLimitError || (err instanceof Error && err.message.includes("per-page size limit"))) {
+      return reply.code(413).send({ error: "Audience report exceeds the safe export limit" });
+    }
+    if (err instanceof AudienceAllExportChangedError) return reply.code(409).send({ error: err.message });
+    throw err;
+  } finally {
+    audienceAllExportBusy = false;
+  }
+  if (req.raw.aborted) { await output.cleanup(); return reply; }
+  const stream = fsSync.createReadStream(output.filePath);
+  stream.once("close", () => { void output.cleanup(); });
+  reply.header("Content-Type", format === "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8");
+  reply.header("Content-Disposition", `attachment; filename="certifyd-audience-all-${query.range}-${new Date().toISOString().slice(0, 10)}.${format}"`);
+  reply.header("Content-Length", String(output.size));
+  reply.header("Cache-Control", "private, no-store");
+  return reply.send(stream);
 });
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {

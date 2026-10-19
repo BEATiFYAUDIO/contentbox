@@ -69,19 +69,12 @@ function csvCell(value: unknown): string {
   return `"${safe.replace(/"/g, '""')}"`;
 }
 
-export function serializeAudienceExport(report: Report, format: AudienceExportFormat, generatedAt = new Date()): string {
-  if (report.items.length > report.pagination.pageSize || report.pagination.pageSize > 50 || report.series.length > 400 ||
-      report.items.some((item) => Buffer.byteLength(item.title) > 4096 || item.series.length > 400)) {
-    throw new Error("Audience export exceeds the per-page size limit");
-  }
-  const document = audienceExportDocument(report, generatedAt);
-  if (format === "json") {
-    const output = JSON.stringify(document, null, 2);
-    if (Buffer.byteLength(output) > AUDIENCE_EXPORT_MAX_BYTES) throw new Error("Audience export exceeds the per-page size limit");
-    return output;
-  }
-  const base = { schema_version: 1, generated_at: document.generatedAt, scope: document.scope,
-    range: document.range, page: document.page,
+type Document = ReturnType<typeof audienceExportDocument>;
+function csvParts(document: Document, full = false) {
+  const base = { schema_version: full ? 2 : 1, generated_at: document.generatedAt, scope: full
+      ? "Complete available Audience report for all owned works; not a Core backup."
+      : document.scope,
+    range: document.range, page: full ? "all" : document.page,
     total_pages: document.pagination.totalPages, total_items: document.pagination.totalItems,
     period_start: document.measurement.periodStart, period_end_exclusive: document.measurement.periodEndExclusive,
     view_retention_days: document.measurement.viewRetentionDays,
@@ -92,31 +85,56 @@ export function serializeAudienceExport(report: Report, format: AudienceExportFo
     view_definition: document.measurement.viewDefinition, legacy_definition: document.measurement.legacyDefinition,
     paid_purchase_definition: document.measurement.paidPurchaseDefinition,
     coverage_note: document.measurement.coverageNote };
-  const rows: Record<string, unknown>[] = [];
-  rows.push({ ...base, record_type: "account_total", view_coverage: document.measurement.viewCoverage,
+  const line = (row: Record<string, unknown>) => columns.map((name) => csvCell(row[name])).join(",") + "\r\n";
+  const account: string[] = [];
+  account.push(line({ ...base, record_type: "account_total", view_coverage: document.measurement.viewCoverage,
     buy_page_views: document.totals.buyPageViews, legacy_content_opens: document.totals.legacyContentOpens,
-    completed_purchases: document.totals.completedPurchases, indicative_ratio: document.totals.indicativeRatio });
-  for (const period of document.accountPeriods) rows.push({ ...base, record_type: "account_period",
+    completed_purchases: document.totals.completedPurchases, indicative_ratio: document.totals.indicativeRatio }));
+  for (const period of document.accountPeriods) account.push(line({ ...base, record_type: "account_period",
     period: period.period, view_coverage: period.viewCoverage, buy_page_views: period.buyPageViews,
-    completed_purchases: period.completedPurchases, indicative_ratio: period.indicativeRatio });
+    completed_purchases: period.completedPurchases, indicative_ratio: period.indicativeRatio }));
+  const content: string[] = [];
   for (const item of document.content) {
-    const work = { ...base, content_id: item.contentId, title: item.title, status: item.status, rank: item.rank };
-    rows.push({ ...work, record_type: "content_total", view_coverage: document.measurement.viewCoverage,
+    const work = { ...(full ? { schema_version: 2, range: document.range } : base),
+      content_id: item.contentId, title: item.title, status: item.status, rank: item.rank };
+    content.push(line({ ...work, record_type: "content_total", view_coverage: document.measurement.viewCoverage,
       buy_page_views: item.buyPageViews, legacy_content_opens: item.legacyContentOpens,
-      completed_purchases: item.completedPurchases, indicative_ratio: item.indicativeRatio });
-    for (const period of item.periods) rows.push({ ...work, record_type: "content_period",
+      completed_purchases: item.completedPurchases, indicative_ratio: item.indicativeRatio }));
+    for (const period of item.periods) content.push(line({ ...work, record_type: "content_period",
       period: period.period, view_coverage: period.viewCoverage, buy_page_views: period.buyPageViews,
-      completed_purchases: period.completedPurchases, indicative_ratio: period.indicativeRatio });
+      completed_purchases: period.completedPurchases, indicative_ratio: period.indicativeRatio }));
   }
-  const lines = [columns.join(",")];
-  let bytes = Buffer.byteLength(lines[0]) + 2;
-  for (const row of rows) {
-    const line = columns.map((name) => csvCell(row[name])).join(",");
-    bytes += Buffer.byteLength(line) + 2;
+  return { header: columns.join(",") + "\r\n", account, content };
+}
+
+export function audienceCsvParts(report: Report, generatedAt = new Date(), full = false) {
+  return csvParts(audienceExportDocument(report, generatedAt), full);
+}
+
+export function assertAudiencePageBounds(report: Report) {
+  if (report.items.length > report.pagination.pageSize || report.pagination.pageSize > 50 || report.series.length > 400 ||
+      report.items.some((item) => Buffer.byteLength(item.title) > 4096 || item.series.length > 400)) {
+    throw new Error("Audience export exceeds the per-page size limit");
+  }
+}
+
+export function serializeAudienceExport(report: Report, format: AudienceExportFormat, generatedAt = new Date()): string {
+  assertAudiencePageBounds(report);
+  const document = audienceExportDocument(report, generatedAt);
+  if (format === "json") {
+    const output = JSON.stringify(document, null, 2);
+    if (Buffer.byteLength(output) > AUDIENCE_EXPORT_MAX_BYTES) throw new Error("Audience export exceeds the per-page size limit");
+    return output;
+  }
+  const parts = csvParts(document);
+  const lines = [parts.header];
+  let bytes = Buffer.byteLength(parts.header);
+  for (const line of [...parts.account, ...parts.content]) {
+    bytes += Buffer.byteLength(line);
     if (bytes > AUDIENCE_EXPORT_MAX_BYTES) throw new Error("Audience export exceeds the per-page size limit");
     lines.push(line);
   }
-  return lines.join("\r\n") + "\r\n";
+  return lines.join("");
 }
 
 export function audienceExportFilename(range: string, page: number, format: AudienceExportFormat, now = new Date()) {
