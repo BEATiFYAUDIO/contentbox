@@ -447,7 +447,7 @@ jobs:
           $candidate = Get-ChildItem $candidateDir -Recurse -File -Filter "Certifyd-Core-Setup-0.1.0-beta.23-win-x64.exe" | Select-Object -First 1 -ExpandProperty FullName
           if (-not $candidate) { throw "Downloaded artifact did not contain the expected installer." }
           $candidateHash = (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($candidateHash -ne "e42721a2264fefd5f9567d7c03be94ba2b1cc968d8980e9ee1e2567b32fe423") {
+          if ($candidateHash -ne "e42721a2264fefdd5f9567d7c03be94ba2b1cc968d8980e9ee1e2567b32fe423") {
             throw "Candidate checksum mismatch."
           }
           gh release download v0.1.0-beta.22 --repo BEATiFYAUDIO/contentbox --pattern "Certifyd-Core-Setup-0.1.0-beta.22-win-x64.exe" --pattern "SHA256SUMS.txt" --dir $previousDir
