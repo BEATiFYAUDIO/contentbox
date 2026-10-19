@@ -39,6 +39,8 @@ import {
   verifyAudienceSession
 } from "./lib/audienceViews.js";
 import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics.js";
+import { audienceExportFilename, serializeAudienceExport } from "./lib/audienceExport.js";
+import { createSqliteBackup } from "./lib/sqliteBackup.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
@@ -1598,6 +1600,15 @@ const BUYER_SESSION_DAYS = 30;
 const AUDIENCE_SESSION_COOKIE = "cb_audience_session";
 const audienceRateLimiter = new AudienceRateLimiter();
 let lastAudiencePruneMs = 0;
+let audiencePruneInFlight = false;
+let audienceRetentionTimer: ReturnType<typeof setInterval> | null = null;
+async function runAudienceRetention() {
+  if (audiencePruneInFlight) return;
+  audiencePruneInFlight = true;
+  try { await pruneAudienceV2(prisma); }
+  catch (err) { app.log.warn({ err }, "audience.prune_failed"); }
+  finally { audiencePruneInFlight = false; }
+}
 
 function getCookie(req: any, name: string): string | null {
   try {
@@ -10581,7 +10592,7 @@ async function runBackup() {
     if (!fsSync.existsSync(source)) {
       throw new Error(`SQLite database file not found: ${source}`);
     }
-    await fs.copyFile(source, fullPath);
+    await createSqliteBackup(prisma, BACKUP_DIR, filename);
   }
   const st = await fs.stat(fullPath);
   await pruneBackups();
@@ -13753,7 +13764,7 @@ async function handlePublicAudienceInteraction(req: any, reply: any) {
     const now = Date.now();
     if (recorded && now - lastAudiencePruneMs >= 60 * 1000) {
       lastAudiencePruneMs = now;
-      void pruneAudienceV2(prisma).catch((err) => req.log.warn({ err }, "audience.prune_failed"));
+      void runAudienceRetention();
     }
     return reply.send({ ok: true, recorded, deduped: !recorded });
   } catch (err) {
@@ -50229,6 +50240,28 @@ app.get("/audience/summary", { preHandler: [requireAuth] }, async (req: any, rep
   return reply.send(await buildAudienceReport(prisma, userId, isBasicPosture, query.range, query.page));
 });
 
+app.get("/audience/export", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const { format, ...queryValues } = (req.query || {}) as Record<string, unknown>;
+  const query = parseAudienceQuery(queryValues);
+  if (!query || (format !== "csv" && format !== "json")) {
+    return reply.code(400).send({ error: "Invalid audience export query" });
+  }
+  const userId = (req.user as JwtUser).sub;
+  const report = await buildAudienceReport(prisma, userId, resolveProductTier().productTier === "basic", query.range, query.page);
+  try {
+    const output = serializeAudienceExport(report, format);
+    reply.header("Content-Type", format === "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8");
+    reply.header("Content-Disposition", `attachment; filename="${audienceExportFilename(query.range, query.page, format)}"`);
+    reply.header("Cache-Control", "private, no-store");
+    return reply.send(output);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("per-page size limit")) {
+      return reply.code(413).send({ error: "Audience export is too large for one page" });
+    }
+    throw err;
+  }
+});
+
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   queueSellerPendingIntentsReconcile(userId, "finance_overview", req.log);
@@ -53850,6 +53883,10 @@ async function start() {
   scheduleReceiptIdBackfillBestEffort();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: PRIVATE_API_BIND_HOST });
+  // Retention also runs when no new visits arrive; the existing bounded prune
+  // removes at most one small batch per run and never blocks API startup.
+  audienceRetentionTimer = setInterval(() => { void runAudienceRetention(); }, 60 * 60 * 1000);
+  audienceRetentionTimer.unref();
   // Run provider verification in the background so startup/health becomes
   // available immediately even when remote provider endpoints are slow.
   setTimeout(() => {
@@ -53907,6 +53944,7 @@ let runtimeShutdownStarted = false;
 async function shutdownRuntime(signal: "SIGTERM" | "SIGINT") {
   if (runtimeShutdownStarted) return;
   runtimeShutdownStarted = true;
+  if (audienceRetentionTimer) clearInterval(audienceRetentionTimer);
   try {
     await publicLifecycleMutex.runExclusive(async () => {
       await tunnelManager.stop();

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, getApiBase } from "../lib/api";
+import { getToken } from "../lib/auth";
 
 type Range = "7d" | "30d" | "90d" | "all";
 type Coverage = "unknown" | "partial" | "observed";
@@ -62,6 +63,8 @@ export default function AudiencePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [exporting, setExporting] = useState<"csv" | "json" | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
     void api<Report>(`/audience/summary?range=${range}&page=${page}`)
@@ -79,11 +82,35 @@ export default function AudiencePage() {
     setRange(next); setPage(1); setExpanded(null);
     try { sessionStorage.setItem("certifyd.audience.range", next); } catch { /* Optional persistence. */ }
   };
+  const downloadExport = async (format: "csv" | "json") => {
+    if (!report || exporting) return;
+    setExporting(format); setExportError(null);
+    try {
+      const response = await fetch(`${getApiBase()}/audience/export?range=${range}&page=${page}&format=${format}`, {
+        headers: { Authorization: `Bearer ${getToken() || ""}` }
+      });
+      if (!response.ok) throw new Error(`Export failed (${response.status}). Please try again.`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `certifyd-audience-${range}-page-${page}-${new Date().toISOString().slice(0, 10)}.${format}`;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (cause) { setExportError(cause instanceof Error ? cause.message : "Audience export failed."); }
+    finally { setExporting(null); }
+  };
   const commerce = report?.supportsCommerceMetrics === true && report.posture !== "basic";
   const comparable = report?.metadata.viewCoverage === "observed_after_boundary";
   return <div className="space-y-4 pb-8 text-neutral-100">
     <header className={`${panel} flex flex-wrap items-center justify-between gap-3 p-4`}><div><h2 className="text-2xl font-semibold">Audience</h2><p className="mt-1 text-sm text-neutral-400">Understand how people find and buy your work.</p></div>
-      <button type="button" className={button} disabled={loading} onClick={reload}>Refresh</button></header>
+      <div className="flex flex-wrap gap-2"><button type="button" className={button} disabled={loading} onClick={reload}>Refresh</button>
+        <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("csv")}>{exporting === "csv" ? "Exporting…" : "Export page CSV"}</button>
+        <button type="button" className={button} disabled={!report || loading || !!exporting} onClick={() => void downloadExport("json")}>{exporting === "json" ? "Exporting…" : "Export page JSON"}</button></div></header>
+    <p className="text-xs text-neutral-400">Exports include account totals and trends for the selected range, plus this page of up to 50 works. Download each page to keep every work. Reports are not restorable Core backups.</p>
+    {exportError && <p className="text-sm text-rose-300" role="alert">{exportError}</p>}
     <div className="flex flex-wrap gap-2" role="group" aria-label="Audience date range">{ranges.map((r) => <button key={r.value} type="button" aria-pressed={range === r.value} onClick={() => selectRange(r.value)} className={`${button} ${range === r.value ? "border-sky-500 bg-sky-950 text-sky-100" : ""}`}>{r.label}</button>)}</div>
     {loading && <div className={`${panel} p-6 text-sm text-neutral-400`} role="status">Loading audience data…</div>}
     {error && <div className={`${panel} p-6 text-sm text-rose-300`} role="alert">{error} <button type="button" className={`ml-2 ${button}`} onClick={reload}>Try again</button></div>}
@@ -96,7 +123,8 @@ export default function AudiencePage() {
       </div>
       <section className={`${panel} p-4 text-sm text-neutral-300`} aria-label="Measurement notes"><p><b>Legacy content opens:</b> {number(report.totalLegacyOpens)}. These used an older definition and are not added to Buy-page views.</p>
         <p className="mt-2">{report.metadata.earliestAvailableBuyPageViewAt ? `First available Buy-page view: ${new Date(report.metadata.earliestAvailableBuyPageViewAt).toLocaleDateString(undefined, { timeZone: "UTC", year: "numeric", month: "short", day: "numeric" })}. This does not establish when tracking began.` : "No new Buy-page views have been observed. Earlier view activity is unknown, not zero."}</p>
-        <p className="mt-2">Buy-page views are retained for {report.viewWindowDays} days. {report.metadata.viewCoverage === "incomplete" ? "This range includes incomplete view history." : report.metadata.viewCoverage === "unknown" ? "View coverage for this range is unknown." : "Activity after the first available view is shown where observed."}{range === "all" && commerce ? " The purchase total includes all historical paid purchases; the monthly chart shows only the retained view-history window." : ""}</p></section>
+        <p className="mt-2">Buy-page views are retained for {report.viewWindowDays} days. {report.metadata.viewCoverage === "incomplete" ? "This range includes incomplete view history." : report.metadata.viewCoverage === "unknown" ? "View coverage for this range is unknown." : "Activity after the first available view is shown where observed."}{range === "all" && commerce ? " The purchase total includes all historical paid purchases; the monthly chart shows only the retained view-history window." : ""}</p>
+        <p className="mt-2 text-xs text-neutral-400">A signed browser-session cookie helps count a visit to each work's Buy page at most once per 30 minutes. The cookie lasts up to 30 days; new view events are kept up to {report.viewWindowDays} days. Exports contain aggregate counts and work details, not visitor or buyer identifiers.</p></section>
       <div className="grid min-w-0 gap-3 xl:grid-cols-2"><Trend title="Buy-page views over time" points={report.series} measure="views" color="bg-sky-500" />
         {commerce && <Trend title={range === "all" ? "Recent completed purchases over time" : "Completed purchases over time"} points={report.series} measure="purchases" color="bg-emerald-500" />}
         {commerce && <div className="xl:col-span-2"><Trend title="Indicative ratio over time" points={report.series} measure="conversionRate" color="bg-violet-500" /></div>}</div>

@@ -8,6 +8,7 @@ This runbook restores a local node after crash/corruption using the existing bac
 - Backups are written under:
   - `${CONTENTBOX_ROOT}/backups`
   - default Linux example: `/home/<user>/contentbox-data/backups`
+- SQLite backups created by the dashboard or `backup_db.sh` are consistent database snapshots, including committed WAL transactions. They contain commerce and Audience tables but are not a complete backup of media, configuration, or credentials. Back up the full Core data directory separately for complete recovery.
 
 ## 1. Stop app processes
 
@@ -37,6 +38,7 @@ Notes:
 
 - A pre-restore safety copy of the current DB is created automatically.
 - Restore script uses `apps/api/.env` (`DATABASE_URL`) to find destination DB.
+- The restore scripts do not prove exclusive database access or reconcile existing `-wal`/`-shm` files. Confirm every Core process is stopped and arrange a controlled restore if those files remain. Never run the scripts against an open database.
 
 ## 4. Restart services
 
