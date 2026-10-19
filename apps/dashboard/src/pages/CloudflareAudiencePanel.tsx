@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import CloudflareWorldMap from "./CloudflareWorldMap";
 import {
   cloudflareBreakdown, cloudflareDailyTraffic, cloudflareMetricSummary, selectCloudflareMetric,
   type CloudflareCache, type CloudflareMetric, type CloudflareRange, type CloudflareSnapshot
@@ -73,6 +74,9 @@ export default function CloudflareAudiencePanel({ range, refresh }: { range: Clo
   const traffic = metric("traffic");
   const buy = metric("buy_page_requests");
   const countries = metric("country");
+  const countryTotals = cloudflareBreakdown(countries, Number.POSITIVE_INFINITY);
+  const countryCoverage = cloudflareMetricSummary(countries, cache?.truncated);
+  const countryWindowIncomplete = expectedDays(range) !== null && countryCoverage.cachedDays < expectedDays(range)!;
   const devices = metric("device");
   const browsers = metric("browser");
   const systems = metric("os");
@@ -90,6 +94,11 @@ export default function CloudflareAudiencePanel({ range, refresh }: { range: Clo
       {cache.truncated && <p className="text-sm text-amber-300" role="status">The cached response reached its size limit. These sections show only the returned days.</p>}
       <div className="grid gap-3 xl:grid-cols-2">
         <section className={panel} aria-label="Geography"><h4 className="font-semibold text-neutral-100">Geography</h4><p className="mt-1 text-sm text-neutral-400">Countries by reported HTTP requests</p>
+          <CloudflareWorldMap totals={countryTotals} />
+          {(countryCoverage.maxSampleInterval > 1 || countryCoverage.truncated || countryCoverage.incomplete || countryWindowIncomplete) &&
+            <p className="mt-3 rounded-lg border border-amber-700/50 bg-amber-950/30 p-2 text-xs text-amber-200" role="status">
+              Map coverage is {countryCoverage.truncated ? "truncated" : countryCoverage.incomplete || countryWindowIncomplete ? "incomplete" : "sampled"}. Shaded values are reported Cloudflare traffic, and gray countries have unknown data. {countryCoverage.maxSampleInterval > 1 ? `Sampling interval up to ${format(countryCoverage.maxSampleInterval)}. ` : ""}Do not read missing countries as zero.
+            </p>}
           <RankedRows rows={cloudflareBreakdown(countries)} empty="No country data is cached for this range." />
           <CoverageNote metric="country" rows={countries} range={range} cache={cache} />
         </section>
