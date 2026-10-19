@@ -57,6 +57,17 @@ type MetadataProvidersSettings = {
   };
 };
 
+type CloudflareAnalyticsSettings = {
+  configured: boolean;
+  status: string;
+  zoneId?: string;
+  accountId?: string | null;
+  hostname?: string;
+  lastSyncAt?: string | null;
+  cachedDays?: number;
+  error?: string | null;
+};
+
 type LightningRuntimeSnapshot = {
   connected: boolean;
   canReceive: boolean;
@@ -243,6 +254,13 @@ export default function ConfigPage({
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
   const [lightningWalletError, setLightningWalletError] = useState<string | null>(null);
   const [metadataSettings, setMetadataSettings] = useState<MetadataProvidersSettings | null>(null);
+  const [cloudflareAnalytics, setCloudflareAnalytics] = useState<CloudflareAnalyticsSettings | null>(null);
+  const [analyticsZoneId, setAnalyticsZoneId] = useState("");
+  const [analyticsAccountId, setAnalyticsAccountId] = useState("");
+  const [analyticsHostname, setAnalyticsHostname] = useState("");
+  const [analyticsToken, setAnalyticsToken] = useState("");
+  const [analyticsBusy, setAnalyticsBusy] = useState(false);
+  const [analyticsMessage, setAnalyticsMessage] = useState<string | null>(null);
   const [spotifyClientId, setSpotifyClientId] = useState("");
   const [spotifyClientSecret, setSpotifyClientSecret] = useState("");
   const [spotifyBusy, setSpotifyBusy] = useState<null | "save" | "test">(null);
@@ -581,10 +599,55 @@ export default function ConfigPage({
     loadMetadataProviders().catch(() => {
       if (!cancelled) setMetadataSettings(null);
     });
+    api<CloudflareAnalyticsSettings>("/api/settings/cloudflare-analytics", "GET").then((settings) => {
+      if (cancelled) return;
+      setCloudflareAnalytics(settings);
+      setAnalyticsZoneId(settings.zoneId || "");
+      setAnalyticsAccountId(settings.accountId || "");
+      setAnalyticsHostname(settings.hostname || "");
+    }).catch(() => { if (!cancelled) setCloudflareAnalytics(null); });
     return () => {
       cancelled = true;
     };
   }, [token]);
+
+  async function saveCloudflareAnalytics() {
+    setAnalyticsBusy(true);
+    setAnalyticsMessage(null);
+    try {
+      await api("/api/settings/cloudflare-analytics", "PATCH", {
+        zoneId: analyticsZoneId.trim(), accountId: analyticsAccountId.trim(),
+        hostname: analyticsHostname.trim(), token: analyticsToken
+      });
+      setAnalyticsToken("");
+      setCloudflareAnalytics(await api<CloudflareAnalyticsSettings>("/api/settings/cloudflare-analytics", "GET"));
+      setAnalyticsMessage("Connection verified and saved. Refresh to cache available aggregates.");
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Could not verify Cloudflare Analytics."); }
+    finally { setAnalyticsBusy(false); }
+  }
+
+  async function refreshCloudflareAnalytics() {
+    setAnalyticsBusy(true);
+    setAnalyticsMessage(null);
+    try {
+      await api("/api/settings/cloudflare-analytics/refresh", "POST");
+      setCloudflareAnalytics(await api<CloudflareAnalyticsSettings>("/api/settings/cloudflare-analytics", "GET"));
+      setAnalyticsMessage("Aggregate cache refreshed. Native Audience remains separate.");
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Refresh failed. Native Audience remains available."); }
+    finally { setAnalyticsBusy(false); }
+  }
+
+  async function disconnectCloudflareAnalytics() {
+    setAnalyticsBusy(true);
+    setAnalyticsMessage(null);
+    try {
+      await api("/api/settings/cloudflare-analytics", "DELETE");
+      setCloudflareAnalytics({ configured: false, status: "disconnected" });
+      setAnalyticsToken("");
+      setAnalyticsMessage("Connection removed. Previously cached aggregates are preserved locally.");
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Could not disconnect Cloudflare Analytics."); }
+    finally { setAnalyticsBusy(false); }
+  }
 
   async function onSaveSpotifyProvider() {
     setSpotifyError(null);
@@ -2592,6 +2655,42 @@ export default function ConfigPage({
           </div>
         </div>
       </div>
+
+      <details style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <summary style={{ fontWeight: 600, cursor: "pointer" }}>Cloudflare Analytics (optional)</summary>
+        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+          Connect a read-only Analytics token for one zone and creator hostname. This is separate from your Cloudflare tunnel and native Audience reporting.
+        </div>
+        <div style={{ fontSize: 12, marginBottom: 10 }}>
+          Status: {cloudflareAnalytics?.configured ? cloudflareAnalytics.status : "Disconnected"}
+          {cloudflareAnalytics?.lastSyncAt ? ` · Last refresh: ${new Date(cloudflareAnalytics.lastSyncAt).toLocaleString()}` : ""}
+          {cloudflareAnalytics?.cachedDays !== undefined ? ` · Cached traffic days: ${cloudflareAnalytics.cachedDays}` : ""}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 8 }}>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>Zone ID
+            <input className={inputClass} value={analyticsZoneId} onChange={(e) => setAnalyticsZoneId(e.target.value)} autoComplete="off" />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>Creator hostname
+            <input className={inputClass} value={analyticsHostname} onChange={(e) => setAnalyticsHostname(e.target.value)} placeholder="creator.example.com" autoComplete="off" />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>Account ID (optional, for Web Analytics referrers)
+            <input className={inputClass} value={analyticsAccountId} onChange={(e) => setAnalyticsAccountId(e.target.value)} autoComplete="off" />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>Analytics Read token
+            <input className={inputClass} type="password" value={analyticsToken} onChange={(e) => setAnalyticsToken(e.target.value)}
+              placeholder={cloudflareAnalytics?.configured ? "Stored; enter a replacement to change settings" : "Paste a read-only token"} autoComplete="new-password" />
+          </label>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+          <button onClick={saveCloudflareAnalytics} disabled={analyticsBusy || !analyticsToken.trim()}>
+            {analyticsBusy ? "Working..." : cloudflareAnalytics?.configured ? "Replace connection" : "Connect"}
+          </button>
+          {cloudflareAnalytics?.configured ? <button onClick={refreshCloudflareAnalytics} disabled={analyticsBusy}>Refresh aggregates</button> : null}
+          {cloudflareAnalytics?.configured ? <button onClick={disconnectCloudflareAnalytics} disabled={analyticsBusy}>Disconnect</button> : null}
+        </div>
+        {cloudflareAnalytics?.error ? <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>Last refresh: {cloudflareAnalytics.error}</div> : null}
+        {analyticsMessage ? <div role="status" style={{ marginTop: 8, fontSize: 12 }}>{analyticsMessage}</div> : null}
+      </details>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Payments</div>

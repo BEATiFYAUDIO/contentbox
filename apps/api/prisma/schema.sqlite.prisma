@@ -596,6 +596,7 @@ model AudienceEvent {
   eventType   AudienceEventType
   sessionId   String?
   actorUserId String?
+  definition  String?
   createdAt   DateTime          @default(now())
 
   content   ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
@@ -604,6 +605,16 @@ model AudienceEvent {
   @@index([contentId, eventType, createdAt])
   @@index([sessionId, contentId, eventType, createdAt])
   @@index([actorUserId, createdAt])
+  @@index([definition, createdAt])
+}
+
+model AudienceViewClaim {
+  contentId        String
+  sessionId        String
+  lastRecordedAtMs BigInt
+
+  @@id([contentId, sessionId])
+  @@index([lastRecordedAtMs])
 }
 
 model Sale {

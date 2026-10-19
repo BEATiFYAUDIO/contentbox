@@ -53,8 +53,23 @@ elif [[ "$DB_URL" == file:* ]]; then
     echo "SQLite database file not found: $SRC" >&2
     exit 1
   fi
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo "sqlite3 is required for a consistent SQLite backup." >&2
+    exit 1
+  fi
   OUT="$BACKUP_DIR/contentbox-$STAMP.sqlite"
-  cp "$SRC" "$OUT"
+  TMP_DIR="$(mktemp -d "$BACKUP_DIR/.contentbox-backup-XXXXXXXX")"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  TMP="$TMP_DIR/snapshot.sqlite"
+  QUOTED_TMP="${TMP//\'/\'\'}"
+  sqlite3 -readonly "$SRC" ".backup '$QUOTED_TMP'"
+  if [[ "$(sqlite3 -readonly "$TMP" 'PRAGMA integrity_check;')" != "ok" ]]; then
+    echo "SQLite backup integrity check failed." >&2
+    exit 1
+  fi
+  ln "$TMP" "$OUT"
+  rm -rf "$TMP_DIR"
+  trap - EXIT
   echo "SQLite backup created: $OUT"
 else
   echo "Unsupported DATABASE_URL for backup: $DB_URL" >&2

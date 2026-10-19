@@ -28,6 +28,24 @@ import {
 } from "./lib/proof.js";
 import { createPaymentProvider } from "./lib/payments.js";
 import { dashboardAssetCacheControl } from "./lib/dashboardAssetCaching.js";
+import { jsonSafe } from "./lib/jsonSafe.js";
+import {
+  AudienceRateLimiter,
+  isAudienceCollectionEnabled,
+  isAutomatedAudienceRequest,
+  makeAudienceSession,
+  pruneAudienceV2,
+  recordBuyPageView,
+  validateAudienceViewBody,
+  verifyAudienceSession
+} from "./lib/audienceViews.js";
+import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics.js";
+import { beginAudienceTracking, endAudienceTracking, heartbeatAudienceTracking } from "./lib/audienceTrackingCoverage.js";
+import { audienceExportFilename, serializeAudienceExport } from "./lib/audienceExport.js";
+import { AudienceAllExportChangedError, AudienceAllExportLimitError, buildAudienceAllFile } from "./lib/audienceExportAll.js";
+import { cloudflareAudienceExportSource } from "./lib/cloudflareAudienceExportSource.js";
+import { CloudflareAudienceError, fetchCloudflareAudienceAggregates, normalizeCloudflareAudienceScope, verifyCloudflareAudienceAccess, verifyCloudflareAudienceHostname } from "./lib/cloudflareAudience.js";
+import { createSqliteBackup } from "./lib/sqliteBackup.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
@@ -1293,17 +1311,6 @@ function percentToPrimitive(x: unknown): string | number | null {
   return String(x);
 }
 
-function jsonSafe<T>(value: T): T {
-  if (typeof value === "bigint") return value.toString() as unknown as T;
-  if (Array.isArray(value)) return value.map((v) => jsonSafe(v)) as unknown as T;
-  if (value && typeof value === "object") {
-    const out: any = {};
-    for (const [k, v] of Object.entries(value as any)) out[k] = jsonSafe(v);
-    return out as T;
-  }
-  return value;
-}
-
 function jsonStringifySafe(value: unknown): string {
   return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
 }
@@ -1585,7 +1592,20 @@ const BUYER_SESSION_COOKIE = "cb_buyer_session";
 const BUYER_ACCESS_COOKIE = "cb_buyer_access_session";
 const BUYER_SESSION_DAYS = 30;
 const AUDIENCE_SESSION_COOKIE = "cb_audience_session";
-const AUDIENCE_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
+const audienceRateLimiter = new AudienceRateLimiter();
+let lastAudiencePruneMs = 0;
+let audiencePruneInFlight = false;
+let audienceRetentionTimer: ReturnType<typeof setInterval> | null = null;
+let audienceTrackingTimer: ReturnType<typeof setInterval> | null = null;
+let audienceTrackingWindowId: string | null = null;
+let audienceHeartbeatInFlight = false;
+async function runAudienceRetention() {
+  if (audiencePruneInFlight) return;
+  audiencePruneInFlight = true;
+  try { await pruneAudienceV2(prisma); }
+  catch (err) { app.log.warn({ err }, "audience.prune_failed"); }
+  finally { audiencePruneInFlight = false; }
+}
 
 function getCookie(req: any, name: string): string | null {
   try {
@@ -1694,11 +1714,10 @@ function buildAudienceSessionCookie(sessionId: string, req: any, maxAgeSeconds: 
 }
 
 function getOrCreateAudienceSessionId(req: any, reply: any): string {
-  const existing = asString(getCookie(req, AUDIENCE_SESSION_COOKIE) || "").trim();
+  const existing = verifyAudienceSession(asString(getCookie(req, AUDIENCE_SESSION_COOKIE) || ""), JWT_SECRET);
   if (existing) return existing;
-  const sessionId = `aud_${crypto.randomUUID().replace(/-/g, "")}`;
-  // Keep audience session longer than dedupe window; rotate naturally with browser/session hygiene.
-  const cookie = buildAudienceSessionCookie(sessionId, req, 60 * 60 * 24 * 30);
+  const { id: sessionId, cookieValue } = makeAudienceSession(JWT_SECRET);
+  const cookie = buildAudienceSessionCookie(cookieValue, req, 60 * 60 * 24 * 30);
   reply.header("set-cookie", cookie);
   return sessionId;
 }
@@ -10570,7 +10589,7 @@ async function runBackup() {
     if (!fsSync.existsSync(source)) {
       throw new Error(`SQLite database file not found: ${source}`);
     }
-    await fs.copyFile(source, fullPath);
+    await createSqliteBackup(prisma, BACKUP_DIR, filename);
   }
   const st = await fs.stat(fullPath);
   await pruneBackups();
@@ -13707,43 +13726,48 @@ async function buildParentPublishAnchor(contentId: string): Promise<ParentPublis
 }
 
 async function handlePublicAudienceInteraction(req: any, reply: any) {
-  const body = (req.body ?? {}) as { contentId?: string; eventType?: string };
-  const contentId = asString(body.contentId || "").trim();
-  const eventTypeRaw = asString(body.eventType || "view").trim().toLowerCase();
-  if (!contentId) return badRequest(reply, "contentId required");
-  if (eventTypeRaw !== "view") return badRequest(reply, "unsupported eventType");
-  const deduped = await recordAudienceViewEvent(contentId, req, reply);
-  return reply.send({ ok: true, deduped });
-}
-
-async function recordAudienceViewEvent(contentId: string, req: any, reply: any): Promise<boolean> {
+  const contentId = validateAudienceViewBody(req.body);
+  if (!contentId) return badRequest(reply, "Invalid audience view event");
+  if (!audienceTrackingWindowId || !isAudienceCollectionEnabled(process.env.CONTENTBOX_AUDIENCE_ENABLED)) return reply.send({ ok: true, recorded: false, disabled: true });
+  if (isAutomatedAudienceRequest(req.headers || {})) return reply.send({ ok: true, recorded: false, filtered: true });
+  const origin = asString(req.headers?.origin || "").trim();
+  if (origin) {
+    try {
+      if (new URL(origin).host !== asString(req.headers?.host || "").trim().toLowerCase()) return forbidden(reply);
+    } catch { return forbidden(reply); }
+  }
+  if (asString(req.headers?.["sec-fetch-site"] || "").toLowerCase() === "cross-site") return forbidden(reply);
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    select: { id: true, deletedAt: true }
+    select: { id: true, deletedAt: true, status: true, ownerUserId: true }
   });
-  if (!content || content.deletedAt) return true;
-
+  if (!content || content.deletedAt || content.status !== "published") return notFound(reply, "Content not found");
+  const bearer = asString(req.headers?.authorization || "").match(/^Bearer (.+)$/i)?.[1];
+  if (bearer) {
+    try {
+      const claims = await app.jwt.verify<JwtUser>(bearer);
+      if (claims.sub === content.ownerUserId) {
+        const owner = await prisma.user.findUnique({ where: { id: claims.sub }, select: { tokenVersion: true } });
+        if (owner && (owner.tokenVersion ?? 0) === (claims.tokenVersion ?? 0)) {
+          return reply.send({ ok: true, recorded: false, owner: true });
+        }
+      }
+    } catch { /* An invalid token is not an authenticated owner. */ }
+  }
   const sessionId = getOrCreateAudienceSessionId(req, reply);
-  const dedupeSince = new Date(Date.now() - AUDIENCE_DEDUPE_WINDOW_MS);
-  const existing = await prisma.audienceEvent.findFirst({
-    where: {
-      contentId,
-      eventType: "view" as any,
-      sessionId,
-      createdAt: { gte: dedupeSince }
-    },
-    select: { id: true }
-  });
-  if (existing) return true;
-
-  await prisma.audienceEvent.create({
-    data: {
-      contentId,
-      eventType: "view" as any,
-      sessionId
+  if (!audienceRateLimiter.allow(sessionId)) return reply.code(429).send({ error: "Audience rate limit" });
+  try {
+    const recorded = await recordBuyPageView(prisma, contentId, sessionId);
+    const now = Date.now();
+    if (recorded && now - lastAudiencePruneMs >= 60 * 1000) {
+      lastAudiencePruneMs = now;
+      void runAudienceRetention();
     }
-  });
-  return false;
+    return reply.send({ ok: true, recorded, deduped: !recorded });
+  } catch (err) {
+    req.log.warn({ err }, "audience.record_failed");
+    return reply.code(503).send({ error: "Audience recording unavailable" });
+  }
 }
 
 async function proxyPublicRouteToMainApp(
@@ -15928,13 +15952,15 @@ app.post("/auth/signup", async (req, reply) => {
   const passwordHash = await bcrypt.hash(password, 10);
   const userCount = await prisma.user.count();
 
-  const user = await prisma.user.create({
-    data: {
-      email,
-      displayName: body.displayName?.trim() || null,
-      passwordHash
-    },
-    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: { email, displayName: body.displayName?.trim() || null, passwordHash },
+      select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
+    });
+    if (audienceTrackingWindowId) await tx.audienceTrackingActivation.create({
+      data: { userId: created.id, activatedAt: created.createdAt, freshAccount: true }
+    });
+    return created;
   });
 
   let recoveryKey: string | null = null;
@@ -31130,8 +31156,6 @@ async function handlePublicContent(req: any, reply: any) {
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest) return notFound(reply, "Manifest not found");
-  // Audience signal: public content-open surface (best-effort, deduped, non-blocking).
-  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   const commerceAuthority = await resolveCommerceAuthorityForUser(content.ownerUserId);
   const owner = await prisma.user.findUnique({
     where: { id: content.ownerUserId },
@@ -38047,9 +38071,6 @@ async function handleBuyPage(req: any, reply: any) {
     }
   });
   if (!content) return notFound(reply, "Not found");
-  // Server-side audience logging so Basic posture still records views even if
-  // client-side interaction fetch is skipped/interrupted.
-  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   const sellerDisplayName = content.owner?.displayName || content.owner?.email || null;
   const sellerLightningAddress = await resolveSellerLightningAddress(content.ownerUserId);
   const ownerAppearance = buildPublicAppearanceThemeCss(content.owner || null);
@@ -38755,11 +38776,23 @@ async function handleBuyPage(req: any, reply: any) {
       showPlayer: false
     };
   }
+  let audienceViewSent = false;
+  let audienceViewWaiting = false;
   function logAudienceView(){
-    if (!contentId) return;
+    if (!contentId || audienceViewSent) return;
+    if (document.visibilityState !== "visible") {
+      if (!audienceViewWaiting) {
+        audienceViewWaiting = true;
+        document.addEventListener("visibilitychange", logAudienceView);
+      }
+      return;
+    }
+    if (audienceViewWaiting) document.removeEventListener("visibilitychange", logAudienceView);
+    audienceViewSent = true;
     fetch(apiBase + "/public/interactions", {
       method: "POST",
       credentials: "include",
+      keepalive: true,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contentId, eventType: "view" })
     }).catch(()=>{});
@@ -40920,9 +40953,6 @@ async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
-  // Additional server-side audience logging path for Basic posture reliability.
-  // Deduping is handled in recordAudienceViewEvent by session/content/time window.
-  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
     const dbg = await prisma.contentItem.findUnique({
       where: { id: contentId },
@@ -50202,84 +50232,209 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
 }
 
 app.get("/audience/summary", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const query = parseAudienceQuery(req.query);
+  if (!query) return reply.code(400).send({ error: "Invalid audience query", code: "INVALID_AUDIENCE_QUERY", allowedRanges: ["7d", "30d", "90d", "all"] });
   const userId = (req.user as JwtUser).sub;
-  const productTier = resolveProductTier().productTier;
-  const isBasicPosture = productTier === "basic";
-  const ownedContent = await prisma.contentItem.findMany({
-    where: { ownerUserId: userId, deletedAt: null },
-    select: { id: true, title: true, status: true, createdAt: true, updatedAt: true },
-    orderBy: { updatedAt: "desc" }
-  });
-  const contentIds = ownedContent.map((row) => String(row.id || "").trim()).filter(Boolean);
-  if (contentIds.length === 0) {
-    return reply.send({
-      posture: isBasicPosture ? "basic" : "sovereign",
-      supportsCommerceMetrics: !isBasicPosture,
-      totalViews: 0,
-      totalPurchases: isBasicPosture ? null : 0,
-      conversionRate: isBasicPosture ? null : 0,
-      items: []
-    });
+  const isBasicPosture = resolveProductTier().productTier === "basic";
+  return reply.send(await buildAudienceReport(prisma, userId, isBasicPosture, query.range, query.page));
+});
+
+app.get("/audience/export", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const { format, ...queryValues } = (req.query || {}) as Record<string, unknown>;
+  const query = parseAudienceQuery(queryValues);
+  if (!query || (format !== "csv" && format !== "json")) {
+    return reply.code(400).send({ error: "Invalid audience export query" });
   }
+  const userId = (req.user as JwtUser).sub;
+  const report = await buildAudienceReport(prisma, userId, resolveProductTier().productTier === "basic", query.range, query.page);
+  try {
+    const output = serializeAudienceExport(report, format);
+    reply.header("Content-Type", format === "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8");
+    reply.header("Content-Disposition", `attachment; filename="${audienceExportFilename(query.range, query.page, format)}"`);
+    reply.header("Cache-Control", "private, no-store");
+    return reply.send(output);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("per-page size limit")) {
+      return reply.code(413).send({ error: "Audience export is too large for one page" });
+    }
+    throw err;
+  }
+});
 
-  const viewCountsRaw = await prisma.audienceEvent.groupBy({
-    by: ["contentId"],
-    where: {
-      contentId: { in: contentIds },
-      eventType: "view" as any
-    },
-    _count: { _all: true }
-  });
-
-  const purchaseCountsRaw = isBasicPosture
-    ? []
-    : await prisma.paymentIntent.groupBy({
-        by: ["contentId"],
-        where: {
-          contentId: { in: contentIds },
-          purpose: "CONTENT_PURCHASE" as any,
-          status: "paid" as any
-        },
-        _count: { _all: true }
+let audienceAllExportBusy = false;
+app.get("/audience/export-all", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const { format, ...queryValues } = (req.query || {}) as Record<string, unknown>;
+  const query = parseAudienceQuery(queryValues);
+  if (!query || query.page !== 1 || (format !== "csv" && format !== "json")) {
+    return reply.code(400).send({ error: "Invalid audience export query" });
+  }
+  if (audienceAllExportBusy) return reply.code(429).send({ error: "Another Audience export is running. Please retry shortly." });
+  audienceAllExportBusy = true;
+  let output: Awaited<ReturnType<typeof buildAudienceAllFile>>;
+  try {
+    const userId = (req.user as JwtUser).sub;
+    const isBasicPosture = resolveProductTier().productTier === "basic";
+    output = await buildAudienceAllFile((page, asOf) =>
+      buildAudienceReport(prisma, userId, isBasicPosture, query.range, page, asOf), format, {
+        cloudflare: cloudflareAudienceExportSource(prisma, userId)
       });
+  } catch (err) {
+    if (err instanceof AudienceAllExportLimitError || (err instanceof Error && err.message.includes("per-page size limit"))) {
+      return reply.code(413).send({ error: "Audience report exceeds the safe export limit" });
+    }
+    if (err instanceof AudienceAllExportChangedError) return reply.code(409).send({ error: err.message });
+    throw err;
+  } finally {
+    audienceAllExportBusy = false;
+  }
+  if (req.raw.aborted) { await output.cleanup(); return reply; }
+  const stream = fsSync.createReadStream(output.filePath);
+  stream.once("close", () => { void output.cleanup(); });
+  reply.header("Content-Type", format === "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8");
+  reply.header("Content-Disposition", `attachment; filename="certifyd-audience-all-${query.range}-${new Date().toISOString().slice(0, 10)}.${format}"`);
+  reply.header("Content-Length", String(output.size));
+  reply.header("Cache-Control", "private, no-store");
+  return reply.send(stream);
+});
 
-  const viewCounts = new Map<string, number>();
-  for (const row of viewCountsRaw) viewCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
+const cloudflareAudienceSyncing = new Set<string>();
+const cloudflareAudienceErrorStatus = (error: unknown) => error instanceof CloudflareAudienceError ? error.code : "unavailable";
 
-  const purchaseCounts = new Map<string, number>();
-  for (const row of purchaseCountsRaw) purchaseCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
-
-  const toPct = (purchases: number, views: number): number => {
-    if (!views) return 0;
-    return Number(((purchases / views) * 100).toFixed(2));
-  };
-
-  const items = ownedContent.map((row) => {
-    const contentId = String(row.id || "");
-    const views = viewCounts.get(contentId) || 0;
-    const purchases = purchaseCounts.get(contentId) || 0;
-    return {
-      contentId,
-      title: String(row.title || "Untitled"),
-      status: String(row.status || "").toLowerCase(),
-      views,
-      purchases: isBasicPosture ? null : purchases,
-      conversionRate: isBasicPosture ? null : toPct(purchases, views),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt
-    };
+app.get("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const row = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+  if (!row) return reply.send({ configured: false, status: "disconnected" });
+  let status = row.lastStatus || "configured";
+  if (status === "connected") {
+    try {
+      const token = decryptSecret({ ciphertextB64: row.tokenCiphertext,
+        ivB64: row.tokenIv, tagB64: row.tokenTag }).toString("utf8");
+      await verifyCloudflareAudienceHostname(token, { zoneId: row.zoneId, hostname: row.hostname });
+    } catch { status = "unverified"; }
+  }
+  const cachedDays = await prisma.cloudflareAnalyticsSnapshot.count({
+    where: { userId, zoneId: row.zoneId, hostname: row.hostname, metric: "traffic", committed: true,
+      ...(row.lastSyncAt ? { fetchedAt: { lte: row.lastSyncAt } } : { id: "__never__" }) }
   });
+  return reply.send({ configured: true, zoneId: row.zoneId, accountId: row.accountId, hostname: row.hostname,
+    status, error: row.lastError, lastCheckedAt: row.lastCheckedAt,
+    lastSyncAt: row.lastSyncAt, cachedDays, tokenConfigured: true });
+});
 
-  const totalViews = items.reduce((sum, row) => sum + row.views, 0);
-  const totalPurchases = items.reduce((sum, row) => sum + Number(row.purchases || 0), 0);
-  return reply.send({
-    posture: isBasicPosture ? "basic" : "sovereign",
-    supportsCommerceMetrics: !isBasicPosture,
-    totalViews,
-    totalPurchases: isBasicPosture ? null : totalPurchases,
-    conversionRate: isBasicPosture ? null : toPct(totalPurchases, totalViews),
-    items
+app.patch("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body || {}) as Record<string, unknown>;
+  const scope = normalizeCloudflareAudienceScope(body);
+  const token = typeof body.token === "string" ? body.token.trim() : "";
+  if (!scope || token.length < 20 || token.length > 4096 || /\s/.test(token)) {
+    return reply.code(400).send({ error: "A zone ID, creator hostname, and Analytics Read token are required." });
+  }
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics operation is in progress." });
+  cloudflareAudienceSyncing.add(userId);
+  try {
+    let capabilities: Awaited<ReturnType<typeof verifyCloudflareAudienceAccess>>;
+    try { capabilities = await verifyCloudflareAudienceAccess(token, scope); }
+    catch (error) { return reply.code(error instanceof CloudflareAudienceError && error.code === "unauthorized" ? 403 : 503)
+      .send({ error: "Cloudflare Analytics could not be verified for this zone.", code: cloudflareAudienceErrorStatus(error) }); }
+    const encrypted = encryptSecret(Buffer.from(token, "utf8"));
+    await prisma.cloudflareAnalyticsConnection.upsert({ where: { userId },
+      create: { userId, zoneId: scope.zoneId, accountId: scope.accountId, hostname: scope.hostname,
+        tokenCiphertext: encrypted.ciphertextB64, tokenIv: encrypted.ivB64, tokenTag: encrypted.tagB64,
+        lastCheckedAt: new Date(), lastStatus: "connected" },
+      update: { zoneId: scope.zoneId, accountId: scope.accountId, hostname: scope.hostname,
+        tokenCiphertext: encrypted.ciphertextB64, tokenIv: encrypted.ivB64, tokenTag: encrypted.tagB64,
+        lastCheckedAt: new Date(), lastStatus: "connected", lastError: null, lastSyncAt: null }
+    });
+    return reply.send({ ok: true, zoneId: scope.zoneId, hostname: scope.hostname, capabilities });
+  } finally { cloudflareAudienceSyncing.delete(userId); }
+});
+
+app.delete("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics refresh is in progress." });
+  await prisma.cloudflareAnalyticsConnection.deleteMany({ where: { userId } });
+  return reply.send({ ok: true, cachedAggregatesPreserved: true });
+});
+
+app.post("/api/settings/cloudflare-analytics/refresh", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics refresh is already in progress." });
+  cloudflareAudienceSyncing.add(userId);
+  let stagedAt: Date | null = null;
+  try {
+    const connection = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+    if (!connection) return reply.code(404).send({ error: "Cloudflare Analytics is not connected." });
+    if (connection.lastSyncAt && Date.now() - connection.lastSyncAt.getTime() < 5 * 60_000) {
+      return reply.code(429).send({ error: "Cloudflare Analytics was refreshed recently. Try again in a few minutes." });
+    }
+    const token = decryptSecret({ ciphertextB64: connection.tokenCiphertext,
+      ivB64: connection.tokenIv, tagB64: connection.tokenTag }).toString("utf8");
+    const scope = { zoneId: connection.zoneId, accountId: connection.accountId, hostname: connection.hostname };
+    const capabilities = await verifyCloudflareAudienceAccess(token, scope);
+    const fetchedAt = new Date(Math.max(Date.now(), (connection.lastSyncAt?.getTime() || 0) + 1));
+    stagedAt = fetchedAt;
+    const snapshots = await fetchCloudflareAudienceAggregates(token, scope, { now: fetchedAt, webAnalytics: capabilities.webAnalytics });
+    for (let index = 0; index < snapshots.length; index++) {
+      const snapshot = snapshots[index];
+      const rowsJson = JSON.stringify(snapshot.rows);
+      if (Buffer.byteLength(rowsJson) > 128 * 1024) throw new CloudflareAudienceError("invalid_response");
+      const data = { rowsJson, sampleInterval: snapshot.sampleInterval, coverage: snapshot.coverage, fetchedAt };
+      await prisma.cloudflareAnalyticsSnapshot.create({ data: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, source: snapshot.source, metric: snapshot.metric, day: snapshot.day, ...data } });
+      if (index % 25 === 24) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    await prisma.$transaction([
+      prisma.cloudflareAnalyticsSnapshot.updateMany({ where: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, fetchedAt }, data: { committed: true } }),
+      prisma.cloudflareAnalyticsConnection.update({ where: { userId }, data: {
+        lastCheckedAt: fetchedAt, lastSyncAt: fetchedAt, lastStatus: "connected", lastError: null } })
+    ]);
+    for (const source of ["cloudflare_http", "cloudflare_web_analytics"]) {
+      const sourceDays = snapshots.filter((row) => row.source === source).map((row) => row.day);
+      if (!sourceDays.length) continue;
+      await prisma.cloudflareAnalyticsSnapshot.deleteMany({ where: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, source, day: { gte: sourceDays.sort()[0] },
+        fetchedAt: { not: fetchedAt } } }).catch(() => {});
+    }
+    return reply.send({ ok: true, cachedDays: snapshots.filter((row) => row.metric === "traffic").length,
+      webAnalytics: capabilities.webAnalytics, fetchedAt });
+  } catch (error) {
+    const code = cloudflareAudienceErrorStatus(error);
+    if (stagedAt) await prisma.cloudflareAnalyticsSnapshot.deleteMany({ where: {
+      userId, fetchedAt: stagedAt, committed: false } }).catch(() => {});
+    await prisma.cloudflareAnalyticsConnection.updateMany({ where: { userId },
+      data: { lastCheckedAt: new Date(), lastStatus: "error", lastError: code } });
+    return reply.code(code === "unauthorized" ? 403 : code === "rate_limited" ? 429 : 503)
+      .send({ error: "Cloudflare Analytics refresh failed. Native Audience remains available.", code });
+  } finally { cloudflareAudienceSyncing.delete(userId); }
+});
+
+app.get("/api/audience/cloudflare/cache", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const connection = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+  if (!connection) return reply.send({ configured: false, snapshots: [] });
+  const rows = await prisma.cloudflareAnalyticsSnapshot.findMany({
+    where: { userId, zoneId: connection.zoneId, hostname: connection.hostname, committed: true,
+      ...(connection.lastSyncAt ? { fetchedAt: { lte: connection.lastSyncAt } } : { id: "__never__" }) },
+    orderBy: [{ day: "desc" }, { source: "asc" }, { metric: "asc" }, { fetchedAt: "desc" }], take: 600
   });
+  let remainingBytes = 1024 * 1024;
+  let truncated = rows.length === 600;
+  const snapshots: Array<{ source: string; metric: string; day: string; rows: unknown;
+    sampleInterval: number | null; coverage: string; fetchedAt: Date }> = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const key = `${row.source}:${row.metric}:${row.day}`;
+    if (seen.has(key)) continue;
+    remainingBytes -= Buffer.byteLength(row.rowsJson);
+    if (remainingBytes < 0) { truncated = true; break; }
+    seen.add(key);
+    snapshots.push({ source: row.source, metric: row.metric, day: row.day,
+      rows: JSON.parse(row.rowsJson), sampleInterval: row.sampleInterval,
+      coverage: row.coverage, fetchedAt: row.fetchedAt });
+  }
+  return reply.send({ configured: true, zoneId: connection.zoneId, hostname: connection.hostname,
+    lastSyncAt: connection.lastSyncAt, snapshots, truncated });
 });
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
@@ -53900,9 +54055,25 @@ async function start() {
   await ensurePayoutMethods();
   await preflightPrismaReadiness();
   await preflightDb();
+  audienceTrackingWindowId = await beginAudienceTracking(prisma, isAudienceCollectionEnabled(process.env.CONTENTBOX_AUDIENCE_ENABLED));
   scheduleReceiptIdBackfillBestEffort();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: PRIVATE_API_BIND_HOST });
+  // Retention also runs when no new visits arrive; the existing bounded prune
+  // removes at most one small batch per run and never blocks API startup.
+  audienceRetentionTimer = setInterval(() => { void runAudienceRetention(); }, 60 * 60 * 1000);
+  audienceRetentionTimer.unref();
+  if (audienceTrackingWindowId) {
+    audienceTrackingTimer = setInterval(() => {
+      if (audienceHeartbeatInFlight || !audienceTrackingWindowId) return;
+      audienceHeartbeatInFlight = true;
+      void heartbeatAudienceTracking(prisma, audienceTrackingWindowId)
+        .then((id) => { audienceTrackingWindowId = id; })
+        .catch((err) => app.log.warn({ err }, "audience.heartbeat_failed"))
+        .finally(() => { audienceHeartbeatInFlight = false; });
+    }, 60 * 1000);
+    audienceTrackingTimer.unref();
+  }
   // Run provider verification in the background so startup/health becomes
   // available immediately even when remote provider endpoints are slow.
   setTimeout(() => {
@@ -53960,6 +54131,12 @@ let runtimeShutdownStarted = false;
 async function shutdownRuntime(signal: "SIGTERM" | "SIGINT") {
   if (runtimeShutdownStarted) return;
   runtimeShutdownStarted = true;
+  if (audienceRetentionTimer) clearInterval(audienceRetentionTimer);
+  if (audienceTrackingTimer) clearInterval(audienceTrackingTimer);
+  if (audienceTrackingWindowId) {
+    try { await endAudienceTracking(prisma, audienceTrackingWindowId); }
+    catch (err) { app.log.warn({ err }, "audience.coverage_close_failed"); }
+  }
   try {
     await publicLifecycleMutex.runExclusive(async () => {
       await tunnelManager.stop();
