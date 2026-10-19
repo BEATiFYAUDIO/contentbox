@@ -28,6 +28,7 @@ import {
 } from "./lib/proof.js";
 import { createPaymentProvider } from "./lib/payments.js";
 import { dashboardAssetCacheControl } from "./lib/dashboardAssetCaching.js";
+import { jsonSafe } from "./lib/jsonSafe.js";
 import {
   AudienceRateLimiter,
   isAudienceCollectionEnabled,
@@ -1307,17 +1308,6 @@ function percentToPrimitive(x: unknown): string | number | null {
     if (typeof (x as any).toString === "function") return (x as any).toString();
   } catch {}
   return String(x);
-}
-
-function jsonSafe<T>(value: T): T {
-  if (typeof value === "bigint") return value.toString() as unknown as T;
-  if (Array.isArray(value)) return value.map((v) => jsonSafe(v)) as unknown as T;
-  if (value && typeof value === "object") {
-    const out: any = {};
-    for (const [k, v] of Object.entries(value as any)) out[k] = jsonSafe(v);
-    return out as T;
-  }
-  return value;
 }
 
 function jsonStringifySafe(value: unknown): string {
