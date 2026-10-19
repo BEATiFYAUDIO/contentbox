@@ -61,6 +61,9 @@ const columns = ["schema_version", "record_type", "generated_at", "scope", "rang
   "period_end_exclusive", "view_retention_days", "view_retention_start", "first_available_buy_page_view_at",
   "tracking_activation_at", "conversion_start",
   "view_definition", "legacy_definition", "paid_purchase_definition", "coverage_note"] as const;
+const cloudflareColumns = ["cloudflare_zone_id", "cloudflare_hostname", "cloudflare_source", "cloudflare_metric",
+  "cloudflare_day", "cloudflare_label", "cloudflare_count", "cloudflare_sample_interval",
+  "cloudflare_coverage", "cloudflare_fetched_at"] as const;
 
 function csvCell(value: unknown): string {
   const raw = value === null || value === undefined ? "" : String(value);
@@ -71,7 +74,8 @@ function csvCell(value: unknown): string {
 
 type Document = ReturnType<typeof audienceExportDocument>;
 function csvParts(document: Document, full = false) {
-  const base = { schema_version: full ? 2 : 1, generated_at: document.generatedAt, scope: full
+  const selectedColumns: readonly string[] = full ? [...columns, ...cloudflareColumns] : columns;
+  const base = { schema_version: full ? 3 : 1, generated_at: document.generatedAt, scope: full
       ? "Complete available Audience report for all owned works; not a Core backup."
       : document.scope,
     range: document.range, page: full ? "all" : document.page,
@@ -85,7 +89,7 @@ function csvParts(document: Document, full = false) {
     view_definition: document.measurement.viewDefinition, legacy_definition: document.measurement.legacyDefinition,
     paid_purchase_definition: document.measurement.paidPurchaseDefinition,
     coverage_note: document.measurement.coverageNote };
-  const line = (row: Record<string, unknown>) => columns.map((name) => csvCell(row[name])).join(",") + "\r\n";
+  const line = (row: Record<string, unknown>) => selectedColumns.map((name) => csvCell(row[name])).join(",") + "\r\n";
   const account: string[] = [];
   account.push(line({ ...base, record_type: "account_total", view_coverage: document.measurement.viewCoverage,
     buy_page_views: document.totals.buyPageViews, legacy_content_opens: document.totals.legacyContentOpens,
@@ -95,7 +99,7 @@ function csvParts(document: Document, full = false) {
     completed_purchases: period.completedPurchases, indicative_ratio: period.indicativeRatio }));
   const content: string[] = [];
   for (const item of document.content) {
-    const work = { ...(full ? { schema_version: 2, range: document.range } : base),
+    const work = { ...(full ? { schema_version: 3, range: document.range } : base),
       content_id: item.contentId, title: item.title, status: item.status, rank: item.rank };
     content.push(line({ ...work, record_type: "content_total", view_coverage: document.measurement.viewCoverage,
       buy_page_views: item.buyPageViews, legacy_content_opens: item.legacyContentOpens,
@@ -104,7 +108,24 @@ function csvParts(document: Document, full = false) {
       period: period.period, view_coverage: period.viewCoverage, buy_page_views: period.buyPageViews,
       completed_purchases: period.completedPurchases, indicative_ratio: period.indicativeRatio }));
   }
-  return { header: columns.join(",") + "\r\n", account, content };
+  return { header: selectedColumns.join(",") + "\r\n", account, content };
+}
+
+export function cloudflareAudienceCsvLine(row: {
+  zoneId: string; hostname: string; source: string; metric: string; day: string;
+  label: string | null; count: number | null; sampleInterval: number | null;
+  coverage: string; fetchedAt: string
+}, generatedAt: Date) {
+  const fields: Record<string, unknown> = {
+    schema_version: 3, record_type: "cloudflare_aggregate", generated_at: generatedAt.toISOString(),
+    scope: "Creator-owned cached Cloudflare aggregate; separate from native Audience views and conversion.",
+    range: "all_cached_dates", cloudflare_zone_id: row.zoneId, cloudflare_hostname: row.hostname,
+    cloudflare_source: row.source, cloudflare_metric: row.metric, cloudflare_day: row.day,
+    cloudflare_label: row.label, cloudflare_count: row.count,
+    cloudflare_sample_interval: row.sampleInterval, cloudflare_coverage: row.coverage,
+    cloudflare_fetched_at: row.fetchedAt
+  };
+  return [...columns, ...cloudflareColumns].map((name) => csvCell(fields[name])).join(",") + "\r\n";
 }
 
 export function audienceCsvParts(report: Report, generatedAt = new Date(), full = false) {

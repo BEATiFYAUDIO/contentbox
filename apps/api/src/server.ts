@@ -41,6 +41,7 @@ import {
 import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics.js";
 import { audienceExportFilename, serializeAudienceExport } from "./lib/audienceExport.js";
 import { AudienceAllExportChangedError, AudienceAllExportLimitError, buildAudienceAllFile } from "./lib/audienceExportAll.js";
+import { cloudflareAudienceExportSource } from "./lib/cloudflareAudienceExportSource.js";
 import { CloudflareAudienceError, fetchCloudflareAudienceAggregates, normalizeCloudflareAudienceScope, verifyCloudflareAudienceAccess } from "./lib/cloudflareAudience.js";
 import { createSqliteBackup } from "./lib/sqliteBackup.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
@@ -50278,7 +50279,9 @@ app.get("/audience/export-all", { preHandler: [requireAuth] }, async (req: any, 
     const userId = (req.user as JwtUser).sub;
     const isBasicPosture = resolveProductTier().productTier === "basic";
     output = await buildAudienceAllFile((page, asOf) =>
-      buildAudienceReport(prisma, userId, isBasicPosture, query.range, page, asOf), format);
+      buildAudienceReport(prisma, userId, isBasicPosture, query.range, page, asOf), format, {
+        cloudflare: cloudflareAudienceExportSource(prisma, userId)
+      });
   } catch (err) {
     if (err instanceof AudienceAllExportLimitError || (err instanceof Error && err.message.includes("per-page size limit"))) {
       return reply.code(413).send({ error: "Audience report exceeds the safe export limit" });
