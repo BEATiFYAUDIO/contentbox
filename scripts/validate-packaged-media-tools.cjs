@@ -13,14 +13,14 @@ assert.ok(fs.existsSync(fixture), "HEVC test fixture is missing");
 const packagedRequire = createRequire(path.join(apiDir, "package.json"));
 const ffmpeg = packagedRequire("ffmpeg-static");
 const ffprobe = packagedRequire("@derhuerst/ffprobe-static");
-for (const [name, binary, license] of [
-  ["ffmpeg", ffmpeg, "ffmpeg.LICENSE"],
-  ["ffprobe", ffprobe, "ffprobe.LICENSE"]
+for (const [name, binary] of [
+  ["ffmpeg", ffmpeg],
+  ["ffprobe", ffprobe]
 ]) {
   assert.equal(typeof binary, "string", `${name} path is invalid`);
   assert.ok(path.resolve(binary).startsWith(path.join(apiDir, "node_modules") + path.sep), `${name} is not bundled`);
   assert.ok(fs.statSync(binary).size > 0, `${name} binary is empty`);
-  assert.ok(fs.existsSync(path.join(path.dirname(binary), license)), `${name} license is missing`);
+  assert.ok(fs.existsSync(`${binary}.LICENSE`), `${name} license is missing`);
   execFileSync(binary, ["-version"], { stdio: "ignore", timeout: 10000 });
 }
 
