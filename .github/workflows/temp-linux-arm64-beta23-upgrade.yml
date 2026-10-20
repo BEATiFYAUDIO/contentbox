@@ -1,0 +1,58 @@
+name: Temporary Linux ARM64 Beta 23 Upgrade Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upgrade disposable synthetic Beta 23 data using existing candidate artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          root="$(mktemp -d)"
+          trap 'for app in "$root"/beta23/Certifyd-Core-* "$root"/candidate/Certifyd-Core-*; do if test -x "$app/stop.sh"; then CONTENTBOX_ROOT="$root/data" PORT=4579 "$app/stop.sh" >/dev/null 2>&1 || true; fi; done' EXIT
+          mkdir -p "$root/beta23" "$root/candidate" "$root/data" "$root/downloads"
+          gzip -dc .github/test-fixtures/beta23-synthetic-commerce.db.gz > "$root/data/contentbox.db"
+          test "$(sqlite3 "$root/data/contentbox.db" 'PRAGMA integrity_check')" = ok
+          before="$(python3 scripts/tests/sqlite_preservation_snapshot.py "$root/data/contentbox.db")"
+          cd "$root/downloads"
+          gh release download v0.1.0-beta.23 --repo BEATiFYAUDIO/contentbox --pattern 'Certifyd-Core-0.1.0-beta.23-linux-arm64.tar.gz' --pattern SHA256SUMS.txt
+          grep 'Certifyd-Core-0.1.0-beta.23-linux-arm64.tar.gz' SHA256SUMS.txt | sha256sum -c -
+          gh api repos/BEATiFYAUDIO/contentbox/actions/runs/39435611950/artifacts/12272670161/zip > candidate.zip
+          unzip -q candidate.zip -d candidate-artifact
+          candidate_archive="$(find candidate-artifact -type f -name 'Certifyd-Core-0.1.0-beta.24-linux-arm64.tar.gz' -print -quit)"
+          test -n "$candidate_archive"
+          sha256sum "$candidate_archive" | tee "$root/candidate.sha256"
+          tar -xzf Certifyd-Core-0.1.0-beta.23-linux-arm64.tar.gz -C "$root/beta23"
+          tar -xzf "$candidate_archive" -C "$root/candidate"
+          beta23="$(find "$root/beta23" -mindepth 1 -maxdepth 1 -type d -name 'Certifyd-Core-*' -print -quit)"
+          candidate="$(find "$root/candidate" -mindepth 1 -maxdepth 1 -type d -name 'Certifyd-Core-*' -print -quit)"
+          test -x "$beta23/start.sh" && test -x "$candidate/start.sh"
+          export CONTENTBOX_ROOT="$root/data" DATABASE_URL="file:$root/data/contentbox.db"
+          export PORT=4579 PUBLIC_MODE=off CERTIFYD_NO_BROWSER=1
+          "$beta23/start.sh"
+          curl --fail --silent --show-error http://127.0.0.1:4579/health >/dev/null
+          "$beta23/stop.sh"
+          test "$(python3 scripts/tests/sqlite_preservation_snapshot.py "$root/data/contentbox.db")" = "$before"
+          "$candidate/start.sh"
+          curl --fail --silent --show-error http://127.0.0.1:4579/health >/dev/null
+          curl --fail --silent --show-error http://127.0.0.1:4579/ >/dev/null
+          test "$(python3 scripts/tests/sqlite_preservation_snapshot.py "$root/data/contentbox.db")" = "$before"
+          "$candidate/stop.sh"
+          "$candidate/start.sh"
+          curl --fail --silent --show-error http://127.0.0.1:4579/health >/dev/null
+          test "$(python3 scripts/tests/sqlite_preservation_snapshot.py "$root/data/contentbox.db")" = "$before"
+          "$candidate/stop.sh"
+          test "$(sqlite3 "$root/data/contentbox.db" 'PRAGMA integrity_check')" = ok
+          echo "ARM64 Beta 23 to candidate: health, dashboard, restart, SQLite integrity and protected rows PASS"
+          echo "Baseline protected-row SHA-256: $before"
