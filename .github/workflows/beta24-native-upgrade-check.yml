@@ -1,0 +1,44 @@
+name: Beta 24 Native Upgrade Check (test only)
+
+on:
+  push:
+    branches:
+      - temp/beta24-native-upgrade-check
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  upgrade:
+    name: Beta 23 upgrade on ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            candidate_run: 39461985152
+          - platform: macos
+            arch: x64
+            runner: macos-14-large
+            candidate_run: 39462464618
+          - platform: macos
+            arch: arm64
+            runner: macos-14-xlarge
+            candidate_run: 39462464618
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify artifact source, then upgrade disposable installation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source_sha="$(gh api repos/BEATiFYAUDIO/contentbox/actions/runs/${{ matrix.candidate_run }} --jq .head_sha)"
+          test "$source_sha" = 75de3479a41fe704b08a8f90c27ee6facae0a4b9
+          test "$(gh api repos/BEATiFYAUDIO/contentbox/actions/runs/${{ matrix.candidate_run }} --jq .conclusion)" = success
+          bash scripts/tests/beta24-native-upgrade.sh "${{ matrix.platform }}" "${{ matrix.arch }}"
