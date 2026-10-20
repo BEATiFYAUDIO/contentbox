@@ -2,6 +2,9 @@ name: Temporary Linux ARM64 Beta 23 Upgrade Validation
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - temp/linux-arm64-beta23-upgrade
 
 jobs:
   upgrade:
