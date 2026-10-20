@@ -3533,7 +3533,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ) : null}
 
                               {!isLegacyAsset && isOwner && allowUpload ? (
-                                <UploadButton contentId={it.id} disabled={busy} label="Save media" />
+                                <>
+                                  <UploadButton contentId={it.id} disabled={busy} label="Save media" />
+                                  {String(it.type || "").toLowerCase() === "video" ? (
+                                    <span className="text-xs text-neutral-500">Recommended for browser playback: MP4 with H.264 video and AAC audio.</span>
+                                  ) : null}
+                                </>
                               ) : null}
                               {!isLegacyAsset && isOwner && allowCoverUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
                                 <CoverUploadButton

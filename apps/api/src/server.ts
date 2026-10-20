@@ -39570,49 +39570,90 @@ async function handleBuyPage(req: any, reply: any) {
       (playback.isAudio ? '<audio id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata" src="' + playback.src + '"></audio>' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "image" ? '<img id="player" src="' + playback.src + '" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "file" ? '<a class="muted" href="' + playback.src + '" target="_blank" rel="noreferrer">Open preview</a>' : '') +
+      ((playback.isVideo || playback.isAudio) ? '<div id="playbackStatus" class="muted" role="status" hidden></div>' : '') +
     '</div>';
   }
 
-  function bindPlaybackSourceRecovery(playback, entitlement, owned){
+  function bindPlaybackSourceRecovery(playback, entitlement){
     if (!playback?.src) return;
     const player = document.getElementById("player");
     if (!player || typeof player.setAttribute !== "function") return;
-    let refreshing = false;
-    const refreshSource = async () => {
-      if (refreshing) return;
-      refreshing = true;
-      const nextStatus = document.getElementById("status");
-      if (nextStatus) nextStatus.textContent = playback.mode === "full" ? "Refreshing access..." : "Refreshing preview...";
-      try {
-        const refreshedOffer = await fetchOfferWithAccessProof().catch(() => fetchJson("/buy/content/" + contentId + "/offer").catch(() => null));
-        if (!refreshedOffer) return;
-        currentOffer = refreshedOffer;
-        const nextToken = entitlement?.token || receiptToken || null;
-        const nextPlayback = resolveAuthorizedPlayback(refreshedOffer, {
-          entitlement,
-          owned: Boolean(owned || refreshedOffer?.owned),
-          token: nextToken
-        });
-        if (nextPlayback?.src && String(player.getAttribute("src") || "") !== nextPlayback.src) {
-          player.setAttribute("src", nextPlayback.src);
-          try { player.controls = true; } catch {}
-          try { if (typeof player.load === "function") player.load(); } catch {}
-        }
-        if (nextStatus) nextStatus.textContent = playback.mode === "full" ? "Access ready." : "Preview ready.";
-      } finally {
-        window.setTimeout(() => { refreshing = false; }, 500);
-      }
+    const status = document.getElementById("playbackStatus");
+    let refreshAttempted = false;
+    let probedSource = "";
+    let probePromise = null;
+    const showStatus = (message) => {
+      if (!status) return;
+      status.textContent = message;
+      status.hidden = !message;
     };
-    player.addEventListener("error", refreshSource);
-    player.addEventListener("stalled", () => {
-      if (Number(player.readyState || 0) === 0) refreshSource();
+    const probeStatus = (src) => {
+      if (probePromise && probedSource === src) return probePromise;
+      probedSource = src;
+      probePromise = (async () => {
+        try {
+          const url = new URL(src, window.location.href);
+          if (url.origin !== window.location.origin) return null;
+          const response = await fetch(url.href, {
+            method: "GET", credentials: "include", cache: "no-store", headers: { Range: "bytes=0-0" }
+          });
+          if (response.body) await response.body.cancel().catch(() => {});
+          return response.status;
+        } catch {
+          return null;
+        }
+      })();
+      return probePromise;
+    };
+    player.addEventListener("playing", () => showStatus(""));
+    player.addEventListener("error", async () => {
+      const source = String(player.getAttribute("src") || "");
+      const code = player.error?.code || 0;
+      if (!source || code === 1) return;
+      if (code === 3) {
+        showStatus("This media could not play in your browser. Try another browser.");
+        return;
+      }
+      const httpStatus = await probeStatus(source);
+      if (String(player.getAttribute("src") || "") !== source) return;
+      if ((httpStatus === 401 || httpStatus === 403) && !refreshAttempted) {
+        refreshAttempted = true;
+        showStatus("Refreshing playback access...");
+        try {
+          const refreshedOffer = await fetchOfferWithAccessProof();
+          const nextPlayback = resolveAuthorizedPlayback(refreshedOffer, {
+            entitlement,
+            owned: Boolean(refreshedOffer?.owned),
+            token: entitlement?.token || receiptToken || null
+          });
+          if (String(player.getAttribute("src") || "") !== source) return;
+          if (playback.mode === "full" && !refreshedOffer?.isFree && !refreshedOffer?.hasFullAccess) {
+            showStatus("Playback access could not be refreshed. Reload this page to try again.");
+            return;
+          }
+          if (nextPlayback?.src && nextPlayback.mode === playback.mode && nextPlayback.src !== source) {
+            currentOffer = refreshedOffer;
+            player.setAttribute("src", nextPlayback.src);
+            if (typeof player.load === "function") player.load();
+            showStatus("");
+            return;
+          }
+        } catch {}
+        showStatus("Playback access could not be refreshed. Reload this page to try again.");
+        return;
+      }
+      if (httpStatus === 401 || httpStatus === 403) {
+        showStatus("Playback access could not be refreshed. Reload this page to try again.");
+      } else if (httpStatus === 404 || (httpStatus !== null && httpStatus >= 500)) {
+        showStatus("This media is unavailable right now. Try again later.");
+      } else if (code === 4 && httpStatus !== null && httpStatus >= 200 && httpStatus < 300) {
+        showStatus("This media could not play in your browser. Try another browser.");
+      } else if (code === 4) {
+        showStatus("This media could not play here. Try again or try another browser.");
+      } else {
+        showStatus("Playback was interrupted. Try Play again.");
+      }
     });
-    player.addEventListener("pointerdown", () => {
-      if (Number(player.readyState || 0) === 0) refreshSource();
-    });
-    window.setTimeout(() => {
-      if (Number(player.readyState || 0) === 0) refreshSource();
-    }, 5000);
   }
 
   function bindPreviewLimit(playback, isPaid){
@@ -39702,6 +39743,7 @@ async function handleBuyPage(req: any, reply: any) {
         renderTipUnlockDetails(offer, null, Boolean(offer?.owned)) +
       "</div>";
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+    bindPlaybackSourceRecovery(playback, null);
     renderAttribution();
   }
 
@@ -39856,7 +39898,7 @@ async function handleBuyPage(req: any, reply: any) {
         };
       }
     }
-    bindPlaybackSourceRecovery(playback, entitlement, owned);
+    bindPlaybackSourceRecovery(playback, entitlement);
     bindPreviewLimit(playback, isPaid);
     renderAttribution();
     if (token) {
