@@ -1,0 +1,45 @@
+name: Temporary Beta 23 to Beta 24 Windows upgrade check
+
+on:
+  push:
+    branches:
+      - temp/beta24-windows-upgrade-check
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  upgrade:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify exact candidate and published Beta 23
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = (gh run view 39461969184 --repo BEATiFYAUDIO/contentbox --json headSha --jq '.headSha').Trim()
+          if ($source -ne '75de3479a41fe704b08a8f90c27ee6facae0a4b9') { throw 'Candidate source mismatch.' }
+          $candidateDir = Join-Path $env:RUNNER_TEMP 'beta24-candidate'
+          $previousDir = Join-Path $env:RUNNER_TEMP 'beta23-release'
+          New-Item -ItemType Directory -Force -Path $candidateDir, $previousDir | Out-Null
+          gh run download 39461969184 --repo BEATiFYAUDIO/contentbox --name certifyd-core-windows-installer-0.1.0-beta.24 --dir $candidateDir
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download validated candidate.' }
+          $candidate = Get-ChildItem $candidateDir -Recurse -File -Filter 'Certifyd-Core-Setup-0.1.0-beta.24-win-x64.exe' | Select-Object -First 1 -ExpandProperty FullName
+          if (-not (Test-Path $candidate)) { throw 'Candidate installer missing.' }
+          $candidateHash = (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($candidateHash -ne 'd8fac5a9f7afdb8f963768ee08cdb06a7175051b6a3ab784fb6a589f5cad1944') { throw 'Candidate checksum mismatch.' }
+          gh release download v0.1.0-beta.23 --repo BEATiFYAUDIO/contentbox --pattern 'Certifyd-Core-Setup-0.1.0-beta.23-win-x64.exe' --pattern 'SHA256SUMS.txt' --dir $previousDir
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download published Beta 23.' }
+          $previous = Join-Path $previousDir 'Certifyd-Core-Setup-0.1.0-beta.23-win-x64.exe'
+          $expected = (Get-Content (Join-Path $previousDir 'SHA256SUMS.txt') | Where-Object { $_ -match 'Certifyd-Core-Setup-0\.1\.0-beta\.23-win-x64\.exe' } | Select-Object -First 1) -split '\s+'
+          if (-not $expected[0] -or (Get-FileHash $previous -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected[0].ToLowerInvariant()) { throw 'Published Beta 23 checksum mismatch.' }
+          "BETA23_INSTALLER=$previous" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "BETA24_CANDIDATE=$candidate" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "Candidate source=$source, SHA256=$candidateHash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+      - name: Upgrade disposable creator and commerce data
+        shell: pwsh
+        run: ./scripts/tests/windows_beta24_existing_user_upgrade.ps1 -Beta23Installer $env:BETA23_INSTALLER -CandidateInstaller $env:BETA24_CANDIDATE
