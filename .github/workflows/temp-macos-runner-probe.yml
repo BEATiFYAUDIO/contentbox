@@ -1,0 +1,23 @@
+name: Temporary macOS Runner Availability Probe
+
+on:
+  push:
+    branches:
+      - temp/macos-runner-probe
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-14-large
+          - arch: arm64
+            runner: macos-14-xlarge
+    name: Probe macOS ${{ matrix.arch }} runner
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 3
+    steps:
+      - name: Confirm runner starts
+        run: sw_vers
