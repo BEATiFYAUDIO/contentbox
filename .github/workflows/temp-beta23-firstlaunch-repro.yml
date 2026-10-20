@@ -18,7 +18,9 @@ jobs:
           $env:CERTIFYD_LAUNCHER_NO_UI = '1'
           $env:CERTIFYD_NO_BROWSER = '1'
           New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
-          $appDir = Join-Path $env:LOCALAPPDATA 'Certifyd Core'
+          # Inno Setup resolves {localappdata} through the Windows known-folder API,
+          # independently of the process LOCALAPPDATA override used for test data.
+          $appDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Certifyd Core'
           $dataDir = Join-Path $env:LOCALAPPDATA 'ContentBox'
           $summary = Join-Path $env:RUNNER_TEMP 'beta23-startup-summary.txt'
 
@@ -57,6 +59,7 @@ jobs:
           $beta22 = Download-Verified '0.1.0-beta.22' '1b968346ed97a61c6692e751130fea9321eb220fe92c1595be3803213a8c329d'
           $beta23 = Download-Verified '0.1.0-beta.23' '4f6ea2dc2f0c7c5a7e8adb0e46035a461ca7e6e240d4d58e281b0e911d2f68b8'
           Install-Core $beta22
+          if (-not (Test-Path (Join-Path $appDir 'launcher\CertifydCore.Launcher.ps1'))) { throw 'Beta 22 did not install in the default application folder.' }
           Run-Launcher 'Beta 22 initial'
           if (-not (Test-Path (Join-Path $dataDir 'contentbox.db'))) { throw 'Beta 22 database missing.' }
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $appDir 'launcher\CertifydCore.Stop.ps1') *> $null
