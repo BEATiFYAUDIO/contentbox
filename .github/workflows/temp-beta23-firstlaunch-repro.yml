@@ -48,7 +48,7 @@ jobs:
             }
             return $false
           }
-          function Run-Launcher([string]$Label) {
+          function Run-Launcher([string]$Label, [int]$ExpectedExit = 0) {
             Write-Host "Starting $Label"
             $start = Get-Date
             $launcher = Join-Path $appDir 'launcher\CertifydCore.Launcher.ps1'
@@ -62,7 +62,7 @@ jobs:
             $exitCode = $process.ExitCode
             $seconds = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
             "$Label launcher exit=$exitCode duration=${seconds}s" | Tee-Object -FilePath $summary -Append
-            if ($exitCode -ne 0) { throw "$Label launcher reported failure; inspect isolated runner logs." }
+            if ($exitCode -ne $ExpectedExit) { throw "$Label launcher exit was $exitCode; expected $ExpectedExit." }
             if (-not (Wait-Health 90)) { throw "$Label API never became healthy." }
           }
 
@@ -87,6 +87,18 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or (Wait-Health 3)) { throw 'Beta 23 stop failed.' }
           Run-Launcher 'Beta 23 restart'
           "Beta 23 restart=PASS" | Tee-Object -FilePath $summary -Append
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $appDir 'launcher\CertifydCore.Stop.ps1') *> $null
+          if ($LASTEXITCODE -ne 0 -or (Wait-Health 3)) { throw 'Beta 23 stop before slow test failed.' }
+          $delayModule = Join-Path $env:RUNNER_TEMP 'delay-api-startup.cjs'
+          'if (process.argv.some((arg) => /server\.ts$/.test(arg))) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 55000); }' | Set-Content -Path $delayModule -Encoding ASCII
+          $env:NODE_OPTIONS = "--require `"$delayModule`""
+          try {
+            Run-Launcher 'Beta 23 deliberately slow API startup' 1
+          } finally {
+            Remove-Item Env:NODE_OPTIONS -ErrorAction SilentlyContinue
+          }
+          "Original Beta 23 launcher reports failure while API later becomes healthy=CONFIRMED" | Tee-Object -FilePath $summary -Append
 
       - name: Upload secret-free summary
         if: always()
