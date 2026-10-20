@@ -22,12 +22,13 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
+          repo_root="$PWD"
           root="$(mktemp -d)"
           trap 'for app in "$root"/beta23/Certifyd-Core-* "$root"/candidate/Certifyd-Core-*; do if test -x "$app/stop.sh"; then CONTENTBOX_ROOT="$root/data" PORT=4579 "$app/stop.sh" >/dev/null 2>&1 || true; fi; done' EXIT
           mkdir -p "$root/beta23" "$root/candidate" "$root/data" "$root/downloads"
           gzip -dc .github/test-fixtures/beta23-synthetic-commerce.db.gz > "$root/data/contentbox.db"
           test "$(sqlite3 "$root/data/contentbox.db" 'PRAGMA integrity_check')" = ok
-          before="$(python3 scripts/tests/sqlite_preservation_snapshot.py "$root/data/contentbox.db")"
+          before="$(python3 "$repo_root/scripts/tests/sqlite_preservation_snapshot.py" "$root/data/contentbox.db")"
           cd "$root/downloads"
           gh release download v0.1.0-beta.23 --repo BEATiFYAUDIO/contentbox --pattern 'Certifyd-Core-0.1.0-beta.23-linux-arm64.tar.gz' --pattern SHA256SUMS.txt
           grep 'Certifyd-Core-0.1.0-beta.23-linux-arm64.tar.gz' SHA256SUMS.txt | sha256sum -c -
@@ -46,15 +47,15 @@ jobs:
           "$beta23/start.sh"
           curl --fail --silent --show-error http://127.0.0.1:4579/health >/dev/null
           "$beta23/stop.sh"
-          test "$(python3 scripts/tests/sqlite_preservation_snapshot.py "$root/data/contentbox.db")" = "$before"
+          test "$(python3 "$repo_root/scripts/tests/sqlite_preservation_snapshot.py" "$root/data/contentbox.db")" = "$before"
           "$candidate/start.sh"
           curl --fail --silent --show-error http://127.0.0.1:4579/health >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:4579/ >/dev/null
-          test "$(python3 scripts/tests/sqlite_preservation_snapshot.py "$root/data/contentbox.db")" = "$before"
+          test "$(python3 "$repo_root/scripts/tests/sqlite_preservation_snapshot.py" "$root/data/contentbox.db")" = "$before"
           "$candidate/stop.sh"
           "$candidate/start.sh"
           curl --fail --silent --show-error http://127.0.0.1:4579/health >/dev/null
-          test "$(python3 scripts/tests/sqlite_preservation_snapshot.py "$root/data/contentbox.db")" = "$before"
+          test "$(python3 "$repo_root/scripts/tests/sqlite_preservation_snapshot.py" "$root/data/contentbox.db")" = "$before"
           "$candidate/stop.sh"
           test "$(sqlite3 "$root/data/contentbox.db" 'PRAGMA integrity_check')" = ok
           echo "ARM64 Beta 23 to candidate: health, dashboard, restart, SQLite integrity and protected rows PASS"
