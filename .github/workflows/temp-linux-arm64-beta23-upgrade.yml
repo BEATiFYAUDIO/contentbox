@@ -31,7 +31,7 @@ jobs:
           cd "$root/downloads"
           gh release download v0.1.0-beta.23 --repo BEATiFYAUDIO/contentbox --pattern 'Certifyd-Core-0.1.0-beta.23-linux-arm64.tar.gz' --pattern SHA256SUMS.txt
           grep 'Certifyd-Core-0.1.0-beta.23-linux-arm64.tar.gz' SHA256SUMS.txt | sha256sum -c -
-          gh api repos/BEATiFYAUDIO/contentbox/actions/runs/39435611950/artifacts/12272670161/zip > candidate.zip
+          gh api repos/BEATiFYAUDIO/contentbox/actions/artifacts/12272670161/zip > candidate.zip
           unzip -q candidate.zip -d candidate-artifact
           candidate_archive="$(find candidate-artifact -type f -name 'Certifyd-Core-0.1.0-beta.24-linux-arm64.tar.gz' -print -quit)"
           test -n "$candidate_archive"
