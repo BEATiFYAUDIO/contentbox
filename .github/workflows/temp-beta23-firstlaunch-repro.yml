@@ -25,6 +25,7 @@ jobs:
           $summary = Join-Path $env:RUNNER_TEMP 'beta23-startup-summary.txt'
 
           function Download-Verified([string]$Version, [string]$ExpectedHash) {
+            Write-Host "Downloading published $Version installer"
             $name = "Certifyd-Core-Setup-$Version-win-x64.exe"
             $path = Join-Path $env:RUNNER_TEMP $name
             Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/BEATiFYAUDIO/contentbox/releases/download/v$Version/$name" -OutFile $path
@@ -33,6 +34,7 @@ jobs:
             return $path
           }
           function Install-Core([string]$Path) {
+            Write-Host "Installing published $(Split-Path -Leaf $Path)"
             $process = Start-Process -FilePath $Path -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER') -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw "Installer failed with exit code $($process.ExitCode)." }
           }
@@ -47,9 +49,17 @@ jobs:
             return $false
           }
           function Run-Launcher([string]$Label) {
+            Write-Host "Starting $Label"
             $start = Get-Date
-            & powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File (Join-Path $appDir 'launcher\CertifydCore.Launcher.ps1') *> $null
-            $exitCode = $LASTEXITCODE
+            $launcher = Join-Path $appDir 'launcher\CertifydCore.Launcher.ps1'
+            $stdout = Join-Path $env:RUNNER_TEMP 'launcher-stdout.txt'
+            $stderr = Join-Path $env:RUNNER_TEMP 'launcher-stderr.txt'
+            $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',"`"$launcher`"") -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            if (-not $process.WaitForExit(180000)) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "$Label launcher did not exit within 180 seconds."
+            }
+            $exitCode = $process.ExitCode
             $seconds = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
             "$Label launcher exit=$exitCode duration=${seconds}s" | Tee-Object -FilePath $summary -Append
             if ($exitCode -ne 0) { throw "$Label launcher reported failure; inspect isolated runner logs." }
