@@ -213,15 +213,15 @@ jobs:
           $desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Certifyd Core.lnk"
 
           "## Silent install and runtime validation" | Tee-Object -Append windows-validation-summary.md
-          $beta18Installer = Join-Path $env:RUNNER_TEMP "Certifyd-Core-Setup-0.1.0-beta.18-win-x64.exe"
-          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/BEATiFYAUDIO/contentbox/releases/download/v0.1.0-beta.18/Certifyd-Core-Setup-0.1.0-beta.18-win-x64.exe" -OutFile $beta18Installer
-          $beta18Hash = (Get-FileHash $beta18Installer -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($beta18Hash -ne "17de26ddd9c1bd59549b5539d5312736ea3ad4af13f8bafbfe2a001cd30fb717") {
-            throw "Downloaded Beta 18 installer checksum did not match the published release."
+          $beta23Installer = Join-Path $env:RUNNER_TEMP "Certifyd-Core-Setup-0.1.0-beta.23-win-x64.exe"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/BEATiFYAUDIO/contentbox/releases/download/v0.1.0-beta.23/Certifyd-Core-Setup-0.1.0-beta.23-win-x64.exe" -OutFile $beta23Installer
+          $beta23Hash = (Get-FileHash $beta23Installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($beta23Hash -ne "4f6ea2dc2f0c7c5a7e8adb0e46035a461ca7e6e240d4d58e281b0e911d2f68b8") {
+            throw "Downloaded Beta 23 installer checksum did not match the published release."
           }
-          Invoke-ExeChecked $beta18Installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Beta 18 install"
+          Invoke-ExeChecked $beta23Installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Beta 23 install"
           New-Item -ItemType Directory -Force -Path (Join-Path $dataRoot "config"), (Join-Path $dataRoot "state") | Out-Null
-          Set-Content -Path (Join-Path $dataRoot "upgrade-preservation-marker.txt") -Value "preserve Beta 18 user data" -Encoding UTF8
+          Set-Content -Path (Join-Path $dataRoot "upgrade-preservation-marker.txt") -Value "preserve Beta 23 user data" -Encoding UTF8
           @(
             "DB_MODE=basic",
             "CONTENTBOX_ROOT=$dataRoot",
@@ -236,7 +236,18 @@ jobs:
           Set-Content -Path (Join-Path $dataRoot "state\lan-enabled") -Value "enabled" -Encoding ASCII
           Set-Content -Path (Join-Path $dataRoot "state\launcher-lan-hosts.txt") -Value "192.168.10.25" -Encoding ASCII
 
-          Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Beta 19 upgrade over Beta 18"
+          $env:CERTIFYD_LAUNCHER_NO_UI = "1"
+          $env:CERTIFYD_NO_BROWSER = "1"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
+          if ($LASTEXITCODE -ne 0 -or -not (Wait-ForHealth -Seconds 75)) {
+            throw "Beta 23 baseline did not start through its installed launcher."
+          }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installDir "launcher\CertifydCore.Stop.ps1")
+          if ($LASTEXITCODE -ne 0) { throw "Beta 23 baseline did not stop cleanly." }
+          if (Wait-ForHealth -Seconds 3) { throw "Beta 23 remained active before upgrade." }
+          "Beta 23 installed start and stop=PASS" | Tee-Object -Append windows-validation-summary.md
+
+          Invoke-ExeChecked $installer @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$installDir`"", "/TASKS=desktopicon") "Candidate upgrade over Beta 23"
           Assert-Path (Join-Path $dataRoot "upgrade-preservation-marker.txt")
 
           Assert-Path (Join-Path $installDir "runtime\node\node.exe")
@@ -297,7 +308,7 @@ jobs:
           }
 
           "Core start=PASS" | Tee-Object -Append windows-validation-summary.md
-          "Beta 18 in-place upgrade=PASS" | Tee-Object -Append windows-validation-summary.md
+          "Beta 23 in-place upgrade=PASS" | Tee-Object -Append windows-validation-summary.md
           "Installed LAN launcher under Windows PowerShell $windowsPowerShellVersion=PASS" | Tee-Object -Append windows-validation-summary.md
           "/health=PASS" | Tee-Object -Append windows-validation-summary.md
           "Dashboard=PASS" | Tee-Object -Append windows-validation-summary.md
