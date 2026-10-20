@@ -1,0 +1,84 @@
+name: Temporary Beta 22 to Beta 23 Windows Startup Reproduction
+
+on:
+  push:
+    branches:
+      - temp/beta23-firstlaunch-repro
+
+jobs:
+  reproduce:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Test published installers with disposable data
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'certifyd-repro-localappdata'
+          $env:CERTIFYD_LAUNCHER_NO_UI = '1'
+          $env:CERTIFYD_NO_BROWSER = '1'
+          New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA | Out-Null
+          $appDir = Join-Path $env:LOCALAPPDATA 'Certifyd Core'
+          $dataDir = Join-Path $env:LOCALAPPDATA 'ContentBox'
+          $summary = Join-Path $env:RUNNER_TEMP 'beta23-startup-summary.txt'
+
+          function Download-Verified([string]$Version, [string]$ExpectedHash) {
+            $name = "Certifyd-Core-Setup-$Version-win-x64.exe"
+            $path = Join-Path $env:RUNNER_TEMP $name
+            Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/BEATiFYAUDIO/contentbox/releases/download/v$Version/$name" -OutFile $path
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $ExpectedHash) { throw "Published $Version checksum mismatch." }
+            return $path
+          }
+          function Install-Core([string]$Path) {
+            $process = Start-Process -FilePath $Path -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER') -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Installer failed with exit code $($process.ExitCode)." }
+          }
+          function Wait-Health([int]$Seconds) {
+            $until = (Get-Date).AddSeconds($Seconds)
+            while ((Get-Date) -lt $until) {
+              try {
+                if ((Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:4000/health' -TimeoutSec 2).StatusCode -eq 200) { return $true }
+              } catch {}
+              Start-Sleep -Milliseconds 750
+            }
+            return $false
+          }
+          function Run-Launcher([string]$Label) {
+            $start = Get-Date
+            & powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File (Join-Path $appDir 'launcher\CertifydCore.Launcher.ps1') *> $null
+            $exitCode = $LASTEXITCODE
+            $seconds = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
+            "$Label launcher exit=$exitCode duration=${seconds}s" | Tee-Object -FilePath $summary -Append
+            if ($exitCode -ne 0) { throw "$Label launcher reported failure; inspect isolated runner logs." }
+            if (-not (Wait-Health 90)) { throw "$Label API never became healthy." }
+          }
+
+          $beta22 = Download-Verified '0.1.0-beta.22' '1b968346ed97a61c6692e751130fea9321eb220fe92c1595be3803213a8c329d'
+          $beta23 = Download-Verified '0.1.0-beta.23' '4f6ea2dc2f0c7c5a7e8adb0e46035a461ca7e6e240d4d58e281b0e911d2f68b8'
+          Install-Core $beta22
+          Run-Launcher 'Beta 22 initial'
+          if (-not (Test-Path (Join-Path $dataDir 'contentbox.db'))) { throw 'Beta 22 database missing.' }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $appDir 'launcher\CertifydCore.Stop.ps1') *> $null
+          if ($LASTEXITCODE -ne 0) { throw 'Beta 22 stop failed.' }
+          if (Wait-Health 3) { throw 'Beta 22 remained active before upgrade.' }
+          $dbSize = (Get-Item (Join-Path $dataDir 'contentbox.db')).Length
+          "Beta 22 database bytes=$dbSize" | Tee-Object -FilePath $summary -Append
+
+          Install-Core $beta23
+          Run-Launcher 'Beta 23 first launch after Beta 22 upgrade'
+          $prepared = (Get-Content (Join-Path $dataDir 'state\database-prepared-version.txt') -Raw).Trim()
+          if ($prepared -ne '0.1.0-beta.23') { throw "Beta 23 preparation marker incorrect: $prepared" }
+          "Beta 22 to Beta 23 first launch=PASS" | Tee-Object -FilePath $summary -Append
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $appDir 'launcher\CertifydCore.Stop.ps1') *> $null
+          if ($LASTEXITCODE -ne 0 -or (Wait-Health 3)) { throw 'Beta 23 stop failed.' }
+          Run-Launcher 'Beta 23 restart'
+          "Beta 23 restart=PASS" | Tee-Object -FilePath $summary -Append
+
+      - name: Upload secret-free summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta23-startup-summary
+          path: ${{ runner.temp }}/beta23-startup-summary.txt
+          if-no-files-found: ignore
