@@ -29,6 +29,8 @@ import {
 import { createPaymentProvider } from "./lib/payments.js";
 import { dashboardAssetCacheControl } from "./lib/dashboardAssetCaching.js";
 import { jsonSafe } from "./lib/jsonSafe.js";
+import { browserVideoObjectKey, createBrowserVideoRendition, isBrowserVideoObjectKey, needsBrowserVideoRendition } from "./lib/browserVideoRendition.js";
+import { mediaToolPath } from "./lib/mediaTools.js";
 import {
   AudienceRateLimiter,
   isAudienceCollectionEnabled,
@@ -12915,7 +12917,7 @@ async function ensureEncryptedHlsRendition(content: any, files: any[], manifestR
       playlistResolved.absPath
     ];
 
-    await execFileAsync("ffmpeg", mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
+    await execFileAsync(mediaToolPath("ffmpeg"), mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
     try {
       fsSync.unlinkSync(keyInfoPath);
     } catch {}
@@ -13154,7 +13156,7 @@ async function ensurePreviewFile(content: any, files: any[]) {
         ]
       : ["-y", "-ss", "0", "-t", "20", "-i", inputAbs, "-c:a", "libmp3lame", "-b:a", "128k", tmpOut];
 
-    await execFileAsync("ffmpeg", ffmpegArgs);
+    await execFileAsync(mediaToolPath("ffmpeg"), ffmpegArgs);
 
     await fs.mkdir(path.dirname(previewAbs), { recursive: true });
     await fs.copyFile(tmpOut, previewAbs);
@@ -13203,6 +13205,44 @@ async function ensurePreviewFileOnce(content: any, files: any[]): Promise<string
   return task;
 }
 
+const browserVideoGenerationInflight = new Map<string, Promise<string | null>>();
+const browserVideoGenerationFailedAt = new Map<string, number>();
+const browserVideoAlreadyCompatibleAt = new Map<string, number>();
+
+async function ensureBrowserVideoRenditionOnce(content: any, sourceObjectKey: string): Promise<string | null> {
+  const contentId = asString(content?.id || "").trim();
+  if (!contentId || !content?.repoPath || !sourceObjectKey) return null;
+  const source = resolveDeliveryPath(content.repoPath, sourceObjectKey);
+  if (!source.ok || !fsSync.existsSync(source.absPath)) return null;
+  const renditionObjectKey = browserVideoObjectKey(contentId, source.objectKey);
+  const rendition = resolveDeliveryPath(content.repoPath, renditionObjectKey);
+  if (!rendition.ok) return null;
+  if (fsSync.existsSync(rendition.absPath)) return renditionObjectKey;
+  const inflightKey = `${contentId}:${source.objectKey}`;
+  const inflight = browserVideoGenerationInflight.get(inflightKey);
+  if (inflight) return inflight;
+  if (Date.now() - (browserVideoAlreadyCompatibleAt.get(inflightKey) || 0) < 5 * 60_000) return null;
+  if (Date.now() - (browserVideoGenerationFailedAt.get(inflightKey) || 0) < 5 * 60_000) return null;
+  const task = (async () => {
+    try {
+      if (!(await needsBrowserVideoRendition(source.absPath))) {
+        browserVideoAlreadyCompatibleAt.set(inflightKey, Date.now());
+        return null;
+      }
+      await createBrowserVideoRendition({ sourcePath: source.absPath, outputPath: rendition.absPath });
+      await commitAll(content.repoPath, `generate browser video ${contentId}`).catch(() => {});
+      browserVideoGenerationFailedAt.delete(inflightKey);
+      return renditionObjectKey;
+    } catch (err) {
+      browserVideoGenerationFailedAt.set(inflightKey, Date.now());
+      app.log.warn({ err, contentId }, "browser.video.generate.failed");
+      return null;
+    }
+  })().finally(() => browserVideoGenerationInflight.delete(inflightKey));
+  browserVideoGenerationInflight.set(inflightKey, task);
+  return task;
+}
+
 async function ensureCoverImage(content: any, files: any[]) {
   try {
     if (!content?.repoPath) return null;
@@ -13245,7 +13285,7 @@ async function ensureCoverImage(content: any, files: any[]) {
       tmpOut
     ];
 
-    await execFileAsync("ffmpeg", ffmpegArgs);
+    await execFileAsync(mediaToolPath("ffmpeg"), ffmpegArgs);
 
     const stream = fsSync.createReadStream(tmpOut);
     const fileEntry = await addFileToContentRepo({
@@ -13321,6 +13361,12 @@ async function buildManifestWithDerivedAssets(
   }
   if (previewObjectKey) {
     (manifestJson as any).preview = previewObjectKey;
+  }
+
+  const selectedPrimary = asString((manifestJson as any).primaryFile || "").trim();
+  const selectedPrimaryFile = files.find((file: any) => asString(file?.objectKey || "").trim() === selectedPrimary);
+  if (asString(selectedPrimaryFile?.mime || "").toLowerCase().startsWith("video/")) {
+    await withSoftTimeout(ensureBrowserVideoRenditionOnce(content, selectedPrimary), 12000, null);
   }
 
   if (explicitCover) {
@@ -34701,7 +34747,9 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     ? objectKey.toLowerCase().endsWith(".mp3")
       ? "audio/mpeg"
       : "video/mp4"
-    : null;
+    : !file && isBrowserVideoObjectKey(contentId, objectKey)
+      ? "video/mp4"
+      : null;
   const mime = file?.mime || derivedPreviewMime || "application/octet-stream";
 
   if (
@@ -39426,6 +39474,7 @@ async function handleBuyPage(req: any, reply: any) {
   function resolveBasicDeliveryMode(offer){
     const explicit = (offer && typeof offer.deliveryMode === "string" && offer.deliveryMode.trim()) ? offer.deliveryMode.trim() : "";
     if (explicit) return explicit;
+    if (offer?.isFree) return "stream_and_download";
     const mime = String(offer?.primaryFileMime || "");
     const isVideo = offer?.type === "video" || mime.startsWith("video/");
     const isAudio = offer?.type === "song" || mime.startsWith("audio/");
@@ -39514,7 +39563,7 @@ async function handleBuyPage(req: any, reply: any) {
       };
     }
     if (canonicalMode === "full" && canonicalStreamUrl && canUseFull) {
-      const preferredFullSrc = requiresEncryptedFull ? fullMediaSrc : (tokenStreamSrc || canonicalStreamUrl);
+      const preferredFullSrc = requiresEncryptedFull ? fullMediaSrc : (offer?.browserMediaUrl || canonicalStreamUrl || tokenStreamSrc);
       const resolved = resolveRenderablePreview(offer, preferredFullSrc, requiresEncryptedFull ? canonicalStreamUrl : fullMediaSrc || canonicalStreamUrl);
       const deliveryMode = resolveBasicDeliveryMode(offer);
       const kind = resolved.kind;
@@ -39522,6 +39571,8 @@ async function handleBuyPage(req: any, reply: any) {
       const isAudio = kind === "audio";
       return {
         src: resolved.src || preferredFullSrc,
+        browserMediaUrl: offer?.browserMediaUrl || null,
+        originalMediaUrl: offer?.originalMediaUrl || null,
         kind,
         mode: "full",
         isVideo,
@@ -39533,7 +39584,7 @@ async function handleBuyPage(req: any, reply: any) {
       };
     }
     const preferredSrc = canUseFull
-      ? (requiresEncryptedFull ? fullMediaSrc : (tokenStreamSrc || canonicalStreamUrl || fullMediaSrc || primaryPreview || fallbackPreviewSrc))
+      ? (requiresEncryptedFull ? fullMediaSrc : (offer?.browserMediaUrl || canonicalStreamUrl || tokenStreamSrc || fullMediaSrc || primaryPreview || fallbackPreviewSrc))
       : (isPreviewEntitlement
           ? (fallbackPreviewSrc || tokenStreamSrc || primaryPreview)
           : (tokenStreamSrc || fallbackPreviewSrc || primaryPreview));
@@ -39548,6 +39599,8 @@ async function handleBuyPage(req: any, reply: any) {
     const isAudio = kind === "audio";
     return {
       src,
+      browserMediaUrl: canUseFull ? offer?.browserMediaUrl || null : null,
+      originalMediaUrl: canUseFull ? offer?.originalMediaUrl || null : null,
       kind,
       mode: canUseFull ? "full" : "preview",
       isVideo,
@@ -39566,11 +39619,32 @@ async function handleBuyPage(req: any, reply: any) {
     const blockContextMenu = playback.deliveryMode === "stream_only" ? ' oncontextmenu="return false;"' : "";
     return '<div class="preview">' +
       (previewLabel ? '<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">' + esc(previewLabel) + '</div>' : '') +
-      (playback.isVideo ? '<video id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata"' + (coverSrc ? ' poster="' + coverSrc + '"' : '') + ' src="' + playback.src + '"></video>' : '') +
+      (playback.isVideo ? '<video id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata"' + (coverSrc ? ' poster="' + coverSrc + '"' : '') + (playback.browserMediaUrl && playback.mode === "full"
+        ? '><source src="' + esc(playback.browserMediaUrl) + '" type="video/mp4; codecs=&quot;avc1.4D401F&quot;">' + (playback.originalMediaUrl ? '<source src="' + esc(playback.originalMediaUrl) + '" type="video/mp4">' : '') + '</video>'
+        : ' src="' + esc(playback.src) + '"></video>') : '') +
       (playback.isAudio ? '<audio id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata" src="' + playback.src + '"></audio>' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "image" ? '<img id="player" src="' + playback.src + '" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "file" ? '<a class="muted" href="' + playback.src + '" target="_blank" rel="noreferrer">Open preview</a>' : '') +
     '</div>';
+  }
+
+  function waitForBrowserVideo(offer, attempt = 0){
+    if (!offer?.browserRenditionPending || attempt >= 20) return;
+    window.setTimeout(async () => {
+      try {
+        const fresh = await fetchOfferWithAccessProof();
+        if (fresh?.browserMediaUrl) {
+          const player = document.getElementById("player");
+          if (player && player.tagName === "VIDEO" && (player.paused || Number(player.readyState || 0) < 2)) {
+            player.setAttribute("src", fresh.browserMediaUrl);
+            if (typeof player.load === "function") player.load();
+          }
+          currentOffer = fresh;
+        } else if (fresh?.browserRenditionPending) {
+          waitForBrowserVideo(fresh, attempt + 1);
+        }
+      } catch {}
+    }, 3000);
   }
 
   function bindPlaybackSourceRecovery(playback, entitlement, owned){
@@ -39578,9 +39652,12 @@ async function handleBuyPage(req: any, reply: any) {
     const player = document.getElementById("player");
     if (!player || typeof player.setAttribute !== "function") return;
     let refreshing = false;
+    let lastSourceRefreshAt = Date.now();
     const refreshSource = async () => {
       if (refreshing) return;
       refreshing = true;
+      const wasPlaying = !player.paused;
+      const position = Number(player.currentTime || 0);
       const nextStatus = document.getElementById("status");
       if (nextStatus) nextStatus.textContent = playback.mode === "full" ? "Refreshing access..." : "Refreshing preview...";
       try {
@@ -39593,12 +39670,23 @@ async function handleBuyPage(req: any, reply: any) {
           owned: Boolean(owned || refreshedOffer?.owned),
           token: nextToken
         });
-        if (nextPlayback?.src && String(player.getAttribute("src") || "") !== nextPlayback.src) {
+        if (nextPlayback?.src && String(player.currentSrc || player.getAttribute("src") || "") !== nextPlayback.src) {
+          player.addEventListener("loadedmetadata", () => {
+            if (Number.isFinite(position) && position > 0) {
+              try { player.currentTime = position; } catch {}
+            }
+            if (wasPlaying && typeof player.play === "function") {
+              try { player.play().catch(() => {}); } catch {}
+            }
+          }, { once: true });
           player.setAttribute("src", nextPlayback.src);
           try { player.controls = true; } catch {}
           try { if (typeof player.load === "function") player.load(); } catch {}
         }
+        lastSourceRefreshAt = Date.now();
         if (nextStatus) nextStatus.textContent = playback.mode === "full" ? "Access ready." : "Preview ready.";
+      } catch {
+        if (nextStatus) nextStatus.textContent = "Playback could not refresh. Try Play again.";
       } finally {
         window.setTimeout(() => { refreshing = false; }, 500);
       }
@@ -39608,7 +39696,13 @@ async function handleBuyPage(req: any, reply: any) {
       if (Number(player.readyState || 0) === 0) refreshSource();
     });
     player.addEventListener("pointerdown", () => {
-      if (Number(player.readyState || 0) === 0) refreshSource();
+      if (Number(player.readyState || 0) === 0 || Date.now() - lastSourceRefreshAt > 90_000) refreshSource();
+    });
+    player.addEventListener("play", () => {
+      if (Date.now() - lastSourceRefreshAt > 90_000) refreshSource();
+    });
+    player.addEventListener("seeking", () => {
+      if (Date.now() - lastSourceRefreshAt > 90_000) refreshSource();
     });
     window.setTimeout(() => {
       if (Number(player.readyState || 0) === 0) refreshSource();
@@ -39695,14 +39789,16 @@ async function handleBuyPage(req: any, reply: any) {
         renderAuthorizedPlayback(playback, {}) +
         "<div class=\\"section-title\\">Free access</div>" +
         "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Delivery: " +
-          (deliveryMode === "stream_and_download" ? "Stream + Download" : (allowDownload ? "Download only" : "Streaming only")) +
+          (deliveryMode === "stream_and_download" ? "Playback + Download" : (allowDownload ? "Download only" : "Browser playback (saving may be possible)")) +
         "</div>" +
-        (allowDownload && mediaSrc ? "<div class=\\"download-row\\"><a class=\\"btn primary full\\" href=\\"" + mediaSrc + "\\" download>Download file</a></div>" : "") +
+        (allowDownload && mediaSrc ? "<div class=\\"download-row\\"><a class=\\"btn primary full\\" href=\\"" + (offer?.originalMediaUrl || mediaSrc) + "\\" download>Download file</a></div>" : "") +
         tipBlock +
         renderTipUnlockDetails(offer, null, Boolean(offer?.owned)) +
       "</div>";
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+    bindPlaybackSourceRecovery(playback, null, Boolean(offer?.owned));
     renderAttribution();
+    waitForBrowserVideo(offer);
   }
 
   function renderOffer(offer, entitlement, owned){
@@ -39756,7 +39852,7 @@ async function handleBuyPage(req: any, reply: any) {
           '<span class="trust-chip trust-chip--teal">Creator verified</span>',
           '<span class="trust-chip trust-chip--green">Free access</span>',
           (effectivePaymentState === "tip" && sellerLightningAddress ? '<span class="trust-chip trust-chip--gold">Tips enabled</span>' : ""),
-          (mediaSrc ? '<span class="trust-chip trust-chip--violet">Public preview</span>' : "")
+          (playback.mode === "preview" && mediaSrc ? '<span class="trust-chip trust-chip--violet">Public preview</span>' : "")
         ].filter(Boolean).join("");
     app.innerHTML = \`
       <div>
@@ -39859,6 +39955,7 @@ async function handleBuyPage(req: any, reply: any) {
     bindPlaybackSourceRecovery(playback, entitlement, owned);
     bindPreviewLimit(playback, isPaid);
     renderAttribution();
+    waitForBrowserVideo(offer);
     if (token) {
       maybeUpgradeRenderedMediaToEdge(offer, token);
     }
@@ -41138,6 +41235,14 @@ async function handlePublicOffer(req: any, reply: any) {
         mime: primaryFileMime || ""
       })
   );
+  const browserRenditionObjectKey =
+    hasFull && !shouldUseEncryptedHls && primaryFileId && asString(primaryFileMime || "").toLowerCase().startsWith("video/")
+      ? await withSoftTimeout(ensureBrowserVideoRenditionOnce(content, primaryFileId), 12000, null)
+      : null;
+  const browserRenditionPending = Boolean(
+    !browserRenditionObjectKey && primaryFileId &&
+    browserVideoGenerationInflight.has(`${content.id}:${primaryFileId}`)
+  );
   const fullDeliveryToken =
     hasFull && primaryFileId && (freeContent || buyerSessionId || receiptProofIntent)
       ? createPublicDeliveryToken({
@@ -41148,14 +41253,37 @@ async function handlePublicOffer(req: any, reply: any) {
           receiptProofAccess: Boolean(!freeContent && receiptProofIntent)
         })
       : null;
-  const fullMediaUrl =
-    baseUrl && primaryFileId && fullDeliveryToken
+  const browserDeliveryToken = browserRenditionObjectKey && hasFull
+    ? createPublicDeliveryToken({
+        contentId: content.id,
+        objectKey: browserRenditionObjectKey,
+        access: "full",
+        buyerSessionId: freeContent || receiptProofIntent ? null : buyerSessionId,
+        receiptProofAccess: Boolean(!freeContent && receiptProofIntent)
+      })
+    : null;
+  const originalMediaUrl =
+    baseUrl && primaryFileId && fullDeliveryToken && !shouldUseEncryptedHls
       ? appendPublicDeliveryToken(
-          shouldUseEncryptedHls
-            ? `${baseUrl}/public/content/${encodeURIComponent(content.id)}/hls/master.m3u8?objectKey=${encodeURIComponent(primaryFileId)}`
-            : `${baseUrl}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(primaryFileId)}`,
+          `${baseUrl}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(primaryFileId)}`,
           fullDeliveryToken
         )
+      : null;
+  const browserMediaUrl =
+    baseUrl && browserRenditionObjectKey && browserDeliveryToken
+      ? appendPublicDeliveryToken(
+          `${baseUrl}/public/content/${encodeURIComponent(content.id)}/preview-file?objectKey=${encodeURIComponent(browserRenditionObjectKey)}`,
+          browserDeliveryToken
+        )
+      : null;
+  const fullMediaUrl =
+    baseUrl && primaryFileId && fullDeliveryToken
+      ? shouldUseEncryptedHls
+        ? appendPublicDeliveryToken(
+            `${baseUrl}/public/content/${encodeURIComponent(content.id)}/hls/master.m3u8?objectKey=${encodeURIComponent(primaryFileId)}`,
+            fullDeliveryToken
+          )
+        : browserMediaUrl || originalMediaUrl
       : null;
   const showPreviewOnly = shouldShowPreview({
     isFree: freeContent,
@@ -41200,6 +41328,9 @@ async function handlePublicOffer(req: any, reply: any) {
     hasFullAccess: hasFull,
     playback,
     hlsRequired: shouldUseEncryptedHls,
+    browserRenditionPending,
+    browserMediaUrl: hasFull ? browserMediaUrl : null,
+    originalMediaUrl: hasFull ? originalMediaUrl : null,
     previewUrl: showPreviewOnly ? previewUrl : null,
     fullMediaUrl: hasFull ? fullMediaUrl : null,
     fullContentUrl: hasFull ? fullMediaUrl : null,

@@ -156,6 +156,7 @@ Invoke-Checked $magick $iconPng "-resize" "256x256" "-define" "icon:auto-resize=
 
 Write-Host "[windows-package] Installing API dependencies into staging..."
 Invoke-Checked $npmCmd "--prefix" $apiTarget "ci"
+Invoke-Checked $nodeExe (Join-Path $repoRoot "scripts\validate-packaged-media-tools.cjs") $apiTarget (Join-Path $repoRoot "scripts\fixtures\hevc-aac-1s.mp4")
 
 Write-Host "[windows-package] Generating Windows Prisma client..."
 $apiSchema = Join-Path $apiTarget "prisma\schema.prisma"

@@ -41,6 +41,7 @@
     "smoke:stage1a-miniplayer": "tsx src/scripts/stage1a_miniplayer_qa.ts"
   },
   "dependencies": {
+    "@derhuerst/ffprobe-static": "5.3.0",
     "@fastify/cors": "^11.2.0",
     "@fastify/jwt": "^10.0.0",
     "@fastify/multipart": "^9.4.0",
@@ -53,6 +54,7 @@
     "dotenv": "^16.4.5",
     "ethers": "^6.9.0",
     "fastify": "^5.7.2",
+    "ffmpeg-static": "5.3.0",
     "nodemailer": "^6.9.15",
     "nostr-tools": "^2.23.3",
     "pg": "^8.17.2",

@@ -75,6 +75,7 @@ test -f "$app/Contents/Resources/CertifydCore.icns"
 test -f "$app/Contents/Resources/app/apps/dashboard/dist/index.html"
 
 node_bin="$app/Contents/Resources/runtime/node/bin/node"
+"$node_bin" "$repo_root/scripts/validate-packaged-media-tools.cjs" "$app/Contents/Resources/app/apps/api" "$repo_root/scripts/fixtures/hevc-aac-1s.mp4"
 blocked_bin="$(mktemp -d)"
 for blocked in git node npm; do
   printf '#!/usr/bin/env bash\n' >"$blocked_bin/$blocked"

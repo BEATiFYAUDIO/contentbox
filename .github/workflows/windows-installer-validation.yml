@@ -17,7 +17,7 @@ on:
       - "temp/release-assembly-*"
 
 env:
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '0.1.0-beta.10' }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '0.1.0-beta.24' }}
   RELEASE_SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.sha }}
 
 jobs:
@@ -241,6 +241,8 @@ jobs:
 
           Assert-Path (Join-Path $installDir "runtime\node\node.exe")
           Assert-Path (Join-Path $installDir "apps\api\src\server.ts")
+          & (Join-Path $installDir "runtime\node\node.exe") (Join-Path $PWD "scripts\validate-packaged-media-tools.cjs") (Join-Path $installDir "apps\api") (Join-Path $PWD "scripts\fixtures\hevc-aac-1s.mp4")
+          if ($LASTEXITCODE -ne 0) { throw "Installed FFmpeg/ffprobe HEVC conversion failed" }
           Assert-Path (Join-Path $installDir "apps\dashboard\dist\index.html")
           Assert-Path (Join-Path $installDir "launcher\CertifydCore.Launcher.ps1")
           Assert-Path (Join-Path $installDir "launcher\CertifydCore.Control.ps1")

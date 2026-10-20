@@ -16,7 +16,7 @@ on:
       - "temp/release-assembly-*"
 
 env:
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '0.1.0-beta.11' }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '0.1.0-beta.24' }}
   RELEASE_SOURCE_REF: ${{ inputs.source_ref || github.sha }}
 
 jobs:

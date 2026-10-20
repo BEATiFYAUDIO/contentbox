@@ -187,6 +187,7 @@ echo "APPL????" > "$contents_dir/PkgInfo"
 
 echo "[macos-package] Installing API dependencies into staging..."
 "$npm_bin" --prefix "$api_target" ci
+"$node_bin" "$repo_root/scripts/validate-packaged-media-tools.cjs" "$api_target" "$repo_root/scripts/fixtures/hevc-aac-1s.mp4"
 
 echo "[macos-package] Generating macOS Prisma client..."
 api_schema="$api_target/prisma/schema.prisma"
