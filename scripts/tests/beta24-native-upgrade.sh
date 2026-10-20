@@ -24,8 +24,10 @@ if [[ "$platform" == linux ]]; then
   expected_new=cbc06f6f9410927c02a7134203bad11432036025763dbc770671fc746d4599dc
   gh release download v0.1.0-beta.23 -R BEATiFYAUDIO/contentbox --pattern "$old" --pattern SHA256SUMS.txt --dir "$test_root"
   gh run download 39461985152 -R BEATiFYAUDIO/contentbox -n certifyd-core-linux-arm64-0.1.0-beta.24 -D "$test_root"
+  candidate_path="$(find "$test_root" -type f -name "$new" -print -quit)"
+  test -n "$candidate_path"
   (cd "$test_root" && grep "  $old$" SHA256SUMS.txt | shasum -a 256 -c -)
-  printf '%s  %s\n' "$expected_new" "$test_root/$new" | shasum -a 256 -c -
+  printf '%s  %s\n' "$expected_new" "$candidate_path" | shasum -a 256 -c -
   sudo dpkg -i "$test_root/$old"
   app=/opt/certifyd-core
   start() { "$app/start.sh"; }
@@ -66,7 +68,7 @@ export CORE_API_DIR="$api"
 test ! -f "$data_root/state/certifyd-core.pid"
 
 if [[ "$platform" == linux ]]; then
-  sudo dpkg -i "$test_root/$new"
+  sudo dpkg -i "$candidate_path"
   app=/opt/certifyd-core
   stop_script="$app/stop.sh"
   node="$app/runtime/node/bin/node"
