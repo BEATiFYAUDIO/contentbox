@@ -1,4 +1,5 @@
 ﻿import "dotenv/config";
+import { getPrimaryFileObjectKeyFromManifest, getPrimaryFileMime, getStoredFileMime } from "./lib/primaryFileMetadata.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
@@ -1467,19 +1468,6 @@ async function verifyPublicDeliveryToken(
   } catch {
     return { ok: false, access: null };
   }
-}
-
-function getPrimaryFileObjectKeyFromManifest(manifestJson: any): string | null {
-  const primary = manifestJson?.primaryFile;
-  const primaryKey =
-    typeof primary === "string"
-      ? primary
-      : primary && typeof primary === "object"
-        ? primary.path || primary.filename || primary.objectKey
-        : null;
-  if (primaryKey) return String(primaryKey).trim() || null;
-  const first = Array.isArray(manifestJson?.files) ? manifestJson.files[0] : null;
-  return String(first?.objectKey || first?.path || first?.filename || "").trim() || null;
 }
 
 function appendPublicDeliveryToken(url: string | null, token: string | null): string | null {
@@ -30974,6 +30962,13 @@ async function handlePublicContent(req: any, reply: any) {
       ? manifestJson.files.find((file: any) => (file?.path || file?.objectKey) === primaryObjectKey)?.mime
       : null) || ""
   );
+  const primaryFile = primaryObjectKey
+    ? await prisma.contentFile.findUnique({
+        where: { contentId_objectKey: { contentId, objectKey: primaryObjectKey } },
+        select: { objectKey: true, mime: true }
+      })
+    : null;
+  const primaryFileMime = getPrimaryFileMime(manifestJson, primaryFile ? [primaryFile] : []);
   let buyerSessionId: string | null = null;
   try {
     const buyerSession = await resolveBuyerReadSession(req, reply);
@@ -31009,6 +31004,7 @@ async function handlePublicContent(req: any, reply: any) {
     title: content.title,
     description: content.description || null,
     primaryTopic: normalizePrimaryTopic((content as any).primaryTopic),
+    primaryFileMime,
     creatorHandle: resolveCreatorHandleForDiscoverable(owner || null),
     creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload(owner?.avatarUrl || null, canonicalOrigin),
     storefrontStatus: content.storefrontStatus,
@@ -32585,6 +32581,8 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
 
 async function handlePublicDiscoverableContent(req: any, reply: any) {
   applyFanReadCors(req, reply);
+  // This buyer-aware projection is read fresh; do not cache MIME or ownership at the edge.
+  reply.header("Cache-Control", "no-store");
   const query = (req.query ?? {}) as { topic?: string; limit?: string | number; cursor?: string };
   const topic = normalizePrimaryTopic(query.topic);
   if (query.topic != null && !topic) {
@@ -32633,7 +32631,20 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
           }
         : {})
     } as any,
-    include: {
+    // Avoid hydrating unused publication/proof JSON and private content fields for every card.
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      type: true,
+      primaryTopic: true,
+      status: true,
+      deletedAt: true,
+      priceSats: true,
+      deliveryMode: true,
+      createdAt: true,
+      updatedAt: true,
+      files: { select: { objectKey: true, mime: true } },
       owner: { select: { displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } },
       credits: { select: { id: true } },
       splitVersions: {
@@ -32656,6 +32667,14 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
   });
 
   const pageRows = rows.slice(0, limit);
+  // Match offer lookup by contentId, including legacy records without manifestId.
+  const manifests = pageRows.length
+    ? await prisma.manifest.findMany({
+        where: { contentId: { in: pageRows.map((row) => row.id) } },
+        select: { contentId: true, json: true }
+      })
+    : [];
+  const manifestByContentId = new Map(manifests.map((manifest) => [manifest.contentId, manifest.json]));
   const entitlementByContentId = new Map<string, boolean>();
   if (buyerId && pageRows.length) {
     const contentIds = pageRows.map((row) => row.id);
@@ -32766,6 +32785,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload((row as any).owner?.avatarUrl || null, canonicalOrigin),
         profileTheme: publicProfileThemeFromUser((row as any).owner),
         contentType: row.type,
+        primaryFileMime: getPrimaryFileMime(manifestByContentId.get(row.id), row.files),
         primaryTopic: normalizePrimaryTopic((row as any).primaryTopic),
         coverUrl,
         previewUrl,
@@ -34536,7 +34556,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   reply.header("Accept-Ranges", "bytes");
   reply.header("X-ContentBox-Access", accessMode);
 
-  reply.type(mime);
+  reply.type(getStoredFileMime(manifestJsonForAccess, objectKey, file ? [file] : []) || derivedPreviewMime || "application/octet-stream");
   const parsed = parseRangeHeader(typeof range === "string" ? range : undefined, effectiveSize);
   if (parsed.kind === "invalid") {
     reply.code(416);
@@ -40777,10 +40797,7 @@ async function handlePublicOffer(req: any, reply: any) {
   const publishProof = manifest ? findLatestContentPublishProofForContent(contentId, manifest.sha256) : null;
 
   const manifestJson = (manifest?.json || {}) as any;
-  let primaryFileId =
-    (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
-    (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
-    null;
+  let primaryFileId = getPrimaryFileObjectKeyFromManifest(manifestJson);
   if (!primaryFileId && allowDraftPreview) {
     const latestFile = await prisma.contentFile.findFirst({
       where: { contentId },
@@ -40788,11 +40805,13 @@ async function handlePublicOffer(req: any, reply: any) {
     });
     primaryFileId = latestFile?.objectKey || null;
   }
-  let primaryFileMime: string | null = null;
-  if (primaryFileId) {
-    const f = await prisma.contentFile.findFirst({ where: { contentId, objectKey: primaryFileId } });
-    primaryFileMime = f?.mime || null;
-  }
+  const primaryFile = primaryFileId
+    ? await prisma.contentFile.findUnique({
+        where: { contentId_objectKey: { contentId, objectKey: primaryFileId } },
+        select: { objectKey: true, mime: true }
+      })
+    : null;
+  const primaryFileMime = getPrimaryFileMime(manifestJson, primaryFile ? [primaryFile] : []);
   const freeContent = isFreeContent({ priceSats: content.priceSats });
   const manifestPreviewObjectKey = asString(manifestJson?.preview || "").trim();
   const previewObjectKey =
@@ -44381,7 +44400,11 @@ async function handlePublicContentFile(req: any, reply: any) {
   const range = req.headers.range as string | undefined;
 
   reply.header("Accept-Ranges", "bytes");
-  reply.type(mime || "application/octet-stream");
+  const storedFile = await prisma.contentFile.findUnique({
+    where: { contentId_objectKey: { contentId: content.id, objectKey } },
+    select: { objectKey: true, mime: true }
+  });
+  reply.type(getStoredFileMime(manifestJson, objectKey, storedFile ? [storedFile] : []) || "application/octet-stream");
   reply.header("X-ContentBox-Access", accessMode);
 
   const effectiveSize = fileSize;
