@@ -86,7 +86,7 @@ test("service inspection is wired for Windows Services, Linux systemd, and macOS
     serverSource.indexOf("function inspectCloudflaredServices"),
     serverSource.indexOf("function detectTunnelControlMode")
   );
-  assert.match(inspector, /Win32_Service/);
+  assert.match(serverSource, /await inspectWindowsCloudflared\(NAMED_CONTROL_COMMAND_TIMEOUT_MS\)/);
   assert.match(inspector, /systemctl/);
   assert.match(inspector, /launchctl/);
   assert.match(inspector, /NAMED_CONTROL_COMMAND_TIMEOUT_MS/g);

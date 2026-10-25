@@ -41,7 +41,8 @@
     "test:witness-recovery": "npx tsx --test src/modules/witness/witness.service.test.ts",
     "test:certifyd-ar": "npx tsx --test src/modules/witness/certifydAr.routes.test.ts",
     "test:derivative-accounting-regression": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/derivative_accounting_regression_checks.ts",
-    "smoke:stage1a-miniplayer": "tsx src/scripts/stage1a_miniplayer_qa.ts"
+    "smoke:stage1a-miniplayer": "tsx src/scripts/stage1a_miniplayer_qa.ts",
+    "test:buy-page-latency": "tsx --test src/lib/buyPageLatency.test.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

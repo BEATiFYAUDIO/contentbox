@@ -32,6 +32,7 @@ type TunnelManagerOptions = {
   resolveBinary?: (signal?: AbortSignal) => Promise<string>;
   readVersion?: (binPath: string, signal?: AbortSignal) => Promise<string | null>;
   spawnProcess?: typeof spawn;
+  beforeSpawn?: () => Promise<void>;
   killProcess?: (pid: number, signal?: NodeJS.Signals | number) => void;
   stopTimeoutMs?: number;
   stopEscalationTimeoutMs?: number;
@@ -482,6 +483,14 @@ export class TunnelManager {
     return this.status();
   }
 
+  private async authorizeSpawn() {
+    const generation = this.namedRestartGeneration;
+    await this.opts.beforeSpawn?.();
+    if (generation !== this.namedRestartGeneration || this.stopping) {
+      throw new Error("Tunnel start cancelled while checking ownership");
+    }
+  }
+
   private async _startQuick(): Promise<TunnelState> {
     if (this.proc?.pid && !this.stopping) {
       this.opts.logger?.warn?.("Quick tunnel already running; skipping spawn");
@@ -522,6 +531,12 @@ export class TunnelManager {
     this.opts.logger?.info?.(`quick tunnel target: ${targetUrl}`);
 
     const tryProtocol = async (protocol?: "quic" | "http2") => {
+      try {
+        await this.authorizeSpawn();
+      } catch (error: any) {
+        this.state = { ...this.state, status: "ERROR", lastError: String(error?.message || "Tunnel inspection unavailable") };
+        throw error;
+      }
       const args = ["tunnel"];
       const quickConfigPath = String(this.opts.quickConfigPath || "").trim();
       if (quickConfigPath) args.push("--config", quickConfigPath);
@@ -709,6 +724,12 @@ export class TunnelManager {
     }
     this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
 
+    try {
+      await this.authorizeSpawn();
+    } catch (error: any) {
+      this.state = { ...this.state, status: "ERROR", lastError: String(error?.message || "Tunnel inspection unavailable") };
+      return this.status();
+    }
     const child = (this.opts.spawnProcess || spawn)(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     this.proc = child;
     this.activeMode = "named";

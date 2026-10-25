@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
+import { inspectWindowsCloudflared, runInspectionCommand, TunnelInspectionCache, tunnelStartBlocker } from "./lib/tunnelInspection.js";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
 import { nip19 } from "nostr-tools";
@@ -114,7 +115,6 @@ import {
 import {
   parseLinuxCloudflaredService,
   parseMacCloudflaredServices,
-  parseWindowsCloudflaredServices,
   serviceInspectionSummary,
   evaluateNamedRouteEvidence,
   type CloudflaredServiceRecord
@@ -1917,6 +1917,7 @@ if (!fsSync.existsSync(QUICK_TUNNEL_CONFIG_PATH)) {
   } catch {}
 }
 const tunnelManager = new TunnelManager({
+  beforeSpawn: () => assertTunnelStartSafe(),
   targetPort: PUBLIC_HTTP_PORT,
   binDir: CLOUDFLARED_BIN_DIR,
   quickConfigPath: QUICK_TUNNEL_CONFIG_PATH,
@@ -10686,82 +10687,22 @@ function toEpochMs(value: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-function runWindowsCloudflaredProcessQuery(args: string[]): string {
-  const candidates = [
-    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-    "powershell.exe",
-    "powershell"
-  ];
-  for (const cmd of candidates) {
-    try {
-      const ps = spawnSync(cmd, args, { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS });
-      if (!ps.error && String(ps.stdout || "").trim()) {
-        return String(ps.stdout || "");
-      }
-    } catch {}
-  }
-  try {
-    const wmic = spawnSync(
-      "wmic",
-      ["process", "where", "name='cloudflared.exe'", "get", "CommandLine", "/format:list"],
-      { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS }
-    );
-    if (!wmic.error) return String(wmic.stdout || "");
-  } catch {}
-  return "";
-}
-
-function runWindowsPowerShellQuery(args: string[]): string {
-  const candidates = [
-    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-    "powershell.exe",
-    "powershell"
-  ];
-  for (const cmd of candidates) {
-    try {
-      const result = spawnSync(cmd, args, { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS });
-      if (!result.error && result.status === 0) return String(result.stdout || "");
-    } catch {}
-  }
-  return "";
-}
-
-function inspectCloudflaredServices(): CloudflaredServiceRecord[] {
-  if (process.platform === "win32") {
-    const output = runWindowsPowerShellQuery([
-      "-NoProfile",
-      "-Command",
-      "Get-CimInstance Win32_Service | Where-Object { $_.Name -match 'cloudflared' -or $_.PathName -match 'cloudflared' } | ForEach-Object { \"$($_.Name)|$($_.State)|$($_.ProcessId)|$($_.PathName)\" }"
-    ]);
-    return parseWindowsCloudflaredServices(output);
-  }
+async function inspectCloudflaredServices(): Promise<CloudflaredServiceRecord[]> {
+  // Windows service and process inventories are queried together below.
   if (process.platform === "linux") {
     try {
-      const result = spawnSync(
-        "systemctl",
+      return parseLinuxCloudflaredService(await runInspectionCommand("systemctl",
         ["show", "cloudflared.service", "--property=Id,LoadState,ActiveState,MainPID,ExecStart", "--no-pager"],
-        { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS }
-      );
-      return parseLinuxCloudflaredService(String(result.stdout || ""));
-    } catch {
-      return [];
-    }
+        NAMED_CONTROL_COMMAND_TIMEOUT_MS));
+    } catch { return []; }
   }
   if (process.platform === "darwin") {
-    try {
-      const result = spawnSync("launchctl", ["list"], {
-        encoding: "utf8",
-        timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS
-      });
-      return parseMacCloudflaredServices(String(result.stdout || ""));
-    } catch {
-      return [];
-    }
+    return parseMacCloudflaredServices(await runInspectionCommand("launchctl", ["list"], NAMED_CONTROL_COMMAND_TIMEOUT_MS));
   }
   return [];
 }
 
-function detectTunnelControlMode() {
+async function detectTunnelControlMode() {
   const serviceScriptPath = "/etc/init.d/cloudflared";
   const localConfigPath =
     String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() ||
@@ -10769,7 +10710,8 @@ function detectTunnelControlMode() {
   const localConfigPresent = fsSync.existsSync(localConfigPath);
   const configuredIdentities = getConfiguredNamedIdentityAliases();
   const processRecords: Array<{ pid?: number | null; commandLine: string; serviceManaged?: boolean }> = [];
-  const serviceRecords = inspectCloudflaredServices();
+  const windows = process.platform === "win32" ? await inspectWindowsCloudflared(NAMED_CONTROL_COMMAND_TIMEOUT_MS) : null;
+  const serviceRecords = windows ? windows.services : await inspectCloudflaredServices();
   const serviceInspection = serviceInspectionSummary(serviceRecords);
   for (const service of serviceRecords) {
     if (service.state !== "running") continue;
@@ -10783,9 +10725,7 @@ function detectTunnelControlMode() {
       serviceScriptHasToken =
         /tunnel\s+run\s+--token/i.test(script) ||
         /--token\s+["'$]?\w+/i.test(script);
-      if (serviceScriptHasToken || /cloudflared\s+tunnel\s+run/i.test(script)) {
-        processRecords.push({ commandLine: script, serviceManaged: true });
-      }
+      // Configuration is not evidence of a running service (Beta 24 behavior).
     } catch {}
   }
 
@@ -10793,50 +10733,18 @@ function detectTunnelControlMode() {
   let activeProcessConfig = false;
   let activeServiceTokenProcess = false;
   let activeAppManagedTokenProcess = false;
-  if (process.platform === "win32") {
-    try {
-      let output = runWindowsCloudflaredProcessQuery([
-        "-NoProfile",
-        "-Command",
-        "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"
-      ]);
-      if (!String(output || "").trim()) {
-        output = runWindowsCloudflaredProcessQuery([
-          "-NoProfile",
-          "-Command",
-          "Get-WmiObject Win32_Process -Filter \"Name='cloudflared.exe'\" | ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"
-        ]);
-      }
-      for (const line of output.split("\n")) {
-        const separator = line.indexOf("|");
-        const pid = separator > 0 ? Number(line.slice(0, separator).trim()) : null;
-        const commandLine = separator > 0 ? line.slice(separator + 1) : line;
-        const lower = commandLine.toLowerCase();
-        if (!lower.includes("cloudflared")) continue;
-        if (!lower.includes("tunnel")) continue;
-        if (!lower.includes("run")) continue;
-        if (lower.includes("--token")) activeProcessToken = true;
-        if (lower.includes("--config")) activeProcessConfig = true;
-        processRecords.push({ pid: Number.isFinite(pid) ? pid : null, commandLine, serviceManaged: pid !== tunnelManager.status().pid });
-      }
-    } catch {}
-  } else {
-    try {
-      const ps = spawnSync("ps", ["-eo", "pid=,args="], { encoding: "utf8", timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS });
-      const output = !ps.error && ps.status === 0 ? String(ps.stdout || "") : "";
-      for (const line of output.split("\n")) {
-        const match = line.trim().match(/^(\d+)\s+(.*)$/);
-        const pid = match ? Number(match[1]) : null;
-        const commandLine = match ? match[2] : line;
-        const lower = commandLine.toLowerCase();
-        if (!lower.includes("cloudflared")) continue;
-        if (!lower.includes("tunnel")) continue;
-        if (!lower.includes("run")) continue;
-        if (lower.includes("--token")) activeProcessToken = true;
-        if (lower.includes("--config")) activeProcessConfig = true;
-        processRecords.push({ pid, commandLine, serviceManaged: pid !== tunnelManager.status().pid });
-      }
-    } catch {}
+  const inventory = windows ? windows.processes : (await runInspectionCommand(
+    "ps", ["-eo", "pid=,args="], NAMED_CONTROL_COMMAND_TIMEOUT_MS
+  )).split("\n").flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.*)$/);
+    return match ? [{ pid: Number(match[1]), commandLine: match[2] }] : [];
+  });
+  for (const record of inventory) {
+    const lower = record.commandLine.toLowerCase();
+    if (!lower.includes("cloudflared") || !lower.includes("tunnel") || !lower.includes("run")) continue;
+    if (lower.includes("--token")) activeProcessToken = true;
+    if (lower.includes("--config")) activeProcessConfig = true;
+    processRecords.push({ ...record, serviceManaged: record.pid !== tunnelManager.status().pid });
   }
 
   if (localConfigPresent) {
@@ -10881,6 +10789,8 @@ function detectTunnelControlMode() {
         : "Tunnel control mode could not be determined.";
 
   return {
+    inspectionAvailable: true,
+    inspectionCheckedAt: Date.now(),
     mode,
     message,
     serviceScriptPath: fsSync.existsSync(serviceScriptPath) ? serviceScriptPath : null,
@@ -10904,25 +10814,22 @@ const TUNNEL_CONTROL_MODE_STALE_TTL_MS = Math.max(
   TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
   Number(process.env.TUNNEL_CONTROL_MODE_STALE_TTL_MS || "120000")
 );
-let tunnelControlModeCache:
-  | {
-      expiresAt: number;
-      staleExpiresAt: number;
-      value: ReturnType<typeof detectTunnelControlMode>;
-    }
-  | null = null;
-function getTunnelControlModeFallback(): ReturnType<typeof detectTunnelControlMode> {
-  const serviceScriptPath = "/etc/init.d/cloudflared";
-  const localConfigPath =
-    String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() ||
-    path.join(os.homedir(), ".cloudflared", "config.yml");
+type TunnelControlInspection = Awaited<ReturnType<typeof detectTunnelControlMode>>;
+const tunnelControlInspection = new TunnelInspectionCache(detectTunnelControlMode, {
+  freshMs: TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
+  staleMs: TUNNEL_CONTROL_MODE_STALE_TTL_MS,
+  failureBackoffMs: 5_000
+});
+function getTunnelControlModeFallback(): TunnelControlInspection {
   return {
+    inspectionAvailable: false,
+    inspectionCheckedAt: 0,
     mode: "unknown",
-    message: "Tunnel control mode could not be determined.",
-    serviceScriptPath: fsSync.existsSync(serviceScriptPath) ? serviceScriptPath : null,
+    message: "Tunnel inspection is unavailable or refreshing; ownership is unknown.",
+    serviceScriptPath: null,
     serviceScriptHasToken: false,
-    localConfigPath: localConfigPath || null,
-    localConfigPresent: fsSync.existsSync(localConfigPath),
+    localConfigPath: null,
+    localConfigPresent: false,
     activeProcessToken: false,
     activeProcessConfig: false,
     activeServiceTokenProcess: false,
@@ -10935,21 +10842,15 @@ function getTunnelControlModeFallback(): ReturnType<typeof detectTunnelControlMo
     servicePids: [] as number[]
   };
 }
-function getTunnelControlModeCached(force = false): ReturnType<typeof detectTunnelControlMode> {
-  const now = Date.now();
-  if (!force && tunnelControlModeCache && tunnelControlModeCache.expiresAt > now) {
-    return tunnelControlModeCache.value;
-  }
-  if (!force && tunnelControlModeCache && tunnelControlModeCache.staleExpiresAt > now) {
-    return tunnelControlModeCache.value;
-  }
-  const value = detectTunnelControlMode();
-  tunnelControlModeCache = {
-    expiresAt: now + TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
-    staleExpiresAt: now + TUNNEL_CONTROL_MODE_STALE_TTL_MS,
-    value
-  };
-  return value;
+function getTunnelControlModeCached(force = false): TunnelControlInspection {
+  return tunnelControlInspection.read(force) || getTunnelControlModeFallback();
+}
+async function getFreshTunnelControlMode(): Promise<TunnelControlInspection> {
+  return await tunnelControlInspection.refresh() || getTunnelControlModeFallback();
+}
+async function assertTunnelStartSafe() {
+  const result = tunnelStartBlocker(await getFreshTunnelControlMode());
+  if (!result.ok) throw Object.assign(new Error(result.message), { code: result.code });
 }
 
 function shouldDeferNamedTunnelToServiceControl() {
@@ -11022,9 +10923,10 @@ function rememberConfiguredNamedIdentity(match: any) {
   getConfiguredNamedIdentityAliases();
   const name = normalizeTunnelIdentity(match?.name);
   const id = normalizeTunnelIdentity(match?.id);
+  const changed = Boolean((name && !namedIdentityAliases.has(name)) || (id && !namedIdentityAliases.has(id)));
   if (name) namedIdentityAliases.add(name);
   if (id) namedIdentityAliases.add(id);
-  tunnelControlModeCache = null;
+  if (changed) tunnelControlInspection.invalidate();
 }
 
 function invalidateNamedRuntimeCaches() {
@@ -11035,7 +10937,7 @@ function invalidateNamedRuntimeCaches() {
   namedHealthCache.identityVerified = false;
   namedHealthCache.routeReachable = false;
   namedHealthCache.routeVerified = false;
-  tunnelControlModeCache = null;
+  tunnelControlInspection.invalidate();
   namedIdentityAliasKey = null;
   namedIdentityAliases.clear();
   lastNamedOwnershipReconcileAt = 0;
@@ -11069,8 +10971,8 @@ async function reconcileNamedTunnelOwnershipUnlocked(force = false) {
   if (!force && now - lastNamedOwnershipReconcileAt < 15_000) return;
   lastNamedOwnershipReconcileAt = now;
 
-  const defer = shouldDeferNamedTunnelToServiceControl();
-  if (!defer.shouldDefer) return;
+  const control = await getFreshTunnelControlMode();
+  if (!control.inspectionAvailable || !control.activeServiceTokenProcess) return;
 
   const st = tunnelManager.status();
   if (st.status === "ACTIVE" || st.status === "STARTING") {
@@ -11444,6 +11346,9 @@ function refreshPublicStatusInBackground() {
 
 function getPublicStatusCached(force = false) {
   const now = Date.now();
+  // Do not let the outer status cache extend the life of ownership evidence.
+  const control = getTunnelControlModeCached();
+  if (publicStatusCache && publicStatusCache.value.tunnelControl !== control) publicStatusCache = null;
   if (!force && publicStatusCache && publicStatusCache.expiresAt > now) {
     return publicStatusCache.value;
   }
@@ -11524,7 +11429,7 @@ async function warmStartupRuntimeCaches() {
   const startedAtMs = Date.now();
   const tasks: Array<Promise<unknown>> = [
     Promise.resolve().then(() => getPublicStatusCached(true)),
-    Promise.resolve().then(() => getTunnelControlModeCached(true)),
+    getFreshTunnelControlMode(),
     Promise.resolve().then(() => getCapabilityContextCached(true)),
     getLocalSovereignReadinessCached(true),
     getCachedCreatorSignalNodeDetails(),
@@ -23181,7 +23086,11 @@ async function handleNamedPublicStart(reply: any) {
 
       const namedToken = getNamedTunnelToken();
       const configPath = String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null;
-      const currentControl = getTunnelControlModeCached(true);
+      const currentControl = await getFreshTunnelControlMode();
+      const inspectionBlocker = tunnelStartBlocker(currentControl);
+      if (!inspectionBlocker.ok) return reply.code(409).send({
+        ...getPublicStatusCached(), lastError: inspectionBlocker.code, message: inspectionBlocker.message
+      });
       if (!namedToken && !configPath && (currentControl.serviceRunning || currentControl.externalProcessRunning)) {
         return reply.code(409).send({
           ...getPublicStatusCached(true),
@@ -39034,10 +38943,20 @@ async function handleBuyPage(req: any, reply: any) {
     "</details>";
   }
 
+  let attributionRequest = 0;
+  let attributionController = null;
+  window.addEventListener("pagehide", () => {
+    attributionRequest++;
+    if (attributionController) attributionController.abort();
+  });
   async function loadAttribution(){
     const cid = resolveAttributionContentId();
     if (!cid) return;
+    const request = ++attributionRequest;
+    const pageUrl = location.href;
+    if (attributionController) attributionController.abort();
     const ctl = new AbortController();
+    attributionController = ctl;
     const timer = setTimeout(() => ctl.abort(), 2500);
     try {
       const res = await fetch("/public/content/" + encodeURIComponent(cid) + "/attribution", {
@@ -39046,12 +38965,14 @@ async function handleBuyPage(req: any, reply: any) {
       });
       if (!res.ok) return;
       const data = await res.json().catch(() => null);
-      if (!data || !data.primaryCreator) return;
+      if (!data || !data.primaryCreator || ctl.signal.aborted || request !== attributionRequest ||
+          pageUrl !== location.href || cid !== resolveAttributionContentId()) return;
       attributionData = data;
       renderAttribution();
     } catch {}
     finally {
       clearTimeout(timer);
+      if (attributionController === ctl) attributionController = null;
     }
   }
 
@@ -40112,20 +40033,18 @@ async function handleBuyPage(req: any, reply: any) {
 
   if (productTier === "basic") {
     logAudienceView();
-    Promise.all([
-      fetchJson("/buy/content/" + contentId + "/offer"),
-      loadAttribution().catch(()=>null)
-    ])
-      .then(([offer]) => renderBasicOffer(offer))
+    void loadAttribution();
+    fetchJson("/buy/content/" + contentId + "/offer")
+      .then((offer) => renderBasicOffer(offer))
       .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
     return;
   }
 
   const offerPromise = fetchJson("/buy/content/" + contentId + "/offer");
   const buyerBootstrapPromise = hydrateFromDurableReceipt().finally(() => fetchBuyerMe().catch(()=>{}));
-  const attributionPromise = loadAttribution().catch(()=>null);
+  void loadAttribution();
 
-  Promise.all([offerPromise, buyerBootstrapPromise, attributionPromise])
+  Promise.all([offerPromise, buyerBootstrapPromise])
     .then(async ([offer]) => {
       currentOffer = offer;
       livePaymentProof = null;
