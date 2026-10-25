@@ -16,7 +16,8 @@ import {
 } from "../lib/libraryEligibility";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
-type PrimaryTopic = "entertainment" | "music" | "news" | "gaming" | "sports" | "technology";
+type PrimaryTopic = "entertainment" | "music" | "news" | "gaming" | "sports" | "technology"
+  | "legal" | "business-work" | "education-reference" | "art-design" | "books-writing";
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
 type AssetOriginFilter = "native" | "legacy";
 const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
@@ -34,7 +35,12 @@ const PRIMARY_TOPIC_OPTIONS: Array<{ value: PrimaryTopic; label: string }> = [
   { value: "news", label: "News" },
   { value: "gaming", label: "Gaming" },
   { value: "sports", label: "Sports" },
-  { value: "technology", label: "Technology" }
+  { value: "technology", label: "Technology" },
+  { value: "legal", label: "Legal" },
+  { value: "business-work", label: "Business & Work" },
+  { value: "education-reference", label: "Education & Reference" },
+  { value: "art-design", label: "Art, Design & Photography" },
+  { value: "books-writing", label: "Books & Writing" }
 ];
 
 function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
@@ -636,6 +642,7 @@ export default function ContentLibraryPage({
 
   const [title, setTitle] = React.useState("");
   const [type, setType] = React.useState<ContentType>("song");
+  const [newPrimaryTopic, setNewPrimaryTopic] = React.useState<PrimaryTopic | "">("");
   const [creating, setCreating] = React.useState(false);
 
   const [upload, setUpload] = React.useState<UploadState>({ status: "idle" });
@@ -2223,7 +2230,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const created = await api<ContentItem>("/content", "POST", {
         title: nextTitle,
-        type
+        type,
+        primaryTopic: newPrimaryTopic || null
       });
       if (import.meta.env.DEV) {
         console.debug("createContent:response", { createdId: created?.id, status: created?.status, type: created?.type });
@@ -2231,6 +2239,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
       setTitle("");
       setType("song");
+      setNewPrimaryTopic("");
+      setPrimaryTopicDraft((previous) => ({ ...previous, [created.id]: created.primaryTopic || "" }));
 
       // Ensure we land back in the active authored/content view after creating
       setShowClearance(false);
@@ -2826,6 +2836,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 <option value="video">Video</option>
                 <option value="file">File</option>
               </select>
+            </div>
+
+            <div className="md:col-span-4">
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-primary-topic">
+                Primary topic (optional)
+              </label>
+              <select
+                id="content-primary-topic"
+                name="primaryTopic"
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={newPrimaryTopic}
+                onChange={(e) => setNewPrimaryTopic(e.target.value as PrimaryTopic | "")}
+              >
+                <option value="">None</option>
+                {PRIMARY_TOPIC_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <div className="mt-1 text-xs text-neutral-500">Choose a subject, regardless of file format. Use Technology for software and tools.</div>
             </div>
 
           </div>
@@ -5101,7 +5130,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             </select>
                           </div>
                           <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
-                            <div>Used by fan/discovery feeds. Optional.</div>
+                            <div>Optional subject for discovery, independent of file format. Use Technology for software and tools.</div>
                             <button
                               type="button"
                               className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"

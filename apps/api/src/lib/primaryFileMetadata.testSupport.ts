@@ -40,6 +40,15 @@ export function serverFunctions(names: string[], source?: string) {
   }).join("\n");
 }
 
+export function serverConstant(name: string, source?: string) {
+  const text = source ?? fs.readFileSync(new URL("../server.ts", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("server.ts", text, ts.ScriptTarget.Latest, true);
+  const declaration = ast.statements.filter(ts.isVariableStatement)
+    .flatMap(n => [...n.declarationList.declarations]).find(n => n.name.getText(ast) === name);
+  if (!declaration?.initializer) throw Error(`Missing server constant: ${name}`);
+  return vm.runInNewContext(ts.transpileModule(`(${declaration.initializer.getText(ast)})`, {}).outputText);
+}
+
 export async function metadataFixture(source?: string) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "certifyd-mime-"));
   const api = fileURLToPath(new URL("../..", import.meta.url));
@@ -62,7 +71,7 @@ export async function metadataFixture(source?: string) {
     fsSync: fs, fs: fsp, path, crypto, Buffer, URL, Date, console,
     process: { env: { NODE_ENV: "production" } }, prisma: db, app,
     asString: (v: any) => String(v ?? ""),
-    ALLOWED_PRIMARY_TOPICS: ["entertainment", "music", "news", "gaming", "sports", "technology"],
+    ALLOWED_PRIMARY_TOPICS: serverConstant("ALLOWED_PRIMARY_TOPICS", source),
     PUBLIC_PROFILE_THEME_USER_SELECT: {}, PUBLIC_DELIVERY_TOKEN_TTL_SECONDS: 120, RECEIPT_TOKEN_TTL_SECONDS: 3600,
     STREAM_TOKEN_MODE: "optional", previewTokens: new Map(), isPreviewToken: () => false,
     verifyPermit: () => ({ ok: false }),
@@ -116,7 +125,7 @@ export async function metadataFixture(source?: string) {
     await db.contentItem.update({ where: { id }, data: { manifestId: m.id } });
     return { content, id, key, coverKey, previewKey, manifest, sha256, bytes, mime };
   }
-  return { app, db, dir, seed, buyer, queries, context,
+  return { app, db, dir, seed, owner, buyer, queries, context,
     setNodeMode: (mode: string) => { nodeMode = mode; },
     async close() { await app.close(); await db.$disconnect(); fs.rmSync(dir, { recursive: true, force: true }); }
   };

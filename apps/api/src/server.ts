@@ -393,7 +393,12 @@ const ALLOWED_PRIMARY_TOPICS = [
   "news",
   "gaming",
   "sports",
-  "technology"
+  "technology",
+  "legal",
+  "business-work",
+  "education-reference",
+  "art-design",
+  "books-writing"
 ] as const;
 
 type PrimaryTopic = (typeof ALLOWED_PRIMARY_TOPICS)[number];
