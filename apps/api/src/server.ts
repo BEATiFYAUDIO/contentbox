@@ -27,6 +27,7 @@ import {
   stableStringify
 } from "./lib/proof.js";
 import { createPaymentProvider } from "./lib/payments.js";
+import { isCompleteHlsRendition, recoverHlsPromotion, stageAndPromoteHls } from "./lib/hlsRendition.js";
 import { dashboardAssetCacheControl } from "./lib/dashboardAssetCaching.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
@@ -63,7 +64,8 @@ import {
   testLightningNodeCredential,
   type LightningCredentialRole
 } from "./payments/lightning.js";
-import { finalizePurchase } from "./payments/finalizePurchase.js";
+import { finalizePurchase, SETTLEMENT_ALLOCATION_INVALID } from "./payments/finalizePurchase.js";
+import { bindPurchaseBuyer, readPurchaseBuyerBinding, recoverPurchaseFulfillment, trackSettledPurchase } from "./payments/purchaseFulfillment.js";
 import {
   getPublicOriginConfig,
   setPublicOriginConfig,
@@ -137,6 +139,7 @@ import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import {
   evaluatePublicMediaDelivery,
+  isCurrentPaidReceiptDelivery,
   normalizeDeliveryObjectKey,
   redactSensitiveUrl,
   resolveDeliveryPath,
@@ -810,6 +813,8 @@ type PublicDeliveryTokenClaims = {
   access: "preview" | "full";
   buyerSessionId?: string | null;
   receiptProofAccess?: boolean;
+  receiptIntentId?: string;
+  receiptTokenDigest?: string;
 };
 
 type HlsRenditionInfo = {
@@ -1404,6 +1409,8 @@ function createPublicDeliveryToken(input: {
   access: "preview" | "full";
   buyerSessionId?: string | null;
   receiptProofAccess?: boolean;
+  receiptIntentId?: string;
+  receiptTokenDigest?: string;
 }) {
   const objectKeyCheck = normalizeDeliveryObjectKey(input.objectKey);
   if (!objectKeyCheck.ok) throw new Error(`invalid delivery object key: ${objectKeyCheck.reason}`);
@@ -1414,7 +1421,11 @@ function createPublicDeliveryToken(input: {
       scope: "public_delivery",
       access: input.access,
       ...(input.buyerSessionId ? { buyerSessionId: input.buyerSessionId } : {}),
-      ...(input.receiptProofAccess === true ? { receiptProofAccess: true } : {})
+      ...(input.receiptProofAccess === true ? {
+        receiptProofAccess: true,
+        receiptIntentId: input.receiptIntentId,
+        receiptTokenDigest: input.receiptTokenDigest
+      } : {})
     } satisfies PublicDeliveryTokenClaims,
     { expiresIn: `${PUBLIC_DELIVERY_TOKEN_TTL_SECONDS}s` }
   );
@@ -1427,7 +1438,7 @@ async function verifyPublicDeliveryToken(
   if (!token) return { ok: false, access: null };
   try {
     const decoded = (await app.jwt.verify(token)) as PublicDeliveryTokenClaims;
-    const session = input.paidContent ? await resolveBuyerSession(input.req, input.reply) : null;
+    const session = input.paidContent ? await resolveBuyerReadSession(input.req, input.reply) : null;
     const requestBuyerSessionId = session?.id || null;
     const checked = validatePublicDeliveryTokenClaims(decoded, {
       contentId: input.contentId,
@@ -1436,6 +1447,22 @@ async function verifyPublicDeliveryToken(
       requestBuyerSessionId
     });
     if (!checked.ok) return { ok: false, access: null };
+    if (input.paidContent && checked.access === "full") {
+      if (decoded.receiptProofAccess) {
+        if (!decoded.receiptIntentId || !decoded.receiptTokenDigest) return { ok: false, access: null };
+        const intent = await prisma.paymentIntent.findUnique({ where: { id: decoded.receiptIntentId } });
+        if (!isCurrentPaidReceiptDelivery({
+          contentId: input.contentId,
+          claimedDigest: decoded.receiptTokenDigest,
+          currentToken: intent?.receiptToken,
+          intentContentId: intent?.contentId,
+          status: intent?.status,
+          expiresAt: intent?.receiptTokenExpiresAt
+        })) return { ok: false, access: null };
+      } else if (!session?.buyer?.id || !await hasAccess(session.buyer.id, input.contentId)) {
+        return { ok: false, access: null };
+      }
+    }
     return { ok: true, access: checked.access };
   } catch {
     return { ok: false, access: null };
@@ -5596,6 +5623,9 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   const participantExecutionMode = intent.payoutExecutionMode === "participant";
   if (intent.paymentReceiptId) {
     const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+    // Disabled preparation is not new evidence about an existing payout. Keep
+    // historical success/failure and receipt state intact; do not reconcile it.
+    if (participantExecutionMode && !payoutRuntime.participantPayoutsEnabled) return intent;
     const settledExisting = intent;
     try {
       await ensureParticipantPayoutRowsForProviderIntent(settledExisting);
@@ -11713,7 +11743,7 @@ function isPublicCorsPath(url?: string) {
 app.register(cors, {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (origin === "https://fan.certifyd.me" || allowedOrigins.includes(origin)) return cb(null, true);
     if (process.env.NODE_ENV !== "production") {
       const devAllowed = [
         "http://localhost:5173",
@@ -11727,7 +11757,7 @@ app.register(cors, {
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key", "Range"],
   credentials: true,
   preflightContinue: false,
   optionsSuccessStatus: 204
@@ -12703,12 +12733,18 @@ function isProtectedStreamOnlyMedia(input: { paidContent: boolean; deliveryMode?
 }
 
 function isEncryptedHlsPlaybackEnabled(): boolean {
-  return String(process.env.PUBLIC_ENCRYPTED_HLS_ENABLED || "").trim() === "1";
+  return String(process.env.PUBLIC_ENCRYPTED_HLS_ENABLED || "1").trim() !== "0";
 }
 
 function stableHlsPrefix(contentId: string, sourceObjectKey: string): string {
   const sourceHash = crypto.createHash("sha256").update(sourceObjectKey).digest("hex").slice(0, 16);
   return `streams/${contentId}/${sourceHash}`;
+}
+
+function privateHlsKeyPath(contentId: string, sourceObjectKey: string): string {
+  const id = crypto.createHash("sha256").update(contentId).digest("hex");
+  const source = crypto.createHash("sha256").update(sourceObjectKey).digest("hex");
+  return path.join(CONTENTBOX_ROOT, "hls-keys", id, `${source}.key`);
 }
 
 function stableHlsInfo(contentId: string, sourceObjectKey: string, mime: string): HlsRenditionInfo {
@@ -12765,71 +12801,64 @@ async function ensureEncryptedHlsRendition(content: any, files: any[], manifestR
     const playlistResolved = resolveDeliveryPath(content.repoPath, hlsInfo.playlistObjectKey);
     const keyResolved = resolveDeliveryPath(content.repoPath, hlsInfo.keyObjectKey);
     if (!playlistResolved.ok || !keyResolved.ok) return null;
-    if (fsSync.existsSync(playlistResolved.absPath) && fsSync.existsSync(keyResolved.absPath)) return hlsInfo;
+    const privateKeyPath = privateHlsKeyPath(content.id, sourceKeyCheck.objectKey);
+    const renditionPaths = { playlistPath: playlistResolved.absPath, privateKeyPath };
+    recoverHlsPromotion(renditionPaths);
+    if (await isCompleteHlsRendition(renditionPaths)) return hlsInfo;
 
     const inputResolved = resolveDeliveryPath(content.repoPath, sourceKeyCheck.objectKey);
     if (!inputResolved.ok || !fsSync.existsSync(inputResolved.absPath)) return null;
-    await fs.mkdir(path.dirname(playlistResolved.absPath), { recursive: true });
+    await stageAndPromoteHls(renditionPaths, async ({ playlistPath, segmentPattern, keyInfoPath }) => {
+      const videoArgs = [
+        "-y",
+        "-i",
+        inputResolved.absPath,
+        "-map",
+        "0:v:0?",
+        "-map",
+        "0:a:0?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "24",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-hls_time",
+        "6",
+        "-hls_playlist_type",
+        "vod",
+        "-hls_key_info_file",
+        keyInfoPath,
+        "-hls_segment_filename",
+        segmentPattern,
+        playlistPath
+      ];
+      const audioArgs = [
+        "-y",
+        "-i",
+        inputResolved.absPath,
+        "-vn",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-hls_time",
+        "6",
+        "-hls_playlist_type",
+        "vod",
+        "-hls_key_info_file",
+        keyInfoPath,
+        "-hls_segment_filename",
+        segmentPattern,
+        playlistPath
+      ];
 
-    const keyBytes = crypto.randomBytes(16);
-    await fs.writeFile(keyResolved.absPath, keyBytes);
-    const keyInfoPath = path.join(os.tmpdir(), `contentbox-hls-keyinfo-${content.id}-${Date.now()}.txt`);
-    const segmentPattern = path.join(path.dirname(playlistResolved.absPath), "seg%05d.ts");
-    const iv = crypto.randomBytes(16).toString("hex");
-    await fs.writeFile(keyInfoPath, `enc.key\n${keyResolved.absPath}\n${iv}\n`, "utf8");
-
-    const videoArgs = [
-      "-y",
-      "-i",
-      inputResolved.absPath,
-      "-map",
-      "0:v:0?",
-      "-map",
-      "0:a:0?",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "24",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "160k",
-      "-hls_time",
-      "6",
-      "-hls_playlist_type",
-      "vod",
-      "-hls_key_info_file",
-      keyInfoPath,
-      "-hls_segment_filename",
-      segmentPattern,
-      playlistResolved.absPath
-    ];
-    const audioArgs = [
-      "-y",
-      "-i",
-      inputResolved.absPath,
-      "-vn",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "160k",
-      "-hls_time",
-      "6",
-      "-hls_playlist_type",
-      "vod",
-      "-hls_key_info_file",
-      keyInfoPath,
-      "-hls_segment_filename",
-      segmentPattern,
-      playlistResolved.absPath
-    ];
-
-    await execFileAsync("ffmpeg", mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
-    try {
-      fsSync.unlinkSync(keyInfoPath);
-    } catch {}
+      await execFileAsync("ffmpeg", mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
+    });
 
     await commitAll(content.repoPath, `generate encrypted stream ${content.id}`).catch(() => {});
     app.log.info({ contentId: content.id, playlistObjectKey: hlsInfo.playlistObjectKey }, "hls.artifact.ready");
@@ -31019,7 +31048,10 @@ async function handlePublicContent(req: any, reply: any) {
     if (/^https?:\/\//i.test(v)) return v;
     return baseUrl ? `${baseUrl}/public/content/${contentId}/preview-file?objectKey=${encodeURIComponent(v)}` : null;
   };
-  const previewCandidate = normalizePreview((manifest.json as any)?.preview || null);
+  const manifestPreviewKey = asString((manifest.json as any)?.preview || "").trim();
+  const previewCandidate = manifestPreviewKey && isStablePreviewObjectKey(contentId, manifestPreviewKey) &&
+    manifestPreviewKey !== getPrimaryFileObjectKeyFromManifest(manifest.json)
+    ? normalizePreview(manifestPreviewKey) : null;
   const shouldPreview = shouldShowPreview({
     isFree: freeContent,
     priceSats: content.priceSats,
@@ -31028,6 +31060,11 @@ async function handlePublicContent(req: any, reply: any) {
   });
   const manifestJson = (manifest.json || {}) as any;
   const primaryObjectKey = getPrimaryFileObjectKeyFromManifest(manifestJson);
+  const primaryMime = asString(
+    (Array.isArray(manifestJson.files)
+      ? manifestJson.files.find((file: any) => (file?.path || file?.objectKey) === primaryObjectKey)?.mime
+      : null) || ""
+  );
   let buyerSessionId: string | null = null;
   try {
     const buyerSession = await resolveBuyerReadSession(req, reply);
@@ -31036,9 +31073,18 @@ async function handlePublicContent(req: any, reply: any) {
     buyerSessionId = null;
   }
   const fullMediaUrl =
-    baseUrl && hasFull && primaryObjectKey && (freeContent || buyerSessionId)
+    baseUrl && hasFull && primaryObjectKey && (freeContent || buyerSessionId) &&
+    (isEncryptedHlsPlaybackEnabled() || !isProtectedStreamOnlyMedia({
+      paidContent: !freeContent && content.priceSats != null && content.priceSats > 0n,
+      deliveryMode: (content as any).deliveryMode || null,
+      mime: primaryMime
+    }))
       ? appendPublicDeliveryToken(
-          `${baseUrl}/public/content/${contentId}/preview-file?objectKey=${encodeURIComponent(primaryObjectKey)}`,
+          `${baseUrl}/public/content/${contentId}/${isEncryptedHlsPlaybackEnabled() && isProtectedStreamOnlyMedia({
+            paidContent: !freeContent && content.priceSats != null && content.priceSats > 0n,
+            deliveryMode: (content as any).deliveryMode || null,
+            mime: primaryMime
+          }) ? "hls/master.m3u8" : "preview-file"}?objectKey=${encodeURIComponent(primaryObjectKey)}`,
           createPublicDeliveryToken({
             contentId,
             objectKey: primaryObjectKey,
@@ -31048,6 +31094,7 @@ async function handlePublicContent(req: any, reply: any) {
         )
       : null;
 
+  reply.header("Cache-Control", "no-store");
   return reply.send({
     contentId: content.id,
     title: content.title,
@@ -34497,7 +34544,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
         }
       }
     }
-    if (!objectKey) {
+    if (!objectKey && isFreeContent({ priceSats: content.priceSats })) {
       objectKey = (typeof primaryFileId === "string" && primaryFileId) || "";
     }
     if (!objectKey) return notFound(reply, "preview not available");
@@ -34516,7 +34563,10 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const coverObjectKey = asString(getCoverAssetFromManifest(manifestJsonForAccess)?.path || manifestJsonForAccess?.cover || "").trim();
   const freeContent = isFreeContent({ priceSats: content.priceSats });
   const paidContent = !freeContent && content.priceSats != null && content.priceSats > 0n;
-  const isPublicPreviewAsset = Boolean(previewObjectKey && objectKey === previewObjectKey);
+  const isPublicPreviewAsset = Boolean(
+    previewObjectKey && isStablePreviewObjectKey(contentId, previewObjectKey) &&
+    previewObjectKey !== getPrimaryFileObjectKeyFromManifest(manifestJsonForAccess) && objectKey === previewObjectKey
+  );
   const isPublicCoverAsset = Boolean(coverObjectKey && objectKey === coverObjectKey);
   let deliveryAccess: "preview" | "full" | null = null;
   if (deliveryToken) {
@@ -34540,13 +34590,11 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const mime = file?.mime || derivedPreviewMime || "application/octet-stream";
 
   if (
-    isEncryptedHlsPlaybackEnabled() &&
     isProtectedStreamOnlyMedia({
       paidContent,
       deliveryMode: (content as any).deliveryMode || null,
       mime
     }) &&
-    deliveryAccess === "full" &&
     !isPublicPreviewAsset &&
     !isPublicCoverAsset
   ) {
@@ -34640,9 +34688,7 @@ async function loadAuthorizedHlsContext(req: any, reply: any): Promise<
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
-  const hls =
-    getHlsInfoFromManifest((manifest?.json as any) || {}, sourceObjectKey) ||
-    (await ensureEncryptedHlsRenditionOnce(content, files, manifest));
+  const hls = await ensureEncryptedHlsRenditionOnce(content, files, manifest);
   if (!hls || hls.sourceObjectKey !== sourceObjectKey) {
     return { ok: false, response: reply.code(503).send({ error: "Encrypted stream is not ready", code: "HLS_NOT_READY" }) };
   }
@@ -34687,11 +34733,11 @@ async function handlePublicHlsPlaylist(req: any, reply: any) {
 async function handlePublicHlsKey(req: any, reply: any) {
   const context = await loadAuthorizedHlsContext(req, reply);
   if (!context.ok) return context.response;
-  const resolved = resolveDeliveryPath(context.content.repoPath, context.hls.keyObjectKey);
-  if (!resolved.ok || !fsSync.existsSync(resolved.absPath)) return notFound(reply, "Stream key not found");
+  const keyPath = privateHlsKeyPath(context.content.id, context.sourceObjectKey);
+  if (!fsSync.existsSync(keyPath)) return notFound(reply, "Stream key not found");
   reply.type("application/octet-stream");
   reply.header("Cache-Control", "no-store");
-  return reply.send(fsSync.createReadStream(resolved.absPath));
+  return reply.send(fsSync.createReadStream(keyPath));
 }
 
 async function handlePublicHlsSegment(req: any, reply: any) {
@@ -40828,10 +40874,12 @@ async function handlePublicOffer(req: any, reply: any) {
     const f = await prisma.contentFile.findFirst({ where: { contentId, objectKey: primaryFileId } });
     primaryFileMime = f?.mime || null;
   }
+  const freeContent = isFreeContent({ priceSats: content.priceSats });
+  const manifestPreviewObjectKey = asString(manifestJson?.preview || "").trim();
   const previewObjectKey =
-    (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
-    (typeof primaryFileId === "string" && primaryFileId) ||
-    null;
+    manifestPreviewObjectKey && manifestPreviewObjectKey !== primaryFileId && isStablePreviewObjectKey(contentId, manifestPreviewObjectKey)
+      ? manifestPreviewObjectKey
+      : freeContent ? primaryFileId : null;
   const coverAsset = getCoverAssetFromManifest(manifestJson);
   const coverObjectKey = coverAsset?.path || null;
 
@@ -40843,7 +40891,6 @@ async function handlePublicOffer(req: any, reply: any) {
 
   const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
   const rawPriceSats = content.priceSats ?? null;
-  const freeContent = isFreeContent({ priceSats: rawPriceSats });
   const hasStoredPrice = rawPriceSats != null && rawPriceSats > 0n;
   const paidCommerceActive = authority.authority;
   const priceSats = hasStoredPrice ? rawPriceSats : null;
@@ -40869,7 +40916,10 @@ async function handlePublicOffer(req: any, reply: any) {
       receiptId: receiptIdQuery || null
     }).catch(() => null);
     const intent = receiptContext?.intent as any;
-    if (intent && intent.contentId === contentId && String(intent.status || "").toLowerCase() === "paid") {
+    if (
+      intent && intent.contentId === contentId && String(intent.status || "").toLowerCase() === "paid" &&
+      Boolean(receiptTokenQuery && receiptContext?.token.matchesCurrent && receiptContext.token.expiresAt && !receiptContext.token.expired)
+    ) {
       receiptProofIntent = intent;
       receiptProofToken = asString(intent.receiptToken || receiptTokenQuery || "").trim() || null;
       entitled = true;
@@ -40877,7 +40927,7 @@ async function handlePublicOffer(req: any, reply: any) {
   }
   if (buyerId) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
-    entitled = await hasAccess(buyerId, contentId);
+    entitled = entitled || await hasAccess(buyerId, contentId);
   }
 
   let latestEntitlement: any | null = null;
@@ -40974,11 +41024,19 @@ async function handlePublicOffer(req: any, reply: any) {
           objectKey: primaryFileId,
           access: "full",
           buyerSessionId: freeContent || receiptProofIntent ? null : buyerSessionId,
-          receiptProofAccess: Boolean(!freeContent && receiptProofIntent)
+          receiptProofAccess: Boolean(!freeContent && receiptProofIntent),
+          receiptIntentId: receiptProofIntent?.id,
+          receiptTokenDigest: receiptProofIntent && receiptProofToken
+            ? crypto.createHash("sha256").update(receiptProofToken).digest("hex") : undefined
         })
       : null;
   const fullMediaUrl =
-    baseUrl && primaryFileId && fullDeliveryToken
+    baseUrl && primaryFileId && fullDeliveryToken &&
+    (isEncryptedHlsPlaybackEnabled() || !isProtectedStreamOnlyMedia({
+      paidContent: hasStoredPrice,
+      deliveryMode: (content as any).deliveryMode || null,
+      mime: primaryFileMime || ""
+    }))
       ? appendPublicDeliveryToken(
           shouldUseEncryptedHls
             ? `${baseUrl}/public/content/${encodeURIComponent(content.id)}/hls/master.m3u8?objectKey=${encodeURIComponent(primaryFileId)}`
@@ -40999,6 +41057,7 @@ async function handlePublicOffer(req: any, reply: any) {
 	    previewLimitSeconds: 20
 	  });
 
+  reply.header("Cache-Control", "no-store");
   return reply.send({
     contentId: content.id,
     title: content.title,
@@ -41063,7 +41122,10 @@ async function handlePublicContentAccessStatus(req: any, reply: any) {
       receiptId: receiptIdQuery || null
     }).catch(() => null);
     const intent = receiptContext?.intent as any;
-    if (intent && String(intent.status || "").toLowerCase() === "paid") {
+    if (
+      intent && String(intent.status || "").toLowerCase() === "paid" &&
+      Boolean(receiptTokenQuery && receiptContext?.token.matchesCurrent && receiptContext.token.expiresAt && !receiptContext.token.expired)
+    ) {
       const intentContentId = asString(intent.contentId || "").trim();
       const intentManifestSha = asString(intent.manifestSha256 || "").trim();
       let matchesContent = intentContentId === contentId;
@@ -41366,6 +41428,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         ipHash: buyerScopeHash
       }
     });
+    if (buyerId) await bindPurchaseBuyer(prisma, intent.id, buyerId);
     const intentWithReceipt = await ensureStableReceiptIdForIntent(intent as any);
 
     let lightningAddress: string | null = null;
@@ -42287,6 +42350,9 @@ async function resolveBuyerIdFromIntent(intent: any): Promise<string | null> {
   const direct = String(intent?.buyerId || "").trim();
   if (direct) return direct;
 
+  const boundBuyer = await readPurchaseBuyerBinding(prisma, String(intent?.id || ""));
+  if (boundBuyer) return boundBuyer;
+
   // Current public-commerce path: recover buyer binding through provider-intent
   // metadata (buyerSessionId) when available.
   const paymentIntentId = String(intent?.id || "").trim();
@@ -42886,9 +42952,14 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
   const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
   if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
 
-  try {
-    await finalizePurchase(latestIntent.id, prisma);
-  } catch {}
+  const fulfillment = await recoverPurchaseFulfillment(prisma, latestIntent.id);
+  if (fulfillment.status === "pending") return reply.code(409).send({
+    status: "paid", code: "PURCHASE_FULFILLMENT_PENDING",
+    message: "Payment received. Fulfillment is pending; do not pay again."
+  });
+  if (fulfillment.status === "legacy_untracked") {
+    try { await finalizePurchase(latestIntent.id, prisma); } catch {}
+  }
 
   // Entitlement is now keyed by buyerId from cookie session.
 
@@ -44367,7 +44438,6 @@ async function handlePublicContentFile(req: any, reply: any) {
   }
 
   if (
-    isEncryptedHlsPlaybackEnabled() &&
     isProtectedStreamOnlyMedia({
       paidContent: !freeContent && priceSats > 0n,
       deliveryMode: (content as any).deliveryMode || null,
@@ -47705,7 +47775,11 @@ async function bridgeDirectSaleToParticipantPayouts(
     } catch (err: any) {
       if (!isMissingParticipantPayoutTableError(err)) throw err;
     }
+    const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
     const settledAfterBridgeGuard =
+      // Preparation is deliberately skipped when this subsystem is disabled.
+      // Execution disabled alone still requires the allocation snapshot.
+      payoutRuntime.participantPayoutsEnabled &&
       settled.payoutExecutionMode === "participant" &&
       settled.status === "paid" &&
       allocationCount === 0
@@ -47750,9 +47824,27 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
   const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
   if (!content) throw new Error("Content not found");
 
+  const finalizeLegacy = () => finalizePurchase(intentId, prisma).catch((error) => {
+    // Do not swallow an allocation failure and then report successful fulfillment
+    // or enter the payout bridge. The payment already recorded as paid stays paid.
+    if (error?.code === SETTLEMENT_ALLOCATION_INVALID) {
+      throw Object.assign(new Error("Payment received. Required settlement allocations are invalid; fulfillment is pending. Do not pay again."), {
+        code: SETTLEMENT_ALLOCATION_INVALID, statusCode: 409
+      });
+    }
+    return null;
+  });
+
+  const tracked = await prisma.auditEvent.findUnique({ where: { id: `purchase-fulfillment:${intentId}` } });
+  if (tracked) {
+    const fulfillment = await recoverPurchaseFulfillment(prisma, intentId);
+    const sale = await prisma.sale.findUnique({ where: { intentId } });
+    return { sale, receiptToken: fulfillment.receiptToken || intent.receiptToken, fulfillment };
+  }
+
   const existingSale = await prisma.sale.findUnique({ where: { intentId } });
   if (intent.status === "paid" && existingSale && !skipSettlement) {
-    const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    const finalized = await finalizeLegacy();
     await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_existing_sale");
     return { sale: existingSale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
@@ -47778,7 +47870,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
       });
     }
 
-    const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    const finalized = await finalizeLegacy();
     await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_basic_skip_settlement");
     return { sale: null, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
@@ -47837,7 +47929,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
     });
   });
 
-  const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+  const finalized = await finalizeLegacy();
   await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_sale_upsert");
   // TODO(certifyd-entitlement-boundary): delegated/provider invoice execution must not become entitlement truth ownership.
   return { sale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
@@ -51316,20 +51408,10 @@ async function settlePaymentIntentFromRails(intentId: string) {
   const resolvedBuyerId = await resolveBuyerIdFromIntent(intent);
 
   if (intent.status === "paid") {
-    try {
-      await finalizePurchase(intent.id, prisma);
-    } catch {}
-    const providerIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
-    if (providerIntent) {
-      await ensureProviderPaymentSettlement(
-        updateProviderPaymentIntent(providerIntent.id, {
-          status: "paid",
-          paidAt: providerIntent.paidAt || intent.paidAt?.toISOString() || new Date().toISOString()
-        }) || providerIntent
-      );
-    }
-    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
-    return { intent: updated || intent, paid: true, paidVia: updated?.paidVia || intent.paidVia || null };
+    // Local fulfillment recovery must never retry financial transfers or rotate
+    // historical tokens. Untracked historical purchases remain read-only here.
+    const fulfillment = await recoverPurchaseFulfillment(prisma, intent.id);
+    return { intent, paid: true, paidVia: intent.paidVia, paidAt: intent.paidAt?.toISOString(), fulfillment };
   }
 
   let paidVia: "lightning" | "onchain" | null = null;
@@ -51391,9 +51473,11 @@ async function settlePaymentIntentFromRails(intentId: string) {
   }
 
   if (paidVia) {
-    await prisma.$transaction(async (tx) => {
-      const updatedIntent = await tx.paymentIntent.update({
-        where: { id: intent.id },
+    const newlySettled = await prisma.$transaction(async (tx) => {
+      const fresh = await tx.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+      if (fresh.status === "paid") return false;
+      const transition = await tx.paymentIntent.updateMany({
+        where: { id: intent.id, status: { not: "paid" } },
         data: {
           status: "paid" as any,
           paidVia: paidVia as any,
@@ -51403,32 +51487,20 @@ async function settlePaymentIntentFromRails(intentId: string) {
           confirmations: onchainUpdate.confirmations ?? intent.confirmations
         }
       });
-
-      const buyerId = resolvedBuyerId;
-      if (buyerId) {
-        const existing = await tx.entitlement.findFirst({
-          where: { buyerId, contentId: updatedIntent.contentId },
-          orderBy: { grantedAt: "asc" }
-        });
-        if (existing) {
-          await tx.entitlement.update({
-            where: { id: existing.id },
-            data: { paymentIntentId: updatedIntent.id }
-          });
-        } else {
-          await tx.entitlement.create({
-            data: {
-              buyerId,
-              buyerUserId: updatedIntent.buyerUserId,
-              contentId: updatedIntent.contentId,
-              manifestSha256: updatedIntent.manifestSha256 || "",
-              paymentIntentId: updatedIntent.id
-            }
-          });
-        }
-      }
+      if (!transition.count) return false;
+      const updatedIntent = await tx.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+      await trackSettledPurchase(tx, { intentId: updatedIntent.id, buyerId: resolvedBuyerId, rail: pickIntentRail(updatedIntent) });
+      return true;
     });
+    if (!newlySettled) return settlePaymentIntentFromRails(intent.id);
     const finalized = await finalizePaymentIntent(intent.id, { rail: pickIntentRail(intent) });
+    if ((finalized as any).fulfillment?.status === "pending") {
+      const updatedIntent = await prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+      return { intent: updatedIntent, paid: true, paidVia, paidAt, fulfillment: (finalized as any).fulfillment };
+    }
+    // Preserve the existing initial-settlement bridge only for the transaction
+    // that first observed payment. Local recovery never invokes this bridge.
+    await bridgeDirectSaleToParticipantPayouts(intent.id, "finalize_sale_upsert");
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
     const seller = await prisma.contentItem.findUnique({ where: { id: intent.contentId }, select: { ownerUserId: true } });
     const sale = await prisma.sale.findUnique({ where: { intentId: intent.id } });
@@ -51604,7 +51676,13 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     const refreshed = await settlePaymentIntentFromRails(intent.id);
     if (!refreshed) return notFound(reply, "PaymentIntent not found");
     if (refreshed.paid) {
+      const fulfillment = (refreshed as any).fulfillment || (refreshed as any).finalized?.fulfillment;
       return reply.send({
+        fulfillment: fulfillment?.status || "legacy_untracked",
+        ...(fulfillment?.status === "pending" ? {
+          code: "PURCHASE_FULFILLMENT_PENDING",
+          message: "Payment received. Fulfillment is pending; do not pay again."
+        } : {}),
         ok: true,
         status: "paid",
         paidVia: refreshed.paidVia,
@@ -51638,10 +51716,16 @@ app.post("/api/payments/intents/:intentId/mark-paid", { preHandler: requireAuth 
   const isManual = !intent.bolt11 && !intent.providerId && !intent.onchainAddress;
   if (!isManual) return badRequest(reply, "PaymentIntent is not manual");
 
-  const finalized = await finalizePaymentIntent(intentId, {
-    rail: "manual_lightning",
-    confirmedByUserId: userId
-  });
+  let finalized;
+  try {
+    finalized = await finalizePaymentIntent(intentId, {
+      rail: "manual_lightning",
+      confirmedByUserId: userId
+    });
+  } catch (error: any) {
+    if (error?.code !== SETTLEMENT_ALLOCATION_INVALID) throw error;
+    return reply.code(409).send({ status: "paid", fulfillment: "pending", code: error.code, message: error.message });
+  }
   return reply.send({ ok: true, status: "paid", receiptToken: finalized.receiptToken || null });
 });
 

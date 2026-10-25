@@ -74,3 +74,11 @@ test("Linux stop and status scripts reject stale unrelated PIDs", () => {
     assert.match(source, /ps -p "\$pid" -o command=/);
   }
 });
+
+test("all packaged launchers use preservation-safe database preparation", () => {
+  const mac = readFileSync(path.join(repoRoot, "packaging/macos/CertifydCoreLauncher.sh"), "utf8");
+  for (const source of [launcher, linuxLauncher, mac]) {
+    assert.match(source, /prepare-local-database\.mjs/);
+    assert.doesNotMatch(source, /db[" ,]+push|db push|accept-data-loss/);
+  }
+});

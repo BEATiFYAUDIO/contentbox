@@ -1,13 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import {
   evaluatePublicMediaDelivery,
+  isCurrentPaidReceiptDelivery,
   isPaidFullDeliverySessionAuthorized,
   normalizeDeliveryObjectKey,
   redactSensitiveUrl,
   resolveDeliveryPath,
   validatePublicDeliveryTokenClaims
 } from "./deliverySecurity.js";
+
+test("receipt-backed delivery stops when proof expires, rotates, or changes content", () => {
+  const claimedDigest = crypto.createHash("sha256").update("secret-receipt").digest("hex");
+  const base = {
+    contentId: "work-a", claimedDigest, currentToken: "secret-receipt",
+    intentContentId: "work-a", status: "paid", expiresAt: new Date(10_000), nowMs: 1_000
+  };
+  assert.equal(isCurrentPaidReceiptDelivery(base), true);
+  assert.equal(isCurrentPaidReceiptDelivery({ ...base, currentToken: "rotated" }), false);
+  assert.equal(isCurrentPaidReceiptDelivery({ ...base, intentContentId: "work-b" }), false);
+  assert.equal(isCurrentPaidReceiptDelivery({ ...base, expiresAt: new Date(500) }), false);
+  assert.equal(isCurrentPaidReceiptDelivery({ ...base, status: "pending" }), false);
+});
 
 test("redacts bearer-style delivery tokens from logged URLs", () => {
   assert.equal(
@@ -137,7 +152,7 @@ test("public media policy rejects paid full delivery without authorization befor
   assert.deepEqual(decision, { ok: false, status: 402, code: "PAYMENT_REQUIRED" });
 });
 
-test("public media policy allows signed preview fallback for paid master assets", () => {
+test("public media policy rejects signed preview tokens for paid master assets", () => {
   const decision = evaluatePublicMediaDelivery({
     paidContent: true,
     freeContent: false,
@@ -145,7 +160,7 @@ test("public media policy allows signed preview fallback for paid master assets"
     isPublicPreviewAsset: false,
     isPublicCoverAsset: false
   });
-  assert.deepEqual(decision, { ok: true, mode: "preview" });
+  assert.deepEqual(decision, { ok: false, status: 404, code: "PREVIEW_ASSET_REQUIRED" });
 });
 
 test("public media policy allows paid preview only for separately generated preview assets", () => {

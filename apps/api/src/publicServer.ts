@@ -6,10 +6,15 @@ const PUBLIC_PORT = Number(process.env.PUBLIC_PORT || DEFAULT_PUBLIC_PORT);
 
 type RegisterFn = (app: any) => void;
 
-function resolvePublicCorsOrigin(originHeader: unknown): string {
+export function resolvePublicCorsOrigin(originHeader: unknown, configuredOrigins = process.env.CONTENTBOX_CORS_ORIGINS || ""): string {
   const origin = String(originHeader || "").trim();
   if (!origin) return "*";
-  return origin;
+  const trusted = ["https://fan.certifyd.me", "http://localhost:5174", ...configuredOrigins.split(",")]
+    .map((value) => {
+      try { return new URL(value.trim()).origin; } catch { return ""; }
+    })
+    .filter(Boolean);
+  return trusted.includes(origin) ? origin : "*";
 }
 
 export function createPublicServer(registerPublicRoutes: RegisterFn) {

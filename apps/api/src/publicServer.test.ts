@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import test from "node:test";
 import { AsyncLifecycleMutex, startNamedRuntimeAtStartup } from "./lib/publicLifecycle.js";
-import { DEFAULT_PUBLIC_PORT, PublicServerLifecycle } from "./publicServer.js";
+import { DEFAULT_PUBLIC_PORT, PublicServerLifecycle, resolvePublicCorsOrigin } from "./publicServer.js";
+
+test("credentialed public CORS is restricted to trusted Fan origins", () => {
+  assert.equal(resolvePublicCorsOrigin("https://fan.certifyd.me"), "https://fan.certifyd.me");
+  assert.equal(resolvePublicCorsOrigin("https://attacker.example"), "*");
+  assert.equal(resolvePublicCorsOrigin("https://custom.example", "https://custom.example"), "https://custom.example");
+});
 
 test("public listener can start dynamically on loopback and stop cleanly", async () => {
   const lifecycle = new PublicServerLifecycle();

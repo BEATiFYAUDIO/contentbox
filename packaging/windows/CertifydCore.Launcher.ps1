@@ -530,8 +530,8 @@ if (-not (Test-Path (Join-Path $apiDir "node_modules\.prisma\client"))) {
   Set-LauncherStatus "Preparing the local database client…"
   Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "generate", "--schema", $schemaPath)
 }
-Set-LauncherStatus "Applying local database updates…"
-Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "db", "push", "--schema", $schemaPath)
+Set-LauncherStatus "Checking database compatibility…"
+Invoke-NodeChecked $nodeExe $apiDir @((Join-Path $apiDir "scripts\prepare-local-database.mjs"))
 
 # A separately started healthy Core wins the race without spawning a duplicate.
 if (Test-Health) {

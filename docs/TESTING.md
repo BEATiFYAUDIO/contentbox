@@ -2,6 +2,20 @@
 
 Use these checks after mode/routing/commerce changes.
 
+## Packaged upgrade integrity
+
+`cd apps/api && npm run test:upgrade-integrity` uses disposable files/databases.
+It checks empty-database initialization, preservation of extra runtime tables
+and columns, refusal of an incompatible schema, private HLS key validation,
+missing/truncated media, partial encoding failure, and interrupted promotion.
+It is also included in `npm test`.
+
+Release acceptance must additionally run the standard packaged launcher against
+an isolated copy of an older installation, exercise real FFmpeg failures and
+missing-segment repair, and play the result in Fan. A manual API launch does
+not substitute for the packaged launcher check. Never run destructive schema
+tests or payment fixtures against installed creator data.
+
 ## 1) API mode smoke
 
 Runs without a live API and validates default Basic/SQLite mode resolution plus Advanced/LAN mode mapping.

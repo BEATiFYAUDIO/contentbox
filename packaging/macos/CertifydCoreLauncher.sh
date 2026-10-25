@@ -346,8 +346,8 @@ set_launcher_status "Validating local data…"
     set_launcher_status "Preparing the local database client…"
     "$node_bin" "$prisma_cli" generate --schema "$schema_path"
   fi
-  set_launcher_status "Applying local database updates…"
-  "$node_bin" "$prisma_cli" db push --schema "$schema_path" --skip-generate
+  set_launcher_status "Checking database compatibility…"
+  "$node_bin" "$api_dir/scripts/prepare-local-database.mjs"
 )
 
 # A concurrent launcher may have completed while this invocation prepared the

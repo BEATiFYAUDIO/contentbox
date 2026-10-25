@@ -1,4 +1,22 @@
 import path from "node:path";
+import crypto from "node:crypto";
+
+export function isCurrentPaidReceiptDelivery(input: {
+  contentId: string;
+  claimedDigest: string | null | undefined;
+  currentToken: string | null | undefined;
+  intentContentId: string | null | undefined;
+  status: string | null | undefined;
+  expiresAt: Date | null | undefined;
+  nowMs?: number;
+}): boolean {
+  const claimed = String(input.claimedDigest || "");
+  const current = String(input.currentToken || "");
+  if (!/^[a-f0-9]{64}$/.test(claimed) || !current || input.intentContentId !== input.contentId || input.status !== "paid") return false;
+  if (!input.expiresAt || input.expiresAt.getTime() <= (input.nowMs ?? Date.now())) return false;
+  const digest = crypto.createHash("sha256").update(current).digest();
+  return crypto.timingSafeEqual(digest, Buffer.from(claimed, "hex"));
+}
 
 const SENSITIVE_QUERY_KEYS = new Set(["t", "token", "receiptToken", "share"]);
 
@@ -78,7 +96,9 @@ export function evaluatePublicMediaDelivery(input: {
 }): { ok: true; mode: "preview" | "full" } | { ok: false; status: 402 | 403 | 404; code: string } {
   const deliveryAccess = input.deliveryAccess || null;
   if (deliveryAccess === "preview") {
-    return { ok: true, mode: "preview" };
+    return input.isPublicPreviewAsset || input.isPublicCoverAsset
+      ? { ok: true, mode: "preview" }
+      : { ok: false, status: 404, code: "PREVIEW_ASSET_REQUIRED" };
   }
   const mode: "preview" | "full" =
     deliveryAccess === "full" || (!deliveryAccess && input.freeContent) || input.isPublicCoverAsset

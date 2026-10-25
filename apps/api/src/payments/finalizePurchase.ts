@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
 import { allocateByBps } from "../lib/settlement.js";
 import { resolveProductTier } from "../lib/productTier.js";
@@ -13,7 +13,7 @@ function toBps(p: any): number {
   return Math.round(percent * 100);
 }
 
-async function getLockedSplitForContent(prisma: PrismaClient, contentId: string) {
+async function getLockedSplitForContent(prisma: PrismaClient | Prisma.TransactionClient, contentId: string) {
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return null;
 
@@ -33,6 +33,21 @@ async function getLockedSplitForContent(prisma: PrismaClient, contentId: string)
   return sv;
 }
 
+export const SETTLEMENT_ALLOCATION_INVALID = "SETTLEMENT_ALLOCATION_INVALID";
+
+function allocationIntegrityError() {
+  return Object.assign(new Error(SETTLEMENT_ALLOCATION_INVALID), {
+    code: SETTLEMENT_ALLOCATION_INVALID, statusCode: 409
+  });
+}
+
+function assertSettlementAllocations(net: bigint, lines: Array<{ amountSats: bigint }>) {
+  if (net < 0n || (net > 0n && !lines.length) || lines.some(line => line.amountSats < 0n) ||
+      lines.reduce((sum, line) => sum + line.amountSats, 0n) !== net) {
+    throw allocationIntegrityError();
+  }
+}
+
 function derivativeAuthorityError(
   code: "DERIVATIVE_PARENT_SPLIT_AUTHORITY_MISSING" | "DERIVATIVE_PARENT_SPLIT_AUTHORITY_INVALID",
   details: Record<string, unknown>
@@ -49,7 +64,7 @@ function createStableReceiptId(): string {
 }
 
 export async function resolveDerivativeParentLockedSplitForFinalize(
-  prisma: PrismaClient,
+  prisma: PrismaClient | Prisma.TransactionClient,
   link: { id?: string | null; parentContentId: string; parentSplitVersionId?: string | null }
 ) {
   let parentSplitVersionId = "";
@@ -80,9 +95,30 @@ export async function resolveDerivativeParentLockedSplitForFinalize(
   return parentSplit as NonNullable<typeof parentSplit>;
 }
 
-export async function finalizePurchase(paymentIntentId: string, client?: PrismaClient) {
+export type TrackedFulfillment = {
+  checkpointId: string;
+  buyerId: string | null;
+  rail: string;
+};
+
+export async function finalizePurchase(paymentIntentId: string, client?: PrismaClient, tracked?: TrackedFulfillment) {
   const prisma = client ?? new PrismaClient();
-  try {
+  const execute = async (prisma: PrismaClient | Prisma.TransactionClient) => {
+    // The checkpoint and all fulfillment writes share this transaction. A completed
+    // purchase is never regranted by retry (including after access was revoked).
+    if (tracked) {
+      const checkpoint = await prisma.auditEvent.findUnique({ where: { id: tracked.checkpointId } });
+      if (!checkpoint || checkpoint.entityId !== paymentIntentId) throw new Error("FULFILLMENT_CHECKPOINT_REQUIRED");
+      if ((checkpoint?.payloadJson as any)?.status === "complete") {
+        const existing = await prisma.paymentIntent.findUniqueOrThrow({ where: { id: paymentIntentId } });
+        return { ok: true, receiptToken: existing.receiptToken, receiptTokenExpiresAt: existing.receiptTokenExpiresAt };
+      }
+      const claimed = await prisma.auditEvent.updateMany({
+        where: { id: checkpoint.id, payloadJson: { equals: checkpoint.payloadJson as Prisma.InputJsonValue } },
+        data: { payloadJson: { status: "fulfilling", buyerId: tracked.buyerId, rail: tracked.rail } }
+      });
+      if (!claimed.count) throw new Error("FULFILLMENT_IN_PROGRESS");
+    }
     const skipSettlement = resolveProductTier().productTier === "basic";
     const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
     if (!intent) throw new Error("PaymentIntent not found");
@@ -215,58 +251,70 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
       }
     }
 
-    if (intent.buyerUserId) {
-      await prisma.entitlement.upsert({
-        where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId, manifestSha256: intent.manifestSha256 } },
-        update: { paymentIntentId: intent.id },
-        create: { buyerUserId: intent.buyerUserId, contentId, manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
-      }).catch(() => {});
-    } else {
-      const existingEntitlement = await prisma.entitlement.findFirst({
-        where: { buyerUserId: null, contentId, manifestSha256: intent.manifestSha256 }
-      });
-      if (!existingEntitlement) {
-        await prisma.entitlement.create({
-          data: { buyerUserId: null, contentId, manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
-        }).catch(() => {});
+    const existingSettlement = skipSettlement ? null : await prisma.settlement.findUnique({
+      where: { paymentIntentId: intent.id }, include: { lines: true }
+    });
+    // Historical, untracked settlements are not recalculated or repaired. New
+    // fulfillment must account for every sat before granting ownership.
+    if (!skipSettlement && (tracked || !existingSettlement)) {
+      assertSettlementAllocations(net, lines);
+      if (existingSettlement) {
+        if (existingSettlement.netAmountSats !== net) throw allocationIntegrityError();
+        assertSettlementAllocations(net, existingSettlement.lines);
       }
     }
 
     if (skipSettlement) {
       console.info("skipped settlement: basic tier", { paymentIntentId: intent.id, contentId });
-    } else if (childSplit) {
-      const existingSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId: intent.id } });
-      if (!existingSettlement) {
-        try {
-          await prisma.settlement.create({
-            data: {
-              contentId,
-              splitVersionId: childSplit.id,
-              netAmountSats: net,
-              paymentIntentId: intent.id,
-              lines: {
-                create: lines.map((l) => ({
-                  participantId: l.participantId || null,
-                  participantEmail: l.participantEmail || null,
-                  role: l.role || null,
-                  amountSats: l.amountSats
-                }))
-              }
-            }
-          });
-        } catch (e: any) {
-          try {
-            await prisma.auditEvent.create({
-              data: {
-                userId: content.ownerUserId,
-                action: "settlement.create.failed",
-                entityType: "PaymentIntent",
-                entityId: intent.id,
-                payloadJson: { error: String(e?.message || e) } as any
-              }
-            });
-          } catch {}
-        }
+    } else if (childSplit && !existingSettlement) {
+      try {
+        await prisma.settlement.create({
+          data: {
+            contentId, splitVersionId: childSplit.id, netAmountSats: net, paymentIntentId: intent.id,
+            lines: { create: lines.map(l => ({
+              participantId: l.participantId || null, participantEmail: l.participantEmail || null,
+              role: l.role || null, amountSats: l.amountSats
+            })) }
+          }
+        });
+      } catch (error) {
+        if (tracked) throw error;
+        await prisma.auditEvent.create({ data: {
+          userId: content.ownerUserId, action: "settlement.create.failed", entityType: "PaymentIntent", entityId: intent.id,
+          payloadJson: { code: SETTLEMENT_ALLOCATION_INVALID }
+        } }).catch(() => {});
+        // Legacy callers also must not swallow a failed allocation write and
+        // proceed into ownership or payouts. Never alter the verified payment.
+        throw allocationIntegrityError();
+      }
+      const persisted = await prisma.settlement.findUnique({
+        where: { paymentIntentId: intent.id }, include: { lines: true }
+      });
+      if (!persisted || persisted.netAmountSats !== net) throw allocationIntegrityError();
+      assertSettlementAllocations(net, persisted.lines);
+    }
+
+    if (tracked?.buyerId) {
+      await prisma.entitlement.upsert({
+        where: { buyerId_contentId: { buyerId: tracked.buyerId, contentId } },
+        update: {},
+        create: { buyerId: tracked.buyerId, buyerUserId: intent.buyerUserId, contentId,
+          manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
+      });
+    } else if (intent.buyerUserId) {
+      await prisma.entitlement.upsert({
+        where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId, manifestSha256: intent.manifestSha256 } },
+        update: tracked ? {} : { paymentIntentId: intent.id },
+        create: { buyerUserId: intent.buyerUserId, contentId, manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
+      }).catch((error) => { if (tracked) throw error; });
+    } else {
+      const existingEntitlement = await prisma.entitlement.findFirst({
+        where: tracked ? { paymentIntentId: intent.id } : { buyerUserId: null, contentId, manifestSha256: intent.manifestSha256 }
+      });
+      if (!existingEntitlement) {
+        await prisma.entitlement.create({
+          data: { buyerUserId: null, contentId, manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
+        }).catch((error) => { if (tracked) throw error; });
       }
     }
 
@@ -281,9 +329,9 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
           where: { id: intent.id },
           data: { receiptId: createStableReceiptId() }
         });
-      } catch {}
+      } catch (error) { if (tracked) throw error; }
     }
-    if (storefrontEnabled && (!intent.receiptToken || tokenExpired)) {
+    if (storefrontEnabled && (!intent.receiptToken || (!tracked && tokenExpired))) {
       const receiptToken = crypto.randomBytes(24).toString("hex");
       const receiptTokenExpiresAt = new Date(now + ttlSeconds * 1000);
       await prisma.paymentIntent.update({
@@ -292,8 +340,22 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
       });
     }
 
+    if (tracked) {
+      if (!skipSettlement) await prisma.sale.upsert({
+        where: { intentId: intent.id }, update: {},
+        create: { intentId: intent.id, contentId, sellerUserId: content.ownerUserId,
+          amountSats: intent.amountSats, currency: "SAT", rail: tracked.rail,
+          memo: intent.memo, recognizedAt: intent.paidAt || new Date() }
+      });
+      await prisma.auditEvent.update({ where: { id: tracked.checkpointId }, data: {
+        payloadJson: { status: "complete", buyerId: tracked.buyerId, rail: tracked.rail }
+      } });
+    }
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
     return { ok: true, receiptToken: updated?.receiptToken || null, receiptTokenExpiresAt: updated?.receiptTokenExpiresAt || null };
+  };
+  try {
+    return tracked ? await prisma.$transaction(execute) : await execute(prisma);
   } finally {
     if (!client) {
       await prisma.$disconnect().catch(() => {});

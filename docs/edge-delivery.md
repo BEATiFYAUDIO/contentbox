@@ -35,9 +35,12 @@ When disabled:
 
 Paid stream-only audio/video is delivered as encrypted HLS:
 
+- HLS is enabled by default; `PUBLIC_ENCRYPTED_HLS_ENABLED=0` disables new HLS URLs and leaves protected masters blocked
 - public access responses return a short-lived `.m3u8` playlist URL
 - playlist, segment and key routes independently validate the signed delivery token
+- AES-128 keys live under `CONTENTBOX_ROOT/hls-keys/` with owner-only permissions, outside content Git repositories
 - tokens are bound to the exact content ID, normalized source file path and full-access mode
+- paid token requests recheck the buyer entitlement or the current, unexpired receipt token; a receipt ID alone cannot unlock media
 - direct master delivery through public byte routes returns `ENCRYPTED_HLS_REQUIRED`
 - seeking remains supported through authorized HLS segment requests
 
@@ -60,7 +63,7 @@ Do not rely on per-request byte caps as a time-limit control. Clients can reques
 Certifyd Fan must support HLS playback URLs:
 
 - Safari/iOS can play HLS natively
-- Chromium and Firefox require `hls.js`
+- supported browsers use `hls.js` with credentialed requests and periodic delivery-token renewal; native HLS is the fallback
 - existing MP3/MP4 URLs should continue to work as fallback
 
 ## Quick smoke

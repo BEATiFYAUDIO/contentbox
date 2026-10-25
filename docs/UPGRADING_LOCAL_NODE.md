@@ -2,6 +2,25 @@
 
 This guide is for long-lived local Certifyd Creator installs that use SQLite and may predate Prisma migration history tracking.
 
+## Packaged Core updates
+
+The Linux, macOS and Windows launchers use `apps/api/scripts/prepare-local-database.mjs`.
+They initialize an empty SQLite database, but only check required tables and
+columns in an existing database. Runtime-managed tables and additional columns
+are retained. If required fields are missing, startup stops with a migration
+requirement; it does not reset, rebuild or synchronize the existing schema.
+Apply only a separately reviewed migration for that installation. Do not bypass
+the failure with `--accept-data-loss`.
+
+Paid stream-only HLS remains generated on the first authorized request. Missing
+or invalid renditions are encoded into a staging directory with a fresh private
+key, checked, then promoted. Encoding failure preserves the previous files and
+returns `HLS_NOT_READY`; a later request can retry. Promotion has a private
+recovery journal for interrupted renames. Existing originals, publication and
+commerce records are not migrated by HLS generation. A regenerated stream may
+require active players to reload. Explicit `PUBLIC_ENCRYPTED_HLS_ENABLED=0`
+continues to disable full HLS offers.
+
 ## Safe default flow
 
 From repo root:
