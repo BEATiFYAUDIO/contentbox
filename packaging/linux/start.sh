@@ -3,9 +3,11 @@ set -euo pipefail
 
 ORIGINAL_ARGS=("$@")
 LAN_MODE=0
+FIRST_RUN_QUICK=0
 for arg in "$@"; do
   case "$arg" in
     --lan) LAN_MODE=1 ;;
+    --first-run-quick) FIRST_RUN_QUICK=1 ;;
     --help|-h)
       echo "Usage: $0 [--lan]"
       exit 0
@@ -27,7 +29,7 @@ start_launcher_splash() {
     coproc CERTIFYD_SPLASH {
       zenity --progress --pulsate --auto-close --no-cancel \
         --title="Certifyd Core" \
-        --text="Preparing the local dashboard…" \
+        --text="Preparing the local dashboard..." \
         --width=420 \
         --window-icon="$script_dir/assets/certifyd-core.png" 2>/dev/null
     }
@@ -115,6 +117,23 @@ merge_host_lists() {
   printf '%s\n%s\n' "${1:-}" "${2:-}" | normalize_host_list
 }
 
+subtract_host_lists() {
+  local existing="${1:-}" removed="${2:-}" item remove
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    remove=0
+    while IFS= read -r old; do
+      if [[ "$item" == "$old" ]]; then
+        remove=1
+        break
+      fi
+    done < <(printf '%s' "$removed" | tr ',' '\n')
+    if [[ "$remove" -eq 0 ]]; then
+      printf '%s\n' "$item"
+    fi
+  done < <(printf '%s' "$existing" | tr ',' '\n') | normalize_host_list
+}
+
 detect_primary_lan_host() {
   local host iface
   if command -v ip >/dev/null 2>&1; then
@@ -162,7 +181,7 @@ detect_lan_hosts() {
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 start_launcher_splash
-set_launcher_status "Checking the local runtime…"
+set_launcher_status "Checking the local runtime..."
 app_dir="$script_dir"
 node_bin="$app_dir/runtime/node/bin/node"
 api_dir="$app_dir/apps/api"
@@ -183,6 +202,11 @@ env_file="$config_dir/api.env"
 pid_file="$state_dir/certifyd-core.pid"
 stdout_log="$log_dir/certifyd-core.out.log"
 stderr_log="$log_dir/certifyd-core.err.log"
+state_file="$data_root/state.json"
+new_install_at_launch=0
+if [[ ! -f "$env_file" && ! -f "$data_root/contentbox.db" && ! -f "$state_file" ]]; then
+  new_install_at_launch=1
+fi
 
 mkdir -p "$data_root" "$config_dir" "$state_dir" "$log_dir"
 launcher_lock_dir="$state_dir/launcher.lock"
@@ -236,17 +260,31 @@ export PUBLIC_MODE="${PUBLIC_MODE:-off}"
 export PORT="${PORT:-4000}"
 export APP_BASE_URL="${APP_BASE_URL:-"http://127.0.0.1:$PORT"}"
 
+lan_opt_in_file="$state_dir/lan-enabled"
+if [[ "$CONTENTBOX_PRIVATE_BIND" == "public" || -f "$lan_opt_in_file" ]]; then
+  LAN_MODE=1
+fi
 if [[ "$LAN_MODE" -eq 1 ]]; then
+  : >"$lan_opt_in_file"
   lan_hosts="$(detect_lan_hosts)"
   lan_primary_host="${lan_hosts%%,*}"
+  previous_launcher_hosts="$(cat "$state_dir/launcher-lan-hosts.txt" 2>/dev/null || true)"
+  preserved_hosts="$(subtract_host_lists "${CONTENTBOX_PRIVATE_ALLOWED_HOSTS:-}" "$previous_launcher_hosts")"
   export CONTENTBOX_PRIVATE_BIND="public"
   if [[ -n "$lan_hosts" ]]; then
-    export CONTENTBOX_PRIVATE_ALLOWED_HOSTS="$(merge_host_lists "${CONTENTBOX_PRIVATE_ALLOWED_HOSTS:-}" "$lan_hosts")"
+    export CONTENTBOX_PRIVATE_ALLOWED_HOSTS="$(merge_host_lists "$preserved_hosts" "$lan_hosts")"
     export APP_BASE_URL="http://$lan_primary_host:$PORT"
+    printf '%s\n' "$lan_hosts" >"$state_dir/launcher-lan-hosts.txt"
     echo "[Certifyd Core] LAN dashboard: $APP_BASE_URL"
   else
+    export CONTENTBOX_PRIVATE_BIND="local"
+    export CONTENTBOX_PRIVATE_ALLOWED_HOSTS="$preserved_hosts"
+    export APP_BASE_URL="http://127.0.0.1:$PORT"
     echo "[Certifyd Core] WARNING: no LAN IP detected; set CONTENTBOX_PRIVATE_ALLOWED_HOSTS manually if needed." >&2
   fi
+fi
+if [[ "$FIRST_RUN_QUICK" -eq 1 && "$new_install_at_launch" -eq 1 ]]; then
+  export PUBLIC_MODE="quick"
 fi
 
 if [[ -z "${JWT_SECRET:-}" || "${JWT_SECRET:-}" == "change-me" ]]; then
@@ -298,10 +336,54 @@ append_config_if_missing "CONTENTBOX_BIND" "$CONTENTBOX_BIND"
 append_config_if_missing "PUBLIC_MODE" "$PUBLIC_MODE"
 append_config_if_missing "PORT" "$PORT"
 append_config_if_missing "APP_BASE_URL" "$APP_BASE_URL"
-
-if [[ ! -f "$db_path" ]]; then
-  : >"$db_path"
+if [[ "$FIRST_RUN_QUICK" -eq 1 && "$new_install_at_launch" -eq 1 && ! -f "$state_file" ]]; then
+  "$node_bin" -e '
+    const fs = require("fs");
+    fs.writeFileSync(process.argv[1], JSON.stringify({
+      publicSharingConsent: { granted: true, dontAskAgain: true, grantedAt: new Date().toISOString() },
+      publicSharingAutoStart: true
+    }, null, 2));
+  ' "$state_file"
 fi
+
+app_version="development"
+[[ -f "$app_dir/app-version.txt" ]] && app_version="$(tr -d '\r\n' <"$app_dir/app-version.txt")"
+database_prepared_marker="$state_dir/database-prepared-version.txt"
+prepared_version=""
+[[ -f "$database_prepared_marker" ]] && prepared_version="$(tr -d '\r\n' <"$database_prepared_marker")"
+configured_db_path=""
+case "$DATABASE_URL" in
+  file:*)
+    configured_db_path="${DATABASE_URL#file:}"
+    case "$configured_db_path" in
+      /*) ;;
+      *) configured_db_path="$api_dir/$configured_db_path" ;;
+    esac
+    ;;
+esac
+
+backup_sqlite_for_upgrade() {
+  local source="$1" version="$2" safe_version stamp backup_dir companion
+  [[ -n "$source" && -s "$source" ]] || return 0
+  safe_version="$(printf '%s' "$version" | tr -c 'A-Za-z0-9._-' '_')"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_dir="$CONTENTBOX_ROOT/backups/pre-upgrade/$stamp-$safe_version"
+  mkdir -p "$backup_dir"
+  for companion in "$source" "$source-wal" "$source-shm"; do
+    [[ -f "$companion" ]] && cp -p "$companion" "$backup_dir/"
+  done
+  cat >"$backup_dir/RECOVERY.txt" <<EOF
+Certifyd Core pre-upgrade recovery point
+Application version: $version
+Database path: $source
+
+Keep Core stopped before restoring this database and its matching -wal/-shm
+files. Use View Logs or Certifyd support if preparation failed.
+EOF
+  printf '%s\n' "$backup_dir" >"$state_dir/last-database-backup.txt"
+  last_upgrade_backup="$backup_dir"
+  set_launcher_status "Backed up local data before the update."
+}
 
 health_url="http://127.0.0.1:$PORT/health"
 app_url="$APP_BASE_URL"
@@ -339,6 +421,13 @@ is_core_process() {
   [[ "$command" == *"$node_bin"* && "$command" == *"src/server.ts"* ]]
 }
 
+any_core_process() {
+  ps -ax -o command= 2>/dev/null | awk -v node="$node_bin" '
+    index($0, node) && $0 ~ /src\/server\.ts/ { found=1 }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
 wait_for_core_health() {
   local seconds="$1"
   local pid="${2:-}"
@@ -357,7 +446,7 @@ wait_for_core_health() {
 }
 
 if check_health; then
-  set_launcher_status "Core is already running. Opening the dashboard…"
+  set_launcher_status "Core is already running. Opening the dashboard..."
   open_browser
   close_launcher_splash
   exit 0
@@ -366,9 +455,9 @@ fi
 if [[ -f "$pid_file" ]]; then
   existing_pid="$(tr -dc '0-9' <"$pid_file" || true)"
   if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" >/dev/null 2>&1 && is_core_process "$existing_pid"; then
-    set_launcher_status "Waiting for the existing Core process…"
+    set_launcher_status "Waiting for the existing Core process..."
     if wait_for_core_health 45 "$existing_pid"; then
-      set_launcher_status "Core is ready. Opening the dashboard…"
+      set_launcher_status "Core is ready. Opening the dashboard..."
       open_browser
       close_launcher_splash
       exit 0
@@ -379,29 +468,45 @@ if [[ -f "$pid_file" ]]; then
 fi
 
 if [[ "${CERTIFYD_NO_BROWSER:-}" != "1" ]] && command -v notify-send >/dev/null 2>&1; then
-  notify-send "Certifyd Core" "Starting the local dashboard…" >/dev/null 2>&1 || true
+  notify-send "Certifyd Core" "Starting the local dashboard..." >/dev/null 2>&1 || true
 fi
 
-set_launcher_status "Validating local data…"
-(
-  cd "$api_dir"
-  "$node_bin" "$prisma_cli" validate --schema "$schema_path"
-  if [[ ! -d "$api_dir/node_modules/.prisma/client" ]]; then
-    set_launcher_status "Preparing the local database client…"
-    "$node_bin" "$prisma_cli" generate --schema "$schema_path"
+if [[ "$prepared_version" != "$app_version" || ( -n "$configured_db_path" && ! -f "$configured_db_path" ) ]]; then
+  if any_core_process; then
+    fail "A Certifyd Core process is still using the database. Stop it before applying this update."
   fi
-  set_launcher_status "Checking database compatibility…"
-  "$node_bin" "$api_dir/scripts/prepare-local-database.mjs"
-)
+  last_upgrade_backup=""
+  backup_sqlite_for_upgrade "$configured_db_path" "$app_version"
+  if [[ -n "$configured_db_path" && ! -f "$configured_db_path" ]]; then
+    mkdir -p "$(dirname "$configured_db_path")"
+    : >"$configured_db_path"
+  fi
+  set_launcher_status "Validating local data..."
+  if ! (
+    cd "$api_dir"
+    "$node_bin" "$prisma_cli" validate --schema "$schema_path"
+    if [[ ! -d "$api_dir/node_modules/.prisma/client" ]]; then
+      set_launcher_status "Preparing the local database client..."
+      "$node_bin" "$prisma_cli" generate --schema "$schema_path"
+    fi
+    set_launcher_status "Checking database compatibility..."
+    "$node_bin" "$api_dir/scripts/prepare-local-database.mjs"
+  ); then
+    recovery_hint="${last_upgrade_backup:-No pre-update database existed.}"
+    fail "Local database preparation failed. Core was not started. Recovery point: $recovery_hint"
+  fi
+  printf '%s\n' "$app_version" >"$database_prepared_marker.tmp"
+  mv "$database_prepared_marker.tmp" "$database_prepared_marker"
+fi
 
 if check_health; then
-  set_launcher_status "Core became ready while preparing. Opening the dashboard…"
+  set_launcher_status "Core became ready while preparing. Opening the dashboard..."
   open_browser
   close_launcher_splash
   exit 0
 fi
 
-set_launcher_status "Starting the Certifyd Core service…"
+set_launcher_status "Starting the Certifyd Core service..."
 (
   cd "$api_dir"
   nohup "$node_bin" --import tsx src/server.ts >"$stdout_log" 2>"$stderr_log" &
@@ -409,9 +514,9 @@ set_launcher_status "Starting the Certifyd Core service…"
 )
 
 started_pid="$(tr -dc '0-9' <"$pid_file" || true)"
-set_launcher_status "Waiting for the dashboard to become ready…"
+set_launcher_status "Waiting for the dashboard to become ready..."
 if [[ -n "$started_pid" ]] && wait_for_core_health 45 "$started_pid"; then
-  set_launcher_status "Core is ready. Opening the dashboard…"
+  set_launcher_status "Core is ready. Opening the dashboard..."
   open_browser
   close_launcher_splash
   exit 0

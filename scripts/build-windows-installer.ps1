@@ -117,6 +117,7 @@ New-Item -ItemType Directory -Force -Path `
   (Join-Path $appStage "apps\api"), `
   (Join-Path $appStage "apps\dashboard"), `
   (Join-Path $appStage "launcher") | Out-Null
+Set-Content -Path (Join-Path $appStage "app-version.txt") -Value $Version -Encoding ASCII
 
 $apiSource = Join-Path $repoRoot "apps\api"
 $apiTarget = Join-Path $appStage "apps\api"
@@ -137,6 +138,8 @@ foreach ($item in @("package.json", "package-lock.json", "tsconfig.json", "tscon
 }
 
 Copy-Item (Join-Path $repoRoot "packaging\windows\CertifydCore.Launcher.ps1") (Join-Path $appStage "launcher\CertifydCore.Launcher.ps1") -Force
+Copy-Item (Join-Path $repoRoot "packaging\windows\CertifydCore.Control.ps1") (Join-Path $appStage "launcher\CertifydCore.Control.ps1") -Force
+Copy-Item (Join-Path $repoRoot "packaging\windows\CertifydCore.Firewall.ps1") (Join-Path $appStage "launcher\CertifydCore.Firewall.ps1") -Force
 Copy-Item (Join-Path $repoRoot "packaging\windows\CertifydCore.Stop.ps1") (Join-Path $appStage "launcher\CertifydCore.Stop.ps1") -Force
 Copy-Item (Join-Path $repoRoot "packaging\windows\CertifydCore.Status.ps1") (Join-Path $appStage "launcher\CertifydCore.Status.ps1") -Force
 
@@ -176,6 +179,8 @@ $checks = @(
   (Join-Path $apiTarget "prisma\schema.prisma"),
   (Join-Path $dashboardTarget "dist\index.html"),
   (Join-Path $appStage "launcher\CertifydCore.Launcher.ps1"),
+  (Join-Path $appStage "launcher\CertifydCore.Control.ps1"),
+  (Join-Path $appStage "launcher\CertifydCore.Firewall.ps1"),
   (Join-Path $assetsStage "certifyd-core.ico")
 )
 foreach ($check in $checks) {

@@ -26,6 +26,17 @@ function readStateFlag(): boolean {
 export type PublicMode = "off" | "quick" | "named";
 export type PublicStatus = "starting" | "online" | "offline" | "error";
 
+export function publicAvailability(input: {
+  mode: PublicMode;
+  status: PublicStatus;
+  listenerStarted: boolean;
+  routeMatchesThisCore: boolean;
+}): "reachable" | "unverified" | "unavailable" {
+  if (input.mode === "off") return "unavailable";
+  return input.status === "online" && input.listenerStarted && input.routeMatchesThisCore
+    ? "reachable" : "unverified";
+}
+
 export interface PublicLinkState {
   mode: PublicMode;
   status: PublicStatus;
@@ -71,8 +82,7 @@ export function resolvePublicModeSelection(input: {
   if (input.persistedMode === "off" || input.persistedMode === "quick" || input.persistedMode === "named") {
     return { mode: input.persistedMode, source: "user" };
   }
-  if (envMode === "off") return { mode: "off", source: "default" };
-  if (input.consentGranted && input.autoStartEnabled) return { mode: "quick", source: "legacy" };
+  if (input.consentGranted) return { mode: input.autoStartEnabled ? "quick" : "off", source: "legacy" };
   return { mode: "off", source: "default" };
 }
 
@@ -81,13 +91,11 @@ export function resolveEffectivePublicMode(input: {
   nodeMode: "basic" | "advanced" | "lan";
   namedConfigured: boolean;
 }): PublicMode {
-  if (
-    input.selection.source === "default" &&
-    input.namedConfigured &&
-    (input.nodeMode === "advanced" || input.nodeMode === "lan")
-  ) {
-    return "named";
-  }
+  // Existing consent + autostart are evidence of an authorized legacy public
+  // connection. Preserve its Named route on Advanced/LAN upgrades. A configured
+  // domain or posture alone never activates sharing for a new installation.
+  if (input.selection.source === "legacy" && input.namedConfigured &&
+      (input.nodeMode === "advanced" || input.nodeMode === "lan")) return "named";
   return input.selection.mode;
 }
 

@@ -6,8 +6,19 @@ import {
   resolveConfiguredPublicMode,
   resolveEffectivePublicMode,
   resolvePublicModeSelection,
+  publicAvailability,
   shouldAutoStartSelectedQuick
 } from "./publicLinkState.js";
+
+test("public sharing is Online only with a verified route to this Core and a listener", () => {
+  for (const mode of ["quick", "named"] as const) {
+    assert.equal(publicAvailability({ mode, status: "online", listenerStarted: true, routeMatchesThisCore: true }), "reachable");
+    assert.equal(publicAvailability({ mode, status: "online", listenerStarted: true, routeMatchesThisCore: false }), "unverified");
+    assert.equal(publicAvailability({ mode, status: "online", listenerStarted: false, routeMatchesThisCore: true }), "unverified");
+    assert.equal(publicAvailability({ mode, status: "offline", listenerStarted: true, routeMatchesThisCore: true }), "unverified");
+  }
+  assert.equal(publicAvailability({ mode: "off", status: "offline", listenerStarted: false, routeMatchesThisCore: false }), "unavailable");
+});
 
 test("fresh packaged mode stays off until the user persists a quick transition", () => {
   assert.equal(resolveConfiguredPublicMode({ envMode: "off", persistedMode: null }), "off");
@@ -43,11 +54,23 @@ test("explicit OFF overrides legacy posture-driven named preference", () => {
   assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "lan", namedConfigured: true }), "off");
 });
 
-test("legacy Advanced and LAN installs still infer named only without an explicit selection", () => {
+test("configured Named route never turns on sharing without an explicit selection", () => {
   const selection = resolvePublicModeSelection({ envMode: "off", persistedMode: null });
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "advanced", namedConfigured: true }), "off");
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "lan", namedConfigured: true }), "off");
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "basic", namedConfigured: true }), "off");
+});
+
+test("authorized legacy Advanced and LAN Named connections survive upgrade", () => {
+  const selection = resolvePublicModeSelection({ envMode: "off", persistedMode: null, consentGranted: true, autoStartEnabled: true });
+  assert.equal(selection.source, "legacy");
   assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "advanced", namedConfigured: true }), "named");
   assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "lan", namedConfigured: true }), "named");
-  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "basic", namedConfigured: true }), "off");
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "basic", namedConfigured: true }), "quick");
+  assert.equal(resolveEffectivePublicMode({ selection, nodeMode: "advanced", namedConfigured: false }), "quick");
+  const manualOnly = resolvePublicModeSelection({ envMode: "off", persistedMode: null, consentGranted: true, autoStartEnabled: false });
+  assert.equal(resolveEffectivePublicMode({ selection: manualOnly, nodeMode: "advanced", namedConfigured: true }), "named");
+  assert.equal(resolveEffectivePublicMode({ selection: manualOnly, nodeMode: "basic", namedConfigured: true }), "off");
 });
 
 test("named configured in quick mode keeps quick canonical origin", () => {

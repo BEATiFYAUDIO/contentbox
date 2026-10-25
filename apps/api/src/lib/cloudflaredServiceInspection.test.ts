@@ -3,9 +3,12 @@ import fs from "node:fs";
 import test from "node:test";
 import {
   parseLinuxCloudflaredService,
+  parseSysVCloudflaredService,
   parseMacCloudflaredServices,
+  parseMacSystemCloudflaredService,
   parseWindowsCloudflaredServices,
   serviceInspectionSummary,
+  shouldDeferToExternalConnector,
   evaluateNamedRouteEvidence
 } from "./cloudflaredServiceInspection.js";
 
@@ -61,11 +64,29 @@ test("Linux service inspection distinguishes active and missing services", () =>
   assert.deepEqual(parseLinuxCloudflaredService("LoadState=not-found\nActiveState=inactive"), []);
 });
 
+test("SysV service is detected separately from its running state", () => {
+  assert.deepEqual(parseSysVCloudflaredService(false, null), []);
+  assert.equal(parseSysVCloudflaredService(true, 0)[0]?.state, "running");
+  assert.equal(parseSysVCloudflaredService(true, 3)[0]?.state, "stopped");
+  assert.equal(parseSysVCloudflaredService(true, 1)[0]?.state, "unknown");
+});
+
+test("an unidentified running external service prevents a competing Core connector", () => {
+  assert.equal(shouldDeferToExternalConnector({ serviceRunning: true, externalProcessRunning: false }), true);
+  assert.equal(shouldDeferToExternalConnector({ serviceRunning: false, externalProcessRunning: true }), true);
+  assert.equal(shouldDeferToExternalConnector({ serviceRunning: false, externalProcessRunning: false }), false);
+});
+
 test("macOS service inspection recognizes only cloudflared launchd jobs", () => {
   const records = parseMacCloudflaredServices("742\t0\tcom.cloudflare.cloudflared\n-\t0\tcom.apple.other");
   assert.equal(records.length, 1);
   assert.equal(records[0]?.state, "running");
   assert.equal(records[0]?.pid, 742);
+});
+
+test("macOS system LaunchDaemon distinguishes installed from running", () => {
+  assert.equal(parseMacSystemCloudflaredService("com.cloudflare.cloudflared", "pid = 951\nstate = running").state, "running");
+  assert.equal(parseMacSystemCloudflaredService("com.cloudflare.cloudflared", "state = waiting").state, "unknown");
 });
 
 test("an exact connected tunnel is not online until its durable hostname reaches this Core", () => {
@@ -88,6 +109,7 @@ test("service inspection is wired for Windows Services, Linux systemd, and macOS
   );
   assert.match(serverSource, /await inspectWindowsCloudflared\(NAMED_CONTROL_COMMAND_TIMEOUT_MS\)/);
   assert.match(inspector, /systemctl/);
+  assert.match(inspector, /\/etc\/init\.d\/cloudflared/);
   assert.match(inspector, /launchctl/);
   assert.match(inspector, /NAMED_CONTROL_COMMAND_TIMEOUT_MS/g);
 });

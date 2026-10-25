@@ -1,5 +1,6 @@
 Param(
-  [switch]$Lan
+  [switch]$Lan,
+  [switch]$FirstRunQuick
 )
 
 Set-StrictMode -Version Latest
@@ -13,6 +14,7 @@ $script:SplashProgress = $null
 $script:SplashActions = $null
 $script:SplashRetry = $null
 $script:SplashLogs = $null
+$script:HealthUrl = "http://127.0.0.1:4000/health"
 
 function Invoke-SplashEvents {
   if ($null -eq $script:SplashWindow) { return }
@@ -72,7 +74,7 @@ function Start-LauncherSplash($appDir) {
     $title.HorizontalAlignment = "Center"
 
     $status = New-Object System.Windows.Controls.TextBlock
-    $status.Text = "Preparing the local dashboard…"
+    $status.Text = "Preparing the local dashboard..."
     $status.Foreground = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(192, 209, 220))
     $status.FontSize = 14
     $status.TextAlignment = "Center"
@@ -99,6 +101,7 @@ function Start-LauncherSplash($appDir) {
     $retry.Add_Click({
       $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $PSCommandPath)
       if ($Lan) { $arguments += "-Lan" }
+      if ($FirstRunQuick) { $arguments += "-FirstRunQuick" }
       Start-Process -FilePath "powershell.exe" -ArgumentList $arguments
       $script:SplashWindow.Close()
     })
@@ -236,10 +239,10 @@ function Normalize-HostList($values) {
   foreach ($value in $values) {
     if (-not $value) { continue }
     foreach ($part in ([string]$value -split '[,\s]+')) {
-      $host = $part.Trim().Trim('"').Trim("'")
-      if (-not $host -or $seen.ContainsKey($host)) { continue }
-      $seen[$host] = $true
-      $result += $host
+      $hostName = $part.Trim().Trim('"').Trim("'")
+      if (-not $hostName -or $seen.ContainsKey($hostName)) { continue }
+      $seen[$hostName] = $true
+      $result += $hostName
     }
   }
   return @($result)
@@ -250,6 +253,12 @@ function Merge-HostLists($existing, $detected) {
   $combined += $existing
   $combined += $detected
   return @(Normalize-HostList $combined)
+}
+
+function Remove-LauncherHosts($existing, $launcherHosts) {
+  $removed = @{}
+  foreach ($hostName in (Normalize-HostList $launcherHosts)) { $removed[$hostName] = $true }
+  return @(Normalize-HostList $existing | Where-Object { -not $removed.ContainsKey($_) })
 }
 
 function Get-PrimaryLanHost {
@@ -370,6 +379,37 @@ function Apply-Env($values) {
   }
 }
 
+function Resolve-SqliteDatabasePath($databaseUrl, $workingDirectory) {
+  $value = ([string]$databaseUrl).Trim().Trim('"').Trim("'")
+  if (-not $value.StartsWith("file:", [System.StringComparison]::OrdinalIgnoreCase)) { return "" }
+  $candidate = [Uri]::UnescapeDataString($value.Substring(5)) -replace "/", "\"
+  if ([System.IO.Path]::IsPathRooted($candidate)) { return [System.IO.Path]::GetFullPath($candidate) }
+  return [System.IO.Path]::GetFullPath((Join-Path $workingDirectory $candidate))
+}
+
+function Backup-SqliteForUpgrade($databasePath, $dataRoot, $stateDir, $appVersion) {
+  if (-not $databasePath -or -not (Test-Path $databasePath)) { return "" }
+  $db = Get-Item $databasePath -ErrorAction SilentlyContinue
+  if ($null -eq $db -or $db.Length -eq 0) { return "" }
+  $safeVersion = ([string]$appVersion) -replace '[^A-Za-z0-9._-]', '_'
+  $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+  $backupDir = Join-Path $dataRoot "backups\pre-upgrade\$stamp-$safeVersion"
+  Ensure-Dir $backupDir
+  foreach ($source in @($databasePath, "$databasePath-wal", "$databasePath-shm")) {
+    if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination $backupDir -Force }
+  }
+  @(
+    "Certifyd Core pre-upgrade recovery point",
+    "Application version: $appVersion",
+    "Database path: $databasePath",
+    "",
+    "Keep Core stopped before restoring this database and its matching -wal/-shm files.",
+    "Use View Logs or Certifyd support if preparation failed."
+  ) | Set-Content -Path (Join-Path $backupDir "RECOVERY.txt") -Encoding UTF8
+  Set-Content -Path (Join-Path $stateDir "last-database-backup.txt") -Value $backupDir -Encoding ASCII
+  return $backupDir
+}
+
 function Invoke-NodeChecked {
   param(
     [Parameter(Mandatory=$true)][string]$NodeExe,
@@ -389,7 +429,7 @@ function Invoke-NodeChecked {
 
 function Test-Health {
   try {
-    $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:4000/health" -TimeoutSec 2
+    $response = Invoke-WebRequest -UseBasicParsing -Uri $script:HealthUrl -TimeoutSec 2
     return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
   } catch {
     return $false
@@ -408,6 +448,20 @@ function Test-CoreProcess($processId, $nodeExe) {
   }
 }
 
+function Test-AnyCoreProcess($nodeExe) {
+  try {
+    $expectedExe = [System.IO.Path]::GetFullPath($nodeExe)
+    foreach ($record in (Get-CimInstance Win32_Process -ErrorAction Stop)) {
+      if (-not $record.ExecutablePath) { continue }
+      $actualExe = [System.IO.Path]::GetFullPath([string]$record.ExecutablePath)
+      if ($actualExe -ieq $expectedExe -and [string]$record.CommandLine -match 'src[\\/]server\.ts') { return $true }
+    }
+  } catch {
+    Fail "Could not verify that the Core database is idle before applying the update."
+  }
+  return $false
+}
+
 function Wait-ForCoreHealth($seconds, $process = $null) {
   $deadline = (Get-Date).AddSeconds($seconds)
   while ((Get-Date) -lt $deadline) {
@@ -423,7 +477,7 @@ function Wait-ForCoreHealth($seconds, $process = $null) {
 
 $appDir = Resolve-AppDir
 Start-LauncherSplash $appDir
-Set-LauncherStatus "Checking the local runtime…"
+Set-LauncherStatus "Checking the local runtime..."
 $nodeExe = Join-Path $appDir "runtime\node\node.exe"
 $apiDir = Join-Path $appDir "apps\api"
 $schemaPath = Join-Path $apiDir "prisma\schema.prisma"
@@ -437,6 +491,8 @@ $envFile = Join-Path $configDir "api.env"
 $pidFile = Join-Path $stateDir "certifyd-core.pid"
 $stdoutLog = Join-Path $logDir "certifyd-core.out.log"
 $stderrLog = Join-Path $logDir "certifyd-core.err.log"
+$stateFile = Join-Path $dataRoot "state.json"
+$newInstallAtLaunch = -not (Test-Path $envFile) -and -not (Test-Path (Join-Path $dataRoot "contentbox.db")) -and -not (Test-Path $stateFile)
 
 if (-not (Test-Path $nodeExe)) { Fail "Bundled Node runtime missing: $nodeExe" }
 if (-not (Test-Path $apiDir)) { Fail "API runtime missing: $apiDir" }
@@ -475,15 +531,29 @@ $envValues["CONTENTBOX_BIND"] = if ($envValues.ContainsKey("CONTENTBOX_BIND")) {
 $envValues["PUBLIC_MODE"] = if ($envValues.ContainsKey("PUBLIC_MODE")) { $envValues["PUBLIC_MODE"] } else { "off" }
 $envValues["PORT"] = if ($envValues.ContainsKey("PORT")) { $envValues["PORT"] } else { "4000" }
 $envValues["APP_BASE_URL"] = if ($envValues.ContainsKey("APP_BASE_URL")) { $envValues["APP_BASE_URL"] } else { "http://127.0.0.1:4000" }
+$lanOptInFile = Join-Path $stateDir "lan-enabled"
+if ($envValues["CONTENTBOX_PRIVATE_BIND"] -eq "public" -or (Test-Path $lanOptInFile)) { $Lan = $true }
 if ($Lan) {
-  $lanHosts = Get-LanHosts
+  Set-Content -Path $lanOptInFile -Value "enabled" -Encoding ASCII
+  $lanHosts = @(Get-LanHosts)
   $lanPrimaryHost = if ($lanHosts.Count -gt 0) { $lanHosts[0] } else { "" }
+  $launcherHostsFile = Join-Path $stateDir "launcher-lan-hosts.txt"
+  $previousLauncherHosts = if (Test-Path $launcherHostsFile) { Get-Content $launcherHostsFile } else { @() }
+  $existingAllowedHosts = if ($envValues.ContainsKey("CONTENTBOX_PRIVATE_ALLOWED_HOSTS")) { $envValues["CONTENTBOX_PRIVATE_ALLOWED_HOSTS"] } else { "" }
+  $preservedHosts = Remove-LauncherHosts $existingAllowedHosts $previousLauncherHosts
   $envValues["CONTENTBOX_PRIVATE_BIND"] = "public"
   if ($lanHosts.Count -gt 0) {
-    $existingAllowedHosts = if ($envValues.ContainsKey("CONTENTBOX_PRIVATE_ALLOWED_HOSTS")) { $envValues["CONTENTBOX_PRIVATE_ALLOWED_HOSTS"] } else { "" }
-    $envValues["CONTENTBOX_PRIVATE_ALLOWED_HOSTS"] = ((Merge-HostLists $existingAllowedHosts $lanHosts) -join ",")
+    $envValues["CONTENTBOX_PRIVATE_ALLOWED_HOSTS"] = ((Merge-HostLists $preservedHosts $lanHosts) -join ",")
     $envValues["APP_BASE_URL"] = "http://$lanPrimaryHost`:$($envValues["PORT"])"
+    Set-Content -Path $launcherHostsFile -Value ($lanHosts -join ",") -Encoding ASCII
+  } else {
+    $envValues["CONTENTBOX_PRIVATE_BIND"] = "local"
+    $envValues["CONTENTBOX_PRIVATE_ALLOWED_HOSTS"] = ($preservedHosts -join ",")
+    $envValues["APP_BASE_URL"] = "http://127.0.0.1:$($envValues["PORT"])"
   }
+}
+if ($FirstRunQuick -and $newInstallAtLaunch) {
+  $envValues["PUBLIC_MODE"] = "quick"
 }
 if (-not $envValues.ContainsKey("JWT_SECRET") -or -not $envValues["JWT_SECRET"] -or $envValues["JWT_SECRET"] -eq "change-me") {
   $envValues["JWT_SECRET"] = New-SecretHex
@@ -491,9 +561,22 @@ if (-not $envValues.ContainsKey("JWT_SECRET") -or -not $envValues["JWT_SECRET"] 
 
 Write-EnvFile $envFile $envValues
 Apply-Env $envValues
+if ($FirstRunQuick -and $newInstallAtLaunch -and -not (Test-Path $stateFile)) {
+  $initialState = @{
+    publicSharingConsent = @{ granted = $true; dontAskAgain = $true; grantedAt = [DateTime]::UtcNow.ToString("o") }
+    publicSharingAutoStart = $true
+  }
+  $initialState | ConvertTo-Json -Depth 4 | Set-Content -Path $stateFile -Encoding UTF8
+}
+$appVersionFile = Join-Path $appDir "app-version.txt"
+$appVersion = if (Test-Path $appVersionFile) { (Get-Content $appVersionFile -Raw).Trim() } else { "development" }
+$databasePreparedMarker = Join-Path $stateDir "database-prepared-version.txt"
+$preparedVersion = if (Test-Path $databasePreparedMarker) { (Get-Content $databasePreparedMarker -Raw).Trim() } else { "" }
+$configuredDbPath = Resolve-SqliteDatabasePath $envValues["DATABASE_URL"] $apiDir
+$script:HealthUrl = "http://127.0.0.1:$($envValues["PORT"])/health"
 
 if (Test-Health) {
-  Set-LauncherStatus "Core is already running. Opening the dashboard…"
+  Set-LauncherStatus "Core is already running. Opening the dashboard..."
   Open-Dashboard $envValues["APP_BASE_URL"]
   Close-LauncherSplash
   Release-LauncherLock
@@ -506,9 +589,9 @@ if (Test-Path $pidFile) {
   if ([int]::TryParse($rawPid, [ref]$existingPid) -and $existingPid -gt 0) {
     $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
     if ($null -ne $existing -and (Test-CoreProcess $existingPid $nodeExe)) {
-      Set-LauncherStatus "Waiting for the existing Core process…"
+      Set-LauncherStatus "Waiting for the existing Core process..."
       if (Wait-ForCoreHealth 45 $existing) {
-        Set-LauncherStatus "Core is ready. Opening the dashboard…"
+        Set-LauncherStatus "Core is ready. Opening the dashboard..."
         Open-Dashboard $envValues["APP_BASE_URL"]
         Close-LauncherSplash
         Release-LauncherLock
@@ -520,29 +603,41 @@ if (Test-Path $pidFile) {
   Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 }
 
-if (-not (Test-Path $dbPath)) {
-  New-Item -ItemType File -Path $dbPath | Out-Null
+if ($preparedVersion -ne $appVersion -or ($configuredDbPath -and -not (Test-Path $configuredDbPath))) {
+  if (Test-AnyCoreProcess $nodeExe) { Fail "A Certifyd Core process is still using the database. Stop it before applying this update." }
+  $backupDir = Backup-SqliteForUpgrade $configuredDbPath $contentboxRoot $stateDir $appVersion
+  if ($backupDir) { Set-LauncherStatus "Backed up local data before the update. Validating the database..." }
+  if ($configuredDbPath -and -not (Test-Path $configuredDbPath)) {
+    Ensure-Dir (Split-Path -Parent $configuredDbPath)
+    New-Item -ItemType File -Path $configuredDbPath | Out-Null
+  }
+  try {
+    Set-LauncherStatus "Validating local data..."
+    Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "validate", "--schema", $schemaPath)
+    if (-not (Test-Path (Join-Path $apiDir "node_modules\.prisma\client"))) {
+      Set-LauncherStatus "Preparing the local database client..."
+      Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "generate", "--schema", $schemaPath)
+    }
+    Set-LauncherStatus "Checking database compatibility..."
+    Invoke-NodeChecked $nodeExe $apiDir @((Join-Path $apiDir "scripts\prepare-local-database.mjs"))
+  } catch {
+    $recoveryHint = if ($backupDir) { $backupDir } else { "No pre-update database existed." }
+    throw "Local database preparation failed. Core was not started. Recovery point: $recoveryHint $($_.Exception.Message)"
+  }
+  Set-Content -Path "$databasePreparedMarker.tmp" -Value $appVersion -Encoding ASCII
+  Move-Item -Path "$databasePreparedMarker.tmp" -Destination $databasePreparedMarker -Force
 }
-
-Set-LauncherStatus "Validating local data…"
-Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "validate", "--schema", $schemaPath)
-if (-not (Test-Path (Join-Path $apiDir "node_modules\.prisma\client"))) {
-  Set-LauncherStatus "Preparing the local database client…"
-  Invoke-NodeChecked $nodeExe $apiDir @($prismaCli, "generate", "--schema", $schemaPath)
-}
-Set-LauncherStatus "Checking database compatibility…"
-Invoke-NodeChecked $nodeExe $apiDir @((Join-Path $apiDir "scripts\prepare-local-database.mjs"))
 
 # A separately started healthy Core wins the race without spawning a duplicate.
 if (Test-Health) {
-  Set-LauncherStatus "Core became ready while preparing. Opening the dashboard…"
+  Set-LauncherStatus "Core became ready while preparing. Opening the dashboard..."
   Open-Dashboard $envValues["APP_BASE_URL"]
   Close-LauncherSplash
   Release-LauncherLock
   exit 0
 }
 
-Set-LauncherStatus "Starting the Certifyd Core service…"
+Set-LauncherStatus "Starting the Certifyd Core service..."
 $process = Start-Process `
   -FilePath $nodeExe `
   -ArgumentList @("--import", "tsx", "src/server.ts") `
@@ -554,9 +649,9 @@ $process = Start-Process `
 
 Set-Content -Path $pidFile -Value "$($process.Id)" -Encoding ASCII
 
-Set-LauncherStatus "Waiting for the dashboard to become ready…"
+Set-LauncherStatus "Waiting for the dashboard to become ready..."
 if (Wait-ForCoreHealth 45 $process) {
-  Set-LauncherStatus "Core is ready. Opening the dashboard…"
+  Set-LauncherStatus "Core is ready. Opening the dashboard..."
   Open-Dashboard $envValues["APP_BASE_URL"]
   Close-LauncherSplash
   Release-LauncherLock
@@ -567,4 +662,4 @@ if ($process.HasExited) {
   Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
   Fail "Core exited before it became ready. Check the launcher logs for the startup error."
 }
-Fail "Core did not become ready. Use Certifyd Core Status for details."
+Fail "Core did not become ready. Use View Logs from the Certifyd Core tray menu for details."

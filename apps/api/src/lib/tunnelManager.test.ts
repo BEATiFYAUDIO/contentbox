@@ -119,12 +119,14 @@ test("named tunnel startup arguments and owned-child stop behavior remain unchan
   const child = fakeChild(8181);
   const spawned: Array<{ command: string; args: string[] }> = [];
   const killed: number[] = [];
+  const logs: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response("ok", { status: 200 });
   try {
     const manager = new TunnelManager({
       targetPort: 4010,
       binDir: "/unused",
+      logger: { info: (message) => { logs.push(message); }, warn: () => {}, error: () => {} },
       resolveBinary: async () => "/mock/cloudflared",
       readVersion: async () => "cloudflared mock",
       spawnProcess: ((command: string, args: string[]) => {
@@ -143,6 +145,8 @@ test("named tunnel startup arguments and owned-child stop behavior remain unchan
     });
     assert.equal(status.status, "ACTIVE");
     assert.equal(manager.activeTransport(), "named");
+    assert.equal(logs.some((message) => message.includes("named-token")), false);
+    assert.equal(logs.some((message) => message.includes("[redacted]")), true);
     assert.deepEqual(spawned, [
       {
         command: "/mock/cloudflared",

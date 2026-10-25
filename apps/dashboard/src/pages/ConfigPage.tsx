@@ -57,6 +57,17 @@ type MetadataProvidersSettings = {
   };
 };
 
+type CloudflareAnalyticsSettings = {
+  configured: boolean;
+  status: string;
+  zoneId?: string;
+  accountId?: string | null;
+  hostname?: string;
+  lastSyncAt?: string | null;
+  cachedDays?: number;
+  error?: string | null;
+};
+
 type LightningRuntimeSnapshot = {
   connected: boolean;
   canReceive: boolean;
@@ -123,7 +134,6 @@ const STORAGE_PUBLIC_ORIGIN_FALLBACK = "contentbox.publicOriginFallback";
 const STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK = "contentbox.publicBuyOriginFallback";
 const STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK = "contentbox.publicStudioOriginFallback";
 const STORAGE_NETWORKING_CUSTOMIZED = "contentbox.networkingCustomized";
-const STORAGE_TUNNEL_CONFIG_ENABLED = "contentbox.tunnelConfig.enabled";
 const STORAGE_API_BASE = "contentbox.apiBase";
 
 function isPrivateHost(hostname: string): boolean {
@@ -212,12 +222,7 @@ export default function ConfigPage({
   const [publicOriginFallback, setPublicOriginFallback] = useState<string>("");
   const [publicBuyOriginFallback, setPublicBuyOriginFallback] = useState<string>("");
   const [publicStudioOriginFallback, setPublicStudioOriginFallback] = useState<string>("");
-  const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(() => {
-    const raw = readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED);
-    if (raw === "1") return true;
-    if (raw === "0") return false;
-    return false;
-  });
+  const [tunnelEnabled, setTunnelEnabled] = useState(false);
   const [tunnelProvider, setTunnelProvider] = useState<string>("cloudflare");
   const [tunnelDomain, setTunnelDomain] = useState<string>("");
   const [tunnelName, setTunnelName] = useState<string>("");
@@ -232,6 +237,7 @@ export default function ConfigPage({
   const [namedTokenBusy, setNamedTokenBusy] = useState<boolean>(false);
   const [namedTokenMsg, setNamedTokenMsg] = useState<string | null>(null);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
+  const [connectionView, setConnectionView] = useState<"temporary" | "permanent" | null>(null);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<any | null>(null);
   const [publicBusy, setPublicBusy] = useState(false);
   const [publicMsg, setPublicMsg] = useState<string | null>(null);
@@ -248,6 +254,13 @@ export default function ConfigPage({
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
   const [lightningWalletError, setLightningWalletError] = useState<string | null>(null);
   const [metadataSettings, setMetadataSettings] = useState<MetadataProvidersSettings | null>(null);
+  const [cloudflareAnalytics, setCloudflareAnalytics] = useState<CloudflareAnalyticsSettings | null>(null);
+  const [analyticsZoneId, setAnalyticsZoneId] = useState("");
+  const [analyticsAccountId, setAnalyticsAccountId] = useState("");
+  const [analyticsHostname, setAnalyticsHostname] = useState("");
+  const [analyticsToken, setAnalyticsToken] = useState("");
+  const [analyticsBusy, setAnalyticsBusy] = useState(false);
+  const [analyticsMessage, setAnalyticsMessage] = useState<string | null>(null);
   const [spotifyClientId, setSpotifyClientId] = useState("");
   const [spotifyClientSecret, setSpotifyClientSecret] = useState("");
   const [spotifyBusy, setSpotifyBusy] = useState<null | "save" | "test">(null);
@@ -260,7 +273,6 @@ export default function ConfigPage({
   const [reconnectOriginInput, setReconnectOriginInput] = useState<string>("");
   const [reconnectBusy, setReconnectBusy] = useState(false);
   const [reconnectMsg, setReconnectMsg] = useState<string | null>(null);
-  const [lastNamedAutoStartKickAt, setLastNamedAutoStartKickAt] = useState<number>(0);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -540,12 +552,6 @@ export default function ConfigPage({
           setTunnelProvider(provider);
           setTunnelDomain(domain);
           setTunnelName(name);
-          const hasSavedNamedConfig = Boolean(String(provider || "").trim() || String(domain || "").trim() || String(name || "").trim());
-          const storedTunnelFieldsPref = readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED);
-          if (hasSavedNamedConfig && storedTunnelFieldsPref === "") {
-            setTunnelEnabled(true);
-            writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, "1");
-          }
         }
       } catch (e: any) {
         if (!cancelled) setTunnelError(e?.message || String(e));
@@ -555,6 +561,29 @@ export default function ConfigPage({
     })();
     return () => {
       cancelled = true;
+    };
+  }, [apiBase, token]);
+
+  // Refresh discovery while CONFIG remains open; viewing a connection never starts it.
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (document.hidden || cancelled) return;
+      try {
+        const res = await fetch(`${apiBase}/api/public/status?refresh=1&observe=1`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const next = await res.json();
+        if (!cancelled && res.ok) setPublicStatus(next);
+      } catch {}
+    };
+    const timer = window.setInterval(refresh, 60000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
     };
   }, [apiBase, token]);
 
@@ -570,10 +599,55 @@ export default function ConfigPage({
     loadMetadataProviders().catch(() => {
       if (!cancelled) setMetadataSettings(null);
     });
+    api<CloudflareAnalyticsSettings>("/api/settings/cloudflare-analytics", "GET").then((settings) => {
+      if (cancelled) return;
+      setCloudflareAnalytics(settings);
+      setAnalyticsZoneId(settings.zoneId || "");
+      setAnalyticsAccountId(settings.accountId || "");
+      setAnalyticsHostname(settings.hostname || "");
+    }).catch(() => { if (!cancelled) setCloudflareAnalytics(null); });
     return () => {
       cancelled = true;
     };
   }, [token]);
+
+  async function saveCloudflareAnalytics() {
+    setAnalyticsBusy(true);
+    setAnalyticsMessage(null);
+    try {
+      await api("/api/settings/cloudflare-analytics", "PATCH", {
+        zoneId: analyticsZoneId.trim(), accountId: analyticsAccountId.trim(),
+        hostname: analyticsHostname.trim(), token: analyticsToken
+      });
+      setAnalyticsToken("");
+      setCloudflareAnalytics(await api<CloudflareAnalyticsSettings>("/api/settings/cloudflare-analytics", "GET"));
+      setAnalyticsMessage("Connection verified and saved. Refresh to cache available aggregates.");
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Could not verify Cloudflare Analytics."); }
+    finally { setAnalyticsBusy(false); }
+  }
+
+  async function refreshCloudflareAnalytics() {
+    setAnalyticsBusy(true);
+    setAnalyticsMessage(null);
+    try {
+      await api("/api/settings/cloudflare-analytics/refresh", "POST");
+      setCloudflareAnalytics(await api<CloudflareAnalyticsSettings>("/api/settings/cloudflare-analytics", "GET"));
+      setAnalyticsMessage("Aggregate cache refreshed. Native Audience remains separate.");
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Refresh failed. Native Audience remains available."); }
+    finally { setAnalyticsBusy(false); }
+  }
+
+  async function disconnectCloudflareAnalytics() {
+    setAnalyticsBusy(true);
+    setAnalyticsMessage(null);
+    try {
+      await api("/api/settings/cloudflare-analytics", "DELETE");
+      setCloudflareAnalytics({ configured: false, status: "disconnected" });
+      setAnalyticsToken("");
+      setAnalyticsMessage("Connection removed. Previously cached aggregates are preserved locally.");
+    } catch (error: unknown) { setAnalyticsMessage(error instanceof Error ? error.message : "Could not disconnect Cloudflare Analytics."); }
+    finally { setAnalyticsBusy(false); }
+  }
 
   async function onSaveSpotifyProvider() {
     setSpotifyError(null);
@@ -768,6 +842,7 @@ export default function ConfigPage({
   const tunnelControlMode = String(publicStatus?.tunnelControl?.mode || "unknown");
   const tunnelControlMessage = String(publicStatus?.tunnelControl?.message || "").trim();
   const serviceManagedTokenMode = tunnelControlMode === "service_token" || tunnelState.ownership === "external-service";
+  const externalServiceRunning = Boolean(publicStatus?.tunnelControl?.serviceRunning || publicStatus?.tunnelControl?.externalProcessRunning);
   const namedTunnelDetectedFromStatus = Boolean(tunnelState.identityVerified || tunnelState.routeVerified);
   const namedTunnelDetectedRaw =
     namedTunnelDetectedState ||
@@ -787,25 +862,21 @@ export default function ConfigPage({
   // Status/detail blocks still reflect real backend mode underneath.
   const activeNamedPosture = Boolean(!publicStatus?.namedDisabled && publicStatus?.mode === "named");
   const hasNamedConfiguration = Boolean(configuredTunnelName || publicStatus?.namedConfigured);
-  const uiTunnelMode: "existing_named" | "token_bootstrap" = isSovereignPosture
+  const inferredTunnelMode: "existing_named" | "token_bootstrap" = isSovereignPosture
     ? "existing_named"
     : activeNamedPosture || (hasNamedConfiguration && !publicStatus?.namedDisabled)
       ? "existing_named"
       : "token_bootstrap";
+  const uiTunnelMode: "existing_named" | "token_bootstrap" = connectionView
+    ? connectionView === "permanent" ? "existing_named" : "token_bootstrap"
+    : inferredTunnelMode;
   const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
-  const namedTunnelManageableLocally = Boolean(cloudflaredAvailable && (publicStatus?.namedTokenStored || namedTunnelDetected));
   const namedTunnelConfiguredLocally = hasNamedConfiguration;
-  const startActionLabel =
-    uiTunnelMode === "existing_named"
-      ? "Start named tunnel"
-      : isSovereignPosture
-        ? "Start temporary link (fallback)"
-        : "Start temporary link";
   const startActionDisabled =
     !token ||
     publicBusy ||
     publicStatus?.status === "starting" ||
-    publicStatus?.status === "online" ||
+    (publicStatus?.status === "online" && publicStatus?.mode === (uiTunnelMode === "existing_named" ? "named" : "quick")) ||
     (uiTunnelMode === "token_bootstrap" ? quickDisabled : !namedTunnelConfiguredLocally);
   const startActionDisabledReason = !token
     ? "Sign in to start routing."
@@ -813,29 +884,21 @@ export default function ConfigPage({
       ? "Routing action in progress."
       : publicStatus?.status === "starting"
         ? "Tunnel is already starting."
-        : publicStatus?.status === "online"
-          ? "Tunnel is already online."
+        : publicStatus?.status === "online" && publicStatus?.mode === (uiTunnelMode === "existing_named" ? "named" : "quick")
+          ? "This connection is already online."
           : uiTunnelMode === "token_bootstrap" && quickDisabled
             ? "Temporary links are disabled in this posture while named routing is configured."
             : uiTunnelMode === "existing_named" && !namedTunnelConfiguredLocally
                 ? "No local named tunnel is discovered/configured yet."
                 : null;
   const externalNamedActive = serviceManagedTokenMode && namedTunnelOnline && !publicStatus?.namedDisabled;
-  const stopActionDisabled = !token || publicBusy || publicStatus?.status !== "online";
-  const stopActionDisabledReason = !token
-    ? "Sign in to stop routing."
-    : publicBusy
-      ? "Routing action in progress."
-      : publicStatus?.status !== "online"
-        ? "Tunnel must be online before it can be stopped."
-        : null;
   const refreshActionDisabled = !token || publicBusy;
   const refreshActionDisabledReason = !token
     ? "Sign in to refresh routing."
     : publicBusy
       ? "Routing action in progress."
       : null;
-  const localRoutingControlsDisabled = externalNamedActive;
+  const localRoutingControlsDisabled = externalServiceRunning || externalNamedActive;
   const saveConfigDisabled = tunnelLoading || !tunnelEnabled || localRoutingControlsDisabled;
   const saveConfigDisabledReason = tunnelLoading
     ? "Tunnel settings are loading."
@@ -880,17 +943,7 @@ export default function ConfigPage({
     ? null
     : "Canonical public origin not detected yet. Sovereign Creator unlocks after stable public host detection.";
   const isBasicMode = nodeMode === "basic";
-  const tunnelStepLabel = isBasicMode
-    ? "Step 1: Basic Creator tunnel setup"
-    : nodeMode === "advanced"
-      ? "Step 1: Sovereign Creator routing"
-      : "Step 1: Sovereign Node routing";
-  const tunnelModeHint = isBasicMode
-    ? "Basic mode uses temporary links by default unless a local named tunnel is active."
-    : nodeMode === "advanced"
-      ? "Sovereign Creator prefers durable named routing. Temporary links are fallback only."
-      : "Sovereign Node expects durable named routing for stable canonical origin.";
-  const temporaryOverrideAllowed = uiTunnelMode === "existing_named" && !publicStatus?.namedDisabled;
+  const temporaryOverrideAllowed = uiTunnelMode === "token_bootstrap" && publicStatus?.mode === "named" && !publicStatus?.namedDisabled;
   const routingStatusTitle = publicStatus?.namedDisabled
     ? namedTunnelDetected
       ? "Named tunnel paused"
@@ -929,12 +982,6 @@ export default function ConfigPage({
         : uiTunnelMode === "existing_named"
         ? "Named tunnel"
           : "Temporary link";
-  const stopActionLabel =
-    externalNamedActive
-      ? "Disable public sharing"
-      : uiTunnelMode === "existing_named" && !publicStatus?.namedDisabled
-      ? "Stop named tunnel"
-      : "Stop temporary link";
   const refreshRoutingLabel = "Refresh routing";
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
   const showSystemDebugPanels = Boolean(showAdvanced) && devMode;
@@ -1089,32 +1136,6 @@ export default function ConfigPage({
     };
   }, [apiBase, publicStatus?.status, token]);
 
-  // If named tunnel is available and auto-start is enabled, automatically
-  // kick it from offline state so operators don't need to click Start each time.
-  useEffect(() => {
-    if (!token) return;
-    if (publicBusy) return;
-    if (uiTunnelMode !== "existing_named") return;
-    if (!namedTunnelManageableLocally) return;
-    if (publicStatus?.namedDisabled) return;
-    if (!publicStatus?.autoStartEnabled) return;
-    if (publicStatus?.status !== "offline") return;
-
-    const now = Date.now();
-    if (now - lastNamedAutoStartKickAt < 15000) return;
-    setLastNamedAutoStartKickAt(now);
-    startPublicLink().catch(() => {});
-  }, [
-    lastNamedAutoStartKickAt,
-    namedTunnelManageableLocally,
-    publicBusy,
-    publicStatus?.autoStartEnabled,
-    publicStatus?.namedDisabled,
-    publicStatus?.status,
-    uiTunnelMode,
-    token
-  ]);
-
   const startPublicLink = async () => {
     if (!token) {
       setPublicMsg("Sign in again to start tunnel routing.");
@@ -1126,18 +1147,13 @@ export default function ConfigPage({
       // Basic/temporary path: if backend is still in named mode on this machine,
       // force temporary override before requesting /go to prevent stale named-mode failures.
       if (uiTunnelMode === "token_bootstrap" && publicStatus?.mode === "named" && !publicStatus?.namedDisabled) {
-        try {
-          const overrideRes = await fetch(`${apiBase}/api/public/named/disable`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          const overrideJson = await overrideRes.json().catch(() => null);
-          if (overrideRes.ok && overrideJson) {
-            setPublicStatus(overrideJson);
-          }
-        } catch {
-          // best-effort; proceed to /go and let backend return actionable error if needed
-        }
+        const overrideRes = await fetch(`${apiBase}/api/public/named/disable`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const overrideJson = await overrideRes.json().catch(() => null);
+        if (!overrideRes.ok) throw new Error(overrideJson?.message || "Could not pause the permanent connection.");
+        if (overrideJson) setPublicStatus(overrideJson);
       }
 
       const res = await fetch(`${apiBase}/api/public/go`, {
@@ -1827,115 +1843,66 @@ export default function ConfigPage({
       ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>{tunnelStepLabel}</div>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
-        <div style={{ fontSize: 12, opacity: 0.72, marginBottom: 10 }}>{tunnelModeHint}</div>
-        {publicStatus ? (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-              <button
-                onClick={uiTunnelMode === "existing_named" ? startNamedPublicLink : startPublicLink}
-                disabled={startActionDisabled}
-                title={startActionDisabledReason || undefined}
-                style={actionBtnStyle(startActionDisabled)}
-              >
-              {startActionLabel}
-            </button>
-            {startActionDisabledReason ? (
-              <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>{startActionDisabledReason}</div>
-            ) : null}
-            {uiTunnelMode === "token_bootstrap" && quickDisabled ? (
-              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-                Temporary route is fallback-only in sovereign posture when named routing is configured.
-              </div>
-            ) : null}
-            {publicStatus?.mode === "quick" && publicStatus?.namedConfigured ? (
-              <div style={{ fontSize: 12, color: "#facc15", alignSelf: "center" }}>
-                Named tunnel configured, but local runtime is still in quick mode.
-              </div>
-            ) : null}
-            {uiTunnelMode === "existing_named" && !cloudflaredAvailable && !serviceManagedTokenMode ? (
-              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-                cloudflared is unavailable on this machine, so local named-tunnel launch is disabled.
-              </div>
-            ) : null}
-            {uiTunnelMode === "existing_named" && cloudflaredAvailable && !namedTunnelManageableLocally && !namedTunnelConfiguredLocally ? (
-              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-                Named tunnel launch is not available yet on this machine. Discover the named tunnel first.
-              </div>
-            ) : null}
-            {productTier === "advanced" && publicStatus?.mode === "quick" && publicStatus?.publicOrigin ? (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button
-                  onClick={() => window.open(String(publicStatus.publicOrigin), "_blank", "noopener,noreferrer")}
-                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Open temporary link
-                </button>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(String(publicStatus.publicOrigin)).catch(() => {});
-                  }}
-                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Copy temporary link
-                </button>
-              </div>
-            ) : null}
-              <button
-                onClick={stopPublicLink}
-                disabled={stopActionDisabled}
-                title={stopActionDisabledReason || undefined}
-                style={actionBtnStyle(stopActionDisabled)}
-              >
-                {stopActionLabel}
-              </button>
-              <button
-                onClick={() => refreshPublicStatus({ discover: true })}
-                disabled={refreshActionDisabled}
-                title={refreshActionDisabledReason || undefined}
-                style={actionBtnStyle(refreshActionDisabled)}
-              >
-                {refreshRoutingLabel}
-              </button>
-              {stopActionDisabledReason ? (
-                <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>{stopActionDisabledReason}</div>
-              ) : null}
-              {refreshActionDisabledReason ? (
-                <div style={{ fontSize: 12, opacity: 0.75, alignSelf: "center" }}>{refreshActionDisabledReason}</div>
-              ) : null}
+        <div style={{ fontWeight: 600, marginBottom: 10 }}>Public Connection</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }} role="group" aria-label="Connection type">
+          <button type="button" aria-pressed={uiTunnelMode === "token_bootstrap"}
+            onClick={() => setConnectionView("temporary")}
+            style={actionBtnStyle(false)}>Temporary</button>
+          <button type="button" aria-pressed={uiTunnelMode === "existing_named"}
+            onClick={() => setConnectionView("permanent")}
+            style={actionBtnStyle(false)}>Permanent</button>
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 8 }}>
+          Connection: <b>{publicStatus?.mode === "quick" ? "Temporary" : publicStatus?.mode === "named" ? "Permanent" : "Off"}</b>
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 8 }}>
+          Public address: <b>{publicStatus?.mode === "quick"
+            ? publicStatus?.publicOrigin || "Not available"
+            : publicStatus?.mode === "named" ? namedOriginCandidate || "Not available"
+              : uiTunnelMode === "existing_named" ? publicStatus?.configuredNamedOrigin || "Not configured" : "Not available"}</b>
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 10 }} role="status">
+          Sharing: <b>{publicStatus?.mode === "off" ? "Off"
+            : publicStatus?.availability === "reachable" ? "Online"
+            : publicStatus?.status === "starting" ? "Connecting" : "Unverified"}</b>
+        </div>
+        {publicStatus?.explicitActivationRequired && uiTunnelMode === "existing_named" ? (
+          <div style={{ fontSize: 12, marginBottom: 8 }}>This existing connection needs your approval before public sharing starts.</div>
+        ) : null}
+        {publicStatus && (
+          <button
+            onClick={publicStatus.mode === (uiTunnelMode === "existing_named" ? "named" : "quick")
+              ? stopPublicLink : uiTunnelMode === "existing_named" ? startNamedPublicLink : startPublicLink}
+            disabled={publicStatus.mode === (uiTunnelMode === "existing_named" ? "named" : "quick")
+              ? !token || publicBusy : startActionDisabled}
+            title={publicStatus.mode === (uiTunnelMode === "existing_named" ? "named" : "quick")
+              ? undefined : startActionDisabledReason || undefined}
+            style={actionBtnStyle(publicStatus.mode === (uiTunnelMode === "existing_named" ? "named" : "quick")
+              ? !token || publicBusy : startActionDisabled)}
+          >
+            {publicStatus.mode === (uiTunnelMode === "existing_named" ? "named" : "quick")
+              ? "Stop sharing" : "Enable sharing"}
+          </button>
+        )}
+        {startActionDisabled && publicStatus?.mode !== (uiTunnelMode === "existing_named" ? "named" : "quick") ? (
+          <div style={{ fontSize: 12, opacity: 0.78, marginTop: 8 }}>
+            {uiTunnelMode === "existing_named" && !cloudflaredAvailable && !externalServiceRunning
+              ? "A Cloudflare connector is not installed. See Advanced for setup information."
+              : startActionDisabledReason}
           </div>
         ) : null}
-        {publicStatus ? (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-            {temporaryOverrideAllowed ? (
-              <button
-                onClick={() => setNamedOverride(true)}
-                disabled={publicBusy || publicStatus?.namedDisabled}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Use temporary link instead
-              </button>
-            ) : null}
-            {publicStatus?.namedDisabled ? (
-              <button
-                onClick={() => setNamedOverride(false)}
-                disabled={publicBusy}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Restore named tunnel
-              </button>
-            ) : null}
-            {publicStatus?.namedDisabled ? (
-              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-                {namedTunnelDetected
-                  ? "Named tunnel detected. Restore named routing to return to the durable host."
-                  : "Temporary-link override is active. Named routing is paused until you restore it."}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, marginBottom: 10 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4, color: routingStatusTone }}>{routingStatusTitle}</div>
+        {tunnelEnabled ? (
+          <div style={{ marginTop: 12 }}>
+            <button onClick={() => refreshPublicStatus({ discover: true })}
+              disabled={refreshActionDisabled} title={refreshActionDisabledReason || undefined}
+              style={actionBtnStyle(refreshActionDisabled)}>{refreshRoutingLabel}</button>
+            {temporaryOverrideAllowed ? <button onClick={() => setNamedOverride(true)}
+              disabled={publicBusy} style={actionBtnStyle(publicBusy)}>Use temporary link</button> : null}
+            {publicStatus?.namedDisabled ? <button onClick={() => setNamedOverride(false)}
+              disabled={publicBusy} style={actionBtnStyle(publicBusy)}>Restore permanent link</button> : null}
+        <details style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600, color: routingStatusTone }}>Connection details</summary>
+          <div style={{ fontWeight: 600, margin: "8px 0 4px", color: routingStatusTone }}>{routingStatusTitle}</div>
           <div style={{ fontSize: 12, opacity: 0.82 }}>{routingStatusDetail}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
             <span
@@ -1966,40 +1933,25 @@ export default function ConfigPage({
           <div style={{ display: "grid", gap: 3, fontSize: 12, opacity: 0.82, marginTop: 8 }}>
             <div>Public base domain: <b>{tunnelDomain || "—"}</b></div>
             <div>Tunnel control: <b>{serviceManagedTokenMode ? "Externally managed service" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
-            <div>Named tunnel online: <b>{namedTunnelOnline ? "yes" : "no"}</b></div>
+            <div>Connector: <b>{publicStatus?.connection?.connectorConnected ? "Connected" : "Unverified"}</b></div>
+            <div>Public listener: <b>{publicStatus?.listener?.status === "listening" ? `Listening on ${publicStatus?.listener?.port}` : "Not listening"}</b></div>
           </div>
           {tunnelControlMessage ? (
             <div style={{ marginTop: 6, fontSize: 12, opacity: 0.65 }}>{tunnelControlMessage}</div>
           ) : null}
-        </div>
+        </details>
+          </div>
+        ) : null}
         <label style={{ display: "flex", alignItems: "center", gap: 8 }} htmlFor="tunnel-settings-enabled">
           <input
             id="tunnel-settings-enabled"
             name="tunnelSettingsEnabled"
             type="checkbox"
             checked={tunnelEnabled}
-            onChange={async (e) => {
-              const v = e.target.checked;
-              setTunnelEnabled(v);
-              writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "0");
-              // UI preference only: do not clear persisted named-tunnel config when toggled off.
-              if (!v && publicStatus?.mode === "named" && publicStatus?.status !== "offline") {
-                setPublicMsg("Named tunnel is still running. Click Stop sharing to shut it down.");
-              }
-            }}
+            onChange={(e) => setTunnelEnabled(e.target.checked)}
           />
-          <span>Show advanced tunnel fields</span>
+          <span>Advanced / Diagnostics</span>
         </label>
-        {!tunnelEnabled && publicStatus?.mode === "named" && publicStatus?.status !== "offline" ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "#ffb4b4" }}>
-            Named tunnel is still running. Use <b>Stop named tunnel</b> to disable it.
-          </div>
-        ) : null}
-        {!tunnelEnabled && (
-          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-            Advanced tunnel fields are hidden. Current routing stays active.
-          </div>
-        )}
 
         {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
 
@@ -2703,6 +2655,42 @@ export default function ConfigPage({
           </div>
         </div>
       </div>
+
+      <details style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <summary style={{ fontWeight: 600, cursor: "pointer" }}>Cloudflare Analytics (optional)</summary>
+        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+          Connect a read-only Analytics token for one zone and creator hostname. This is separate from your Cloudflare tunnel and native Audience reporting.
+        </div>
+        <div style={{ fontSize: 12, marginBottom: 10 }}>
+          Status: {cloudflareAnalytics?.configured ? cloudflareAnalytics.status : "Disconnected"}
+          {cloudflareAnalytics?.lastSyncAt ? ` · Last refresh: ${new Date(cloudflareAnalytics.lastSyncAt).toLocaleString()}` : ""}
+          {cloudflareAnalytics?.cachedDays !== undefined ? ` · Cached traffic days: ${cloudflareAnalytics.cachedDays}` : ""}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 8 }}>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>Zone ID
+            <input className={inputClass} value={analyticsZoneId} onChange={(e) => setAnalyticsZoneId(e.target.value)} autoComplete="off" />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>Creator hostname
+            <input className={inputClass} value={analyticsHostname} onChange={(e) => setAnalyticsHostname(e.target.value)} placeholder="creator.example.com" autoComplete="off" />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>Account ID (optional, for Web Analytics referrers)
+            <input className={inputClass} value={analyticsAccountId} onChange={(e) => setAnalyticsAccountId(e.target.value)} autoComplete="off" />
+          </label>
+          <label style={{ display: "grid", gap: 4, fontSize: 12 }}>Analytics Read token
+            <input className={inputClass} type="password" value={analyticsToken} onChange={(e) => setAnalyticsToken(e.target.value)}
+              placeholder={cloudflareAnalytics?.configured ? "Stored; enter a replacement to change settings" : "Paste a read-only token"} autoComplete="new-password" />
+          </label>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+          <button onClick={saveCloudflareAnalytics} disabled={analyticsBusy || !analyticsToken.trim()}>
+            {analyticsBusy ? "Working..." : cloudflareAnalytics?.configured ? "Replace connection" : "Connect"}
+          </button>
+          {cloudflareAnalytics?.configured ? <button onClick={refreshCloudflareAnalytics} disabled={analyticsBusy}>Refresh aggregates</button> : null}
+          {cloudflareAnalytics?.configured ? <button onClick={disconnectCloudflareAnalytics} disabled={analyticsBusy}>Disconnect</button> : null}
+        </div>
+        {cloudflareAnalytics?.error ? <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>Last refresh: {cloudflareAnalytics.error}</div> : null}
+        {analyticsMessage ? <div role="status" style={{ marginTop: 8, fontSize: 12 }}>{analyticsMessage}</div> : null}
+      </details>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Payments</div>

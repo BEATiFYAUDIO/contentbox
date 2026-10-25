@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
+import fs from "node:fs";
 import test from "node:test";
 import { AsyncLifecycleMutex, startNamedRuntimeAtStartup } from "./lib/publicLifecycle.js";
 import { DEFAULT_PUBLIC_PORT, PublicServerLifecycle, resolvePublicCorsOrigin } from "./publicServer.js";
@@ -8,6 +9,22 @@ test("credentialed public CORS is restricted to trusted Fan origins", () => {
   assert.equal(resolvePublicCorsOrigin("https://fan.certifyd.me"), "https://fan.certifyd.me");
   assert.equal(resolvePublicCorsOrigin("https://attacker.example"), "*");
   assert.equal(resolvePublicCorsOrigin("https://custom.example", "https://custom.example"), "https://custom.example");
+});
+
+test("packaged platforms keep admin 4000 and public 4010 as distinct defaults", () => {
+  const api = fs.readFileSync(new URL("./server.ts", import.meta.url), "utf8");
+  assert.match(api, /NODE_HTTP_PORT = Number\(process\.env\.PORT \|\| 4000\)/);
+  assert.match(api, /PUBLIC_HTTP_PORT = Number\(process\.env\.PUBLIC_PORT \|\| 4010\)/);
+  assert.equal(DEFAULT_PUBLIC_PORT, 4010);
+  for (const file of [
+    "../../../packaging/linux/start.sh",
+    "../../../packaging/macos/CertifydCoreLauncher.sh",
+    "../../../packaging/windows/CertifydCore.Launcher.ps1"
+  ]) {
+    const launcher = fs.readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.match(launcher, /4000/, file);
+    assert.doesNotMatch(launcher, /PUBLIC_PORT[^\n]*4000/, file);
+  }
 });
 
 test("public listener can start dynamically on loopback and stop cleanly", async () => {
