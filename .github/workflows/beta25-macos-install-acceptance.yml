@@ -61,7 +61,9 @@ jobs:
           test -n "$(xattr -p com.apple.quarantine "$app")"
           spctl --assess --type execute --verbose=4 "$app"
           codesign --verify --deep --strict --all-architectures "$app"
-          open "$app"
+          open "$app" > "$RUNNER_TEMP/certifyd-open.log" 2>&1 &
+          open_pid=$!
+          echo "Launch Services open PID: $open_pid"
 
           health=000
           for _ in $(seq 1 90); do
@@ -69,6 +71,11 @@ jobs:
             test "$health" = 200 && break
             sleep 2
           done
+          if [[ "$health" != 200 ]]; then
+            cat "$RUNNER_TEMP/certifyd-open.log" || true
+            pgrep -fl 'Certifyd|open' || true
+            exit 1
+          fi
           test "$health" = 200
           test "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:4000/)" = 200
           "$app/Contents/Resources/status.sh"
