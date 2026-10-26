@@ -18,6 +18,7 @@
     "smoke:advanced": "tsx src/scripts/node_mode_persist_test.ts && cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/single_identity_guard_test.ts",
     "smoke:public-host": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/public_host_smoke.ts",
     "smoke:canonical-playback-browser": "tsx src/scripts/canonical_playback_browser_smoke.ts",
+    "smoke:legacy-preview-browser": "tsx src/scripts/legacy_preview_browser_regression.ts",
     "test:dashboard-upload": "cross-env API_BASE_URL=http://127.0.0.1:4000 tsx src/scripts/dashboard_upload_smoke_test.ts",
     "test:storefront-gating": "cross-env API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 tsx src/scripts/storefront_gating_test.ts",
     "test:delegated-invoice-harness": "npx tsx src/payments/delegated_invoice_harness.ts",
@@ -68,6 +69,7 @@
     "@types/bcrypt": "^6.0.0",
     "@types/node": "^25.1.0",
     "cross-env": "^10.1.0",
+    "playwright-core": "^1.64.1",
     "prisma": "^6.9.0",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3"

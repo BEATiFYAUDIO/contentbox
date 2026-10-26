@@ -1,3 +1,4 @@
+import { availablePreviewKey } from "./derivedPreview.js";
 // Disposable SQLite + real Fastify handlers. Runtime posture/identity are fixture seams;
 // no installed Core, external provider, payment creation, or real buyer session is used.
 import fs from "node:fs";
@@ -52,7 +53,8 @@ export function serverConstant(name: string, source?: string) {
 export async function metadataFixture(source?: string) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "certifyd-mime-"));
   const api = fileURLToPath(new URL("../..", import.meta.url));
-  const url = `file:${path.join(dir, "fixture.db")}`;
+  const url = `file:${path.join(dir, "fixture.db").replace(/\\/g, "/")}`;
+  fs.writeFileSync(path.join(dir, "fixture.db"), "");
   execFileSync(process.execPath, [path.join(api, "node_modules/prisma/build/index.js"), "db", "push", "--schema", path.join(api, "prisma/schema.prisma"), "--skip-generate"],
     { env: { ...process.env, DATABASE_URL: url }, stdio: "pipe" });
   const db = new PrismaClient({ datasources: { db: { url } }, log: [{ emit: "event", level: "query" }] });
@@ -67,7 +69,7 @@ export async function metadataFixture(source?: string) {
   const readSession = async (req: any) => req.headers["x-fixture-buyer"] === buyer.id ? { id: "fixture-session", buyer } : null;
   const hasAccess = async (id: string, contentId: string) => Boolean(await db.entitlement.findUnique({ where: { buyerId_contentId: { buyerId: id, contentId } } }));
   const context: any = vm.createContext({
-    ...metadata, ...lifecycle, ...access, ...security, buildCanonicalPlayback,
+    ...metadata, ...lifecycle, ...access, ...security, buildCanonicalPlayback, availablePreviewKey,
     fsSync: fs, fs: fsp, path, crypto, Buffer, URL, Date, console,
     process: { env: { NODE_ENV: "production" } }, prisma: db, app,
     asString: (v: any) => String(v ?? ""),
@@ -94,6 +96,7 @@ export async function metadataFixture(source?: string) {
   const names = ["badRequest", "notFound", "forbidden", "unauthorized", "normalizePrimaryTopic", "resolvePublicAccessMode",
     "decodeDiscoverableCursor", "encodeDiscoverableCursor", "buildPublicRelationshipSummary", "getPublicOfferGate",
     "getCoverAssetFromManifest", "previewExtForMime", "stablePreviewObjectKey", "isStablePreviewObjectKey",
+    "isLegacyGeneratedPreviewRecord", "resolvePublishedPreviewObjectKey", "getAvailablePreviewKey",
     "isAudioVideoMime", "isProtectedStreamOnlyMedia", "isEncryptedHlsPlaybackEnabled", "parseRangeHeader",
     "createPublicDeliveryToken", "verifyPublicDeliveryToken", "appendPublicDeliveryToken", "resolvePaymentMethodFromIntent",
     "handlePublicDiscoverableContent", "handlePublicContent", "handlePublicOffer", "handlePublicContentFile", "handlePublicPreviewFile"];
