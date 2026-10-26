@@ -1,4 +1,5 @@
 ﻿import "dotenv/config";
+import { availablePreviewKey } from "./lib/derivedPreview.js";
 import { probePublicRoute } from "./lib/publicRouteProbe.js";
 import { getPrimaryFileObjectKeyFromManifest, getPrimaryFileMime, getStoredFileMime } from "./lib/primaryFileMetadata.js";
 import Fastify from "fastify";
@@ -12708,6 +12709,19 @@ function stablePreviewObjectKey(contentId: string, mimeOrExt: string) {
   return ext ? `previews/${contentId}-preview.${ext}` : null;
 }
 
+function getAvailablePreviewKey(content: any, manifestJson: any, primaryKey: string | null) {
+  return availablePreviewKey({
+    contentId: content.id,
+    primaryKey,
+    manifestPreview: manifestJson?.preview,
+    exists: (key) => {
+      if (!content.repoPath) return false;
+      const resolved = resolveDeliveryPath(content.repoPath, key);
+      return resolved.ok && fsSync.existsSync(resolved.absPath) && fsSync.statSync(resolved.absPath).isFile();
+    }
+  });
+}
+
 function isStablePreviewObjectKey(contentId: string, objectKey: string) {
   const key = String(objectKey || "").trim();
   return key === stablePreviewObjectKey(contentId, "mp4") || key === stablePreviewObjectKey(contentId, "mp3");
@@ -12849,7 +12863,7 @@ async function ensureEncryptedHlsRendition(content: any, files: any[], manifestR
         playlistPath
       ];
 
-      await execFileAsync("ffmpeg", mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
+      await execFileAsync(process.env.FFMPEG_PATH || "ffmpeg", mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
     });
 
     await commitAll(content.repoPath, `generate encrypted stream ${content.id}`).catch(() => {});
@@ -13086,7 +13100,7 @@ async function ensurePreviewFile(content: any, files: any[]) {
         ]
       : ["-y", "-ss", "0", "-t", "20", "-i", inputAbs, "-c:a", "libmp3lame", "-b:a", "128k", tmpOut];
 
-    await execFileAsync("ffmpeg", ffmpegArgs);
+    await execFileAsync(process.env.FFMPEG_PATH || "ffmpeg", ffmpegArgs);
 
     await fs.mkdir(path.dirname(previewAbs), { recursive: true });
     await fs.copyFile(tmpOut, previewAbs);
@@ -13177,7 +13191,7 @@ async function ensureCoverImage(content: any, files: any[]) {
       tmpOut
     ];
 
-    await execFileAsync("ffmpeg", ffmpegArgs);
+    await execFileAsync(process.env.FFMPEG_PATH || "ffmpeg", ffmpegArgs);
 
     const stream = fsSync.createReadStream(tmpOut);
     const fileEntry = await addFileToContentRepo({
@@ -34603,7 +34617,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
       null;
     const rawPreviewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview.trim()) || "";
     const previewFromManifest = rawPreviewFromManifest && isStablePreviewObjectKey(contentId, rawPreviewFromManifest) ? rawPreviewFromManifest : "";
-    objectKey = previewFromManifest || "";
+    objectKey = getAvailablePreviewKey(content, manifestJson, primaryFileId) || "";
     const contentType = asString(content?.type || "").trim().toLowerCase();
     const isVideoLike = contentType === "video" || contentType === "movie" || contentType === "clip";
     const isAudioLike = contentType === "audio" || contentType === "song";
@@ -34664,7 +34678,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
   const manifestForAccess = await prisma.manifest.findUnique({ where: { contentId } });
   const manifestJsonForAccess = (manifestForAccess?.json || {}) as any;
-  const previewObjectKey = asString(manifestJsonForAccess?.preview || "").trim();
+  const previewObjectKey = getAvailablePreviewKey(content, manifestJsonForAccess, getPrimaryFileObjectKeyFromManifest(manifestJsonForAccess));
   const coverObjectKey = asString(getCoverAssetFromManifest(manifestJsonForAccess)?.path || manifestJsonForAccess?.cover || "").trim();
   const freeContent = isFreeContent({ priceSats: content.priceSats });
   const paidContent = !freeContent && content.priceSats != null && content.priceSats > 0n;
@@ -41037,11 +41051,7 @@ async function handlePublicOffer(req: any, reply: any) {
     : null;
   const primaryFileMime = getPrimaryFileMime(manifestJson, primaryFile ? [primaryFile] : []);
   const freeContent = isFreeContent({ priceSats: content.priceSats });
-  const manifestPreviewObjectKey = asString(manifestJson?.preview || "").trim();
-  const previewObjectKey =
-    manifestPreviewObjectKey && manifestPreviewObjectKey !== primaryFileId && isStablePreviewObjectKey(contentId, manifestPreviewObjectKey)
-      ? manifestPreviewObjectKey
-      : freeContent ? primaryFileId : null;
+  const previewObjectKey = getAvailablePreviewKey(content, manifestJson, primaryFileId) || (freeContent ? primaryFileId : null);
   const coverAsset = getCoverAssetFromManifest(manifestJson);
   const coverObjectKey = coverAsset?.path || null;
 

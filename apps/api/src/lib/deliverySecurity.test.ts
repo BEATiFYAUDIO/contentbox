@@ -1,3 +1,4 @@
+import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
@@ -135,7 +136,7 @@ test("delivery object keys accept only canonical repo-relative paths", () => {
 test("delivery path resolution rejects traversal and normalization mismatches", () => {
   const ok = resolveDeliveryPath("/tmp/contentbox/repo", "files/song.mp3");
   assert.equal(ok.ok, true);
-  if (ok.ok) assert.equal(ok.absPath, "/tmp/contentbox/repo/files/song.mp3");
+  if (ok.ok) assert.equal(ok.absPath, path.resolve("/tmp/contentbox/repo/files/song.mp3"));
   assert.equal(resolveDeliveryPath("/tmp/contentbox/repo", "../secret.mp3").ok, false);
   assert.equal(resolveDeliveryPath("/tmp/contentbox/repo", "files/../../secret.mp3").ok, false);
   assert.equal(resolveDeliveryPath("/tmp/contentbox/repo", "files//song.mp3").ok, false);
