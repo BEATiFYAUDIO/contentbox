@@ -99,8 +99,10 @@ export async function metadataFixture(source?: string) {
     "isLegacyGeneratedPreviewRecord", "resolvePublishedPreviewObjectKey", "getAvailablePreviewKey",
     "isAudioVideoMime", "isProtectedStreamOnlyMedia", "isEncryptedHlsPlaybackEnabled", "parseRangeHeader",
     "createPublicDeliveryToken", "verifyPublicDeliveryToken", "appendPublicDeliveryToken", "resolvePaymentMethodFromIntent",
-    "handlePublicDiscoverableContent", "handlePublicContent", "handlePublicOffer", "handlePublicContentFile", "handlePublicPreviewFile"];
+    "handlePublicBuyerEntitlements", "handlePublicCoverFile", "handlePublicDiscoverableContent", "handlePublicContent", "handlePublicOffer", "handlePublicContentFile", "handlePublicPreviewFile"];
   vm.runInContext(ts.transpileModule(serverFunctions(names, source), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  app.get("/api/buyer/entitlements", context.handlePublicBuyerEntitlements);
+  app.get("/public/content/:id/cover", context.handlePublicCoverFile);
   app.get("/public/discoverable-content", context.handlePublicDiscoverableContent);
   app.get("/public/content/:id", context.handlePublicContent);
   app.get("/buy/content/:contentId/offer", context.handlePublicOffer);

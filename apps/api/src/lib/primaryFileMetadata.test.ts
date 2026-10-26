@@ -235,6 +235,25 @@ test("SQLite public routes: primary MIME, format coverage, publication compatibi
       assert.equal((await f.app.inject(original)).statusCode, 403);
       assert.deepEqual(await f.db.manifest.findUnique({ where: { contentId: fixture.id } }), before);
     });
+    await t.test("public purchaser library hydrates artwork and creator without leaking other buyers or creator emails", async () => {
+      const work = await f.seed("mp3", "audio/mpeg", { paid: true, type: "song" });
+      await f.db.entitlement.create({ data: { buyerId: f.buyer.id, contentId: work.id, manifestSha256: work.sha256 } });
+      assert.deepEqual((await f.app.inject("/api/buyer/entitlements")).json(), []);
+      const response = await f.app.inject({ url: `/api/buyer/entitlements?contentId=${work.id}`, headers: { "x-fixture-buyer": f.buyer.id } });
+      assert.equal(response.statusCode, 200);
+      const items = response.json();
+      assert.equal(items.length, 1);
+      assert.equal(items[0].content.owner.displayName, "fixturecreator");
+      assert.equal(items[0].content.owner.email, undefined);
+      assert.equal(items[0].content.coverUrl, `/public/content/${work.id}/cover`);
+      assert.equal(items[0].content.buyUrl, `/buy/${work.id}`);
+      const cover = await f.app.inject(items[0].content.coverUrl);
+      assert.equal(cover.statusCode, 200);
+      assert.equal(cover.headers["content-type"], "image/jpeg");
+      assert.equal(cover.body, "fixture-cover");
+      const empty = await f.app.inject({ url: "/api/buyer/entitlements", headers: { "x-fixture-buyer": "another-buyer" } });
+      assert.deepEqual(empty.json(), []);
+    });
     await t.test("Basic discovery still excludes paid works while reporting free file MIME", async () => {
       f.setNodeMode("basic"); const items = (await f.app.inject("/public/discoverable-content?limit=50")).json().items;
       assert.ok(items.length); assert.ok(items.every((x: any) => x.priceSats === 0)); assert.ok(items.every((x: any) => "primaryFileMime" in x));

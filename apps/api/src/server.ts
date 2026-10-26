@@ -13903,49 +13903,7 @@ function registerPublicRoutes(appPublic: any) {
     clearBuyerCookies(reply, req);
     return reply.send({ ok: true });
   });
-  appPublic.get("/api/buyer/entitlements", async (req: any, reply: any) => {
-    const session = await resolveBuyerSession(req, reply);
-    const buyerId = session?.buyer?.id || null;
-    if (!buyerId) return reply.send([]);
-    const contentId = asString((req.query as any)?.contentId || "").trim();
-    await reconcileBuyerEntitlementsFromPurchaseHistory({
-      buyerId,
-      contentId: contentId || undefined
-    }).catch(() => {});
-    const entitlements = await prisma.entitlement.findMany({
-      where: {
-        buyerId,
-        ...(contentId ? { contentId } : {})
-      },
-      include: {
-        payment: true,
-        content: {
-          select: {
-            id: true,
-            title: true,
-            type: true,
-            manifest: { select: { sha256: true } }
-          }
-        }
-      },
-      orderBy: { grantedAt: "desc" }
-    });
-    return reply.send(
-      entitlements.map((e) => ({
-	        id: e.id,
-	        contentId: e.contentId,
-	        manifestSha256: e.manifestSha256,
-	        grantedAt: e.grantedAt,
-	        paymentIntentId: e.paymentIntentId || null,
-	        receiptId: String((e.payment as any)?.receiptId || "").trim() || null,
-	        receiptToken: String((e.payment as any)?.receiptToken || "").trim() || null,
-	        paidAt: e.payment?.paidAt && !Number.isNaN(new Date(e.payment.paidAt).getTime()) ? new Date(e.payment.paidAt).toISOString() : null,
-	        title: e.content?.title || null,
-	        type: e.content?.type || null,
-	        currentManifestSha256: e.content?.manifest?.sha256 || null
-	      }))
-    );
-  });
+  appPublic.get("/api/buyer/entitlements", handlePublicBuyerEntitlements);
   appPublic.post("/api/buyer/buys", handleBuyerBuys);
   appPublic.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     const body = (req.body ?? {}) as {
@@ -18746,6 +18704,59 @@ app.post("/api/buyer/entitlements/reset", { preHandler: requireAuth }, async (re
   const deleted = await prisma.entitlement.deleteMany({ where: { buyerId, contentId } });
   return reply.send({ ok: true, deleted: deleted.count });
 });
+
+async function handlePublicBuyerEntitlements(req: any, reply: any) {
+    const session = await resolveBuyerSession(req, reply);
+    const buyerId = session?.buyer?.id || null;
+    if (!buyerId) return reply.send([]);
+    const contentId = asString((req.query as any)?.contentId || "").trim();
+    await reconcileBuyerEntitlementsFromPurchaseHistory({
+      buyerId,
+      contentId: contentId || undefined
+    }).catch(() => {});
+    const entitlements = await prisma.entitlement.findMany({
+      where: {
+        buyerId,
+        ...(contentId ? { contentId } : {})
+      },
+      include: {
+        payment: true,
+        content: {
+          select: {
+            id: true,
+            title: true,
+            type: true,
+            manifest: { select: { sha256: true } },
+            owner: { select: { displayName: true } }
+          }
+        }
+      },
+      orderBy: { grantedAt: "desc" }
+    });
+    return reply.send(
+      entitlements.map((e) => ({
+	        id: e.id,
+	        contentId: e.contentId,
+	        manifestSha256: e.manifestSha256,
+	        grantedAt: e.grantedAt,
+	        paymentIntentId: e.paymentIntentId || null,
+	        receiptId: String((e.payment as any)?.receiptId || "").trim() || null,
+	        receiptToken: String((e.payment as any)?.receiptToken || "").trim() || null,
+	        paidAt: e.payment?.paidAt && !Number.isNaN(new Date(e.payment.paidAt).getTime()) ? new Date(e.payment.paidAt).toISOString() : null,
+	        title: e.content?.title || null,
+	        type: e.content?.type || null,
+	        currentManifestSha256: e.content?.manifest?.sha256 || null,
+          content: e.content ? {
+            id: e.content.id,
+            title: e.content.title,
+            type: e.content.type,
+            owner: e.content.owner,
+            coverUrl: `/public/content/${encodeURIComponent(e.contentId)}/cover`,
+            buyUrl: `/buy/${encodeURIComponent(e.contentId)}`
+          } : null
+	      }))
+    );
+}
 
 // List buyer entitlements (buyer-session scoped)
 app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
@@ -38107,7 +38118,6 @@ async function handleBuyPage(req: any, reply: any) {
   const sellerHandle = normalizePublicProfileHandle(content.owner?.displayName || "") || normalizedEmailLocalPart(content.owner?.email || "") || null;
   const sellerProfileUrl = sellerHandle ? `/u/${encodeURIComponent(sellerHandle)}` : null;
   const sellerAvatarUrl = resolveCreatorAvatarUrlForPublicPayload(content.owner?.avatarUrl || null, resolveCanonicalPublicOrigin(req));
-  const sellerBadgeLabel = ownerAppearance.theme.themeGeneratedFromImage ? "Creator theme" : "Certifyd";
   const canonicalOrigin = resolveCanonicalPublicOrigin(req);
   const canonicalBuyUrl = buildPublicUrlFromOrigin(canonicalOrigin, `/buy/${encodeURIComponent(content.id)}`);
   const oembedUrl = buildPublicUrlFromOrigin(
@@ -38237,19 +38247,6 @@ async function handleBuyPage(req: any, reply: any) {
     }
     .creator-name { font-weight: 750; line-height: 1.1; color: var(--profile-text); }
     .creator-handle { margin-top: 3px; font-size: 12px; color: var(--profile-muted); }
-    .creator-badge {
-      margin-left: auto;
-      border: 1px solid var(--profile-button-border);
-      color: var(--profile-accent);
-      background: var(--profile-button-bg);
-      border-radius: 999px;
-      padding: 5px 9px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
     .rail {
       flex: 1 1 280px;
       border: 1px solid var(--profile-card-border);
@@ -38561,7 +38558,6 @@ async function handleBuyPage(req: any, reply: any) {
         --profile-card-bg-strong: var(--profile-card-bg-mobile-strong);
       }
       .creator-strip { align-items: flex-start; }
-      .creator-badge { display: none; }
     }
   </style>
 </head>
@@ -38578,7 +38574,6 @@ async function handleBuyPage(req: any, reply: any) {
           <div class="creator-name">${sellerProfileUrl ? `<a href="${escHtml(sellerProfileUrl)}">${escHtml(sellerDisplayName || "Creator")}</a>` : escHtml(sellerDisplayName || "Creator")}</div>
           <div class="creator-handle">${sellerHandle ? `@${escHtml(sellerHandle)}` : "Creator profile"}</div>
         </div>
-        <div class="creator-badge">${escHtml(sellerBadgeLabel)}</div>
       </div>
       <div id="app">Loading...</div>
       <div class="footer">
@@ -39486,6 +39481,7 @@ async function handleBuyPage(req: any, reply: any) {
     const path = String(src || "").toLowerCase();
     if (offer?.type === "video" || mime.startsWith("video/") || /\\.(mp4|webm|mov|m4v|m3u8)(\\?|#|$)/.test(path)) return "video";
     if (offer?.type === "song" || mime.startsWith("audio/") || /\\.(mp3|wav|m4a|ogg|flac|m3u8)(\\?|#|$)/.test(path)) return "audio";
+    if (mime === "application/pdf") return "pdf";
     if (mime.startsWith("image/") || /\\.(png|jpe?g|webp|gif|avif)(\\?|#|$)/.test(path)) return "image";
     return "file";
   }
@@ -39611,7 +39607,8 @@ async function handleBuyPage(req: any, reply: any) {
       (playback.isVideo ? '<video id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata"' + (coverSrc ? ' poster="' + coverSrc + '"' : '') + ' src="' + playback.src + '"></video>' : '') +
       (playback.isAudio ? '<audio id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata" src="' + playback.src + '"></audio>' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "image" ? '<img id="player" src="' + playback.src + '" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />' : '') +
-      (!playback.isVideo && !playback.isAudio && playback.kind === "file" ? '<a class="muted" href="' + playback.src + '" target="_blank" rel="noreferrer">Open preview</a>' : '') +
+      (playback.kind === "pdf" ? '<iframe id="documentPreview" title="Document preview" src="' + esc(playback.src) + '" style="display:block;width:100%;height:78vh;min-height:420px;border:1px solid var(--profile-card-border);border-radius:12px;background:#fff;margin-bottom:10px;"></iframe>' : '') +
+      (!playback.isVideo && !playback.isAudio && (playback.kind === "file" || playback.kind === "pdf") ? '<a class="muted" href="' + esc(playback.src) + '" target="_blank" rel="noopener noreferrer">Open preview</a>' : '') +
       ((playback.isVideo || playback.isAudio) ? '<div id="playbackStatus" class="muted" role="status" hidden></div>' : '') +
     '</div>';
   }
@@ -40547,7 +40544,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
     }
     .media img { width:100%; height:100%; object-fit:cover; display:block; }
     .media-fallback {
-      display:flex; align-items:center; justify-content:center;
+      display:flex; flex-direction:column; gap:12px; padding:18px; text-align:center; align-items:center; justify-content:center;
       width:100%; height:100%;
       font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:var(--profile-muted);
       background:
@@ -40640,6 +40637,10 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
     }
   }
 
+  function escapeLibraryHtml(value){
+    return String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[char]);
+  }
+
   function render(){
     if (!buyer || !buyer.id) {
       renderAuth();
@@ -40665,21 +40666,21 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
             const title = (e.content?.title || e.title || e.contentId || "Untitled");
             const contentType = e.content?.type || e.type || null;
             const creator = e.content?.owner?.displayName || e.content?.owner?.email || "Creator";
-            const cover = "/api/buyer/content/" + encodeURIComponent(e.contentId) + "/cover";
+            const cover = e.content?.coverUrl || ("/public/content/" + encodeURIComponent(e.contentId) + "/cover");
             const buyUrl = e.content?.buyUrl || ("/buy/" + encodeURIComponent(e.contentId));
             const createdAt = e.grantedAt ? new Date(e.grantedAt) : null;
             const granted = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt.toLocaleDateString() : null;
             return '<article class="item">' +
               '<div class="media">' +
-                '<img src="' + cover + '" alt="' + title.replace(/"/g, "&quot;") + ' cover" loading="lazy" onerror="this.style.display=\\'none\\'; this.nextElementSibling.style.display=\\'flex\\';" />' +
-                '<div class="media-fallback" style="display:none;">' + mediaLabel(contentType) + '</div>' +
+                '<img data-library-cover src="' + escapeLibraryHtml(cover) + '" alt="' + escapeLibraryHtml(title) + ' cover" loading="lazy" />' +
+                '<div class="media-fallback" style="display:none;"><span aria-hidden="true" style="font-size:44px;line-height:1;">' + ((contentType === "video") ? '&#9654;' : (contentType === "song" || contentType === "audio") ? '&#9835;' : '&#9638;') + '</span><span>' + escapeLibraryHtml(title) + '</span><small>' + escapeLibraryHtml(mediaLabel(contentType)) + '</small></div>' +
               '</div>' +
               '<div class="item-meta">' +
                 '<span class="status-pill">Owned</span>' +
-                '<h4 class="item-title">' + title + '</h4>' +
-                '<div class="creator">by ' + creator + '</div>' +
+                '<h4 class="item-title">' + escapeLibraryHtml(title) + '</h4>' +
+                '<div class="creator">by ' + escapeLibraryHtml(creator) + '</div>' +
                 '<div class="meta-line">' + mediaLabel(contentType) + (granted ? " · Unlocked " + granted : "") + '</div>' +
-                '<div class="actions"><a class="action-primary" href="' + buyUrl + '">' + mediaActionLabel(contentType) + '</a></div>' +
+                '<div class="actions"><a class="action-primary" href="' + escapeLibraryHtml(buyUrl) + '">' + mediaActionLabel(contentType) + '</a></div>' +
               '</div>' +
             '</article>';
           }).join("") +
@@ -40701,6 +40702,15 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
         </div>
       </div>
     \`;
+
+    app.querySelectorAll("img[data-library-cover]").forEach((img) => {
+      const showFallback = () => {
+        img.style.display = "none";
+        if (img.nextElementSibling) img.nextElementSibling.style.display = "flex";
+      };
+      img.addEventListener("error", showFallback, { once: true });
+      if (img.complete && !img.naturalWidth) showFallback();
+    });
 
     const logoutBtn = document.getElementById("logoutBtn");
     if (logoutBtn) {
