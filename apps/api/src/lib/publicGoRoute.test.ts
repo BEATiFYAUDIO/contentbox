@@ -86,6 +86,7 @@ function routeHarness(input: { namedConflict?: boolean; failure?: Failure; envir
     requireAuth,
     mutex,
     getMode: () => selection().mode,
+    isNamedConfigured: () => Boolean(input.namedConflict),
     handleNamed: async (reply) => reply.send({ mode: "named", status: "named-selected" }),
     environmentForcesQuick: () => {
       const selected = selection();
@@ -173,10 +174,10 @@ test("authenticated packaged-style off state transitions to persisted Quick thro
   }
 });
 
-test("authenticated named conflict rejects Quick before any route-level mutation", async () => {
+test("explicit Quick rejects named conflict before any route-level mutation", async () => {
   const h = routeHarness({ namedConflict: true });
   try {
-    const response = await postGo(h.app, { consent: true });
+    const response = await postGo(h.app, { consent: true, mode: "quick" });
     assert.equal(response.statusCode, 409);
     assert.equal(response.json().lastError, "named_configured");
     assert.equal(h.state.mode, null);
@@ -301,4 +302,26 @@ test("production Stop does not rewrite administrator-forced environment Quick", 
   } finally {
     await h.app.close();
   }
+});
+
+for (const mode of [null, "off"] as const) {
+  test(`Enable sharing resumes configured Named from ${mode ?? "default"}`, async () => {
+    const h = routeHarness({ namedConflict: true });
+    h.state.mode = mode;
+    try {
+      const response = await postGo(h.app, { consent: true });
+      assert.equal(response.statusCode, 200);
+      assert.equal(response.json().mode, "named");
+      assert.equal(h.state.spawns, 0);
+    } finally { await h.app.close(); }
+  });
+}
+test("invalid requested sharing mode cannot start a connector", async () => {
+  const h = routeHarness();
+  try {
+    const response = await postGo(h.app, { mode: "invalid", consent: true });
+    assert.equal(response.statusCode, 400);
+    assert.equal(h.state.spawns, 0);
+    assert.equal(h.state.mode, null);
+  } finally { await h.app.close(); }
 });

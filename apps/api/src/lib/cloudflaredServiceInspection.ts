@@ -117,12 +117,14 @@ export function evaluateNamedRouteEvidence(input: {
   routeMatchesThisCore: boolean;
   localListenerReady: boolean;
 }) {
-  const connected = input.identityConnected || (input.externalServiceRunning && input.routeMatchesThisCore);
-  const online = connected && input.routeMatchesThisCore;
+  // A successful round trip carrying this process's boot identity proves the
+  // public route independently of permission to inspect a system service.
+  const connected = input.identityConnected || input.routeMatchesThisCore;
+  const online = input.routeReachable && input.routeMatchesThisCore && input.localListenerReady;
   const reason = online
     ? input.identityConnected
       ? "identity_verified"
-      : "external_service_route_verified"
+      : input.externalServiceRunning ? "external_service_route_verified" : "route_verified_identity_unavailable"
     : input.routeReachable && !input.routeMatchesThisCore
       ? "route_points_to_different_core"
       : input.externalServiceRunning

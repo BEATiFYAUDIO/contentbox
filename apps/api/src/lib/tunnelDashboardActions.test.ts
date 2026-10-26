@@ -47,3 +47,19 @@ test("Named removal never changes posture implicitly", () => {
   assert.doesNotMatch(handler, /api\/node\/mode|setNodeMode|updateNodeMode/);
   assert.match(source, /Switch to Basic Creator before removing/);
 });
+
+test("temporary start pauses a saved Named connection even from Off", () => {
+  const handler = source.slice(source.indexOf("const startPublicLink"), source.indexOf("const startNamedPublicLink"));
+  assert.match(handler, /hasNamedConfiguration && !publicStatus\?\.namedDisabled/);
+  assert.match(handler, /mode: "quick"/);
+});
+test("permanent start restores a paused Named connection before starting", () => {
+  const handler = source.slice(source.indexOf("const startNamedPublicLink"), source.indexOf("const setNamedOverride"));
+  assert.ok(handler.indexOf("/api/public/named/enable") < handler.indexOf("/api/public/named/start"));
+  assert.match(handler, /publicStatus\?\.namedDisabled/);
+});
+test("sharing action feedback appears beside the primary action", () => {
+  const primary = source.slice(source.indexOf('<div style={{ fontWeight: 600, marginBottom: 10 }}>Public Connection'), source.indexOf('htmlFor="tunnel-settings-enabled"'));
+  assert.match(primary, /publicMsg.*role="alert"/);
+  assert.match(primary, /Connecting\.\.\./);
+});

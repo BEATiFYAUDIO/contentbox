@@ -519,7 +519,7 @@ test("archive extraction failure removes download, extraction directory, and unp
 
 test("successful archive extraction removes its temporary archive and extraction directory", async () => {
   const binDir = await temporaryBinDir();
-  const managedPath = path.join(binDir, "cloudflared");
+  const managedPath = path.join(binDir, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
   let extractionDir: string | null = null;
   try {
     const manager = new TunnelManager({
@@ -557,7 +557,7 @@ test("successful archive extraction removes its temporary archive and extraction
 
 test("binary version probing is finite and a timed-out probe does not block preparation", async () => {
   const binDir = await temporaryBinDir();
-  const managedPath = path.join(binDir, "cloudflared");
+  const managedPath = path.join(binDir, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
   await fs.writeFile(managedPath, "test binary");
   let versionProbeTimeout: number | undefined;
   try {

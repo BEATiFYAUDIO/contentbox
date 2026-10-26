@@ -52,8 +52,11 @@ export async function inspectWindowsCloudflared(timeoutMs: number, run: RunComma
           pid: pid(row.ProcessId), commandLine: row.PathName };
       });
       const processes: Array<{ pid: number; commandLine: string }> = data.processes.map((row: any) => {
-        if (!pid(row.ProcessId) || !row.CommandLine) throw new Error("Incomplete process inspection");
-        return { pid: pid(row.ProcessId)!, commandLine: String(row.CommandLine) };
+        if (!pid(row.ProcessId)) throw new Error("Incomplete process inspection");
+        // Non-admin Core cannot always read a SYSTEM process's command line.
+        // Keep the service inventory and the process PID; do not invent ownership.
+        const service = services.find((entry) => entry.pid === pid(row.ProcessId));
+        return { pid: pid(row.ProcessId)!, commandLine: String(row.CommandLine || service?.commandLine || "") };
       });
       return { services, processes };
     } catch (error: any) {

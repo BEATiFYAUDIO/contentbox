@@ -943,7 +943,7 @@ export default function ConfigPage({
     ? null
     : "Canonical public origin not detected yet. Sovereign Creator unlocks after stable public host detection.";
   const isBasicMode = nodeMode === "basic";
-  const temporaryOverrideAllowed = uiTunnelMode === "token_bootstrap" && publicStatus?.mode === "named" && !publicStatus?.namedDisabled;
+  const temporaryOverrideAllowed = uiTunnelMode === "token_bootstrap" && hasNamedConfiguration && !publicStatus?.namedDisabled;
   const routingStatusTitle = publicStatus?.namedDisabled
     ? namedTunnelDetected
       ? "Named tunnel paused"
@@ -1144,9 +1144,8 @@ export default function ConfigPage({
     setPublicBusy(true);
     setPublicMsg(null);
     try {
-      // Basic/temporary path: if backend is still in named mode on this machine,
-      // force temporary override before requesting /go to prevent stale named-mode failures.
-      if (uiTunnelMode === "token_bootstrap" && publicStatus?.mode === "named" && !publicStatus?.namedDisabled) {
+      // An explicit temporary selection must pause saved Named routing even while sharing is off.
+      if (uiTunnelMode === "token_bootstrap" && hasNamedConfiguration && !publicStatus?.namedDisabled) {
         const overrideRes = await fetch(`${apiBase}/api/public/named/disable`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` }
@@ -1159,7 +1158,7 @@ export default function ConfigPage({
       const res = await fetch(`${apiBase}/api/public/go`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ consent: true })
+        body: JSON.stringify({ consent: true, mode: "quick" })
       });
       const json = await res.json();
       setPublicStatus(json || null);
@@ -1175,7 +1174,7 @@ export default function ConfigPage({
         setPublicMsg(json?.message || (json?.status === "online" ? "Named tunnel is online." : "Named tunnel start requested."));
       }
       if (!res.ok) {
-        setPublicMsg(json?.message || json?.error || "Failed to start public link.");
+        setPublicMsg(json?.message || json?.error || json?.lastError || "Failed to start public link.");
       }
       if (res.ok && !json?.message) {
         setPublicMsg(
@@ -1204,13 +1203,21 @@ export default function ConfigPage({
     setPublicBusy(true);
     setPublicMsg(null);
     try {
+      if (publicStatus?.namedDisabled) {
+        const enableRes = await fetch(`${apiBase}/api/public/named/enable`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const enabled = await enableRes.json().catch(() => null);
+        if (!enableRes.ok) throw new Error(enabled?.message || "Could not restore the permanent connection.");
+      }
       const res = await fetch(`${apiBase}/api/public/named/start`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` }
       });
       const json = await res.json().catch(() => null);
       setPublicStatus(json || null);
-      if (!res.ok) throw new Error(json?.message || json?.error || "Failed to start Named Tunnel.");
+      if (!res.ok) throw new Error(json?.message || json?.error || json?.lastError || "Failed to start Named Tunnel.");
       setPublicMsg(json?.message || "Named Tunnel start requested.");
       await refreshPublicStatus({ silent: true, discover: true });
     } catch (e: any) {
@@ -1881,9 +1888,10 @@ export default function ConfigPage({
               ? !token || publicBusy : startActionDisabled)}
           >
             {publicStatus.mode === (uiTunnelMode === "existing_named" ? "named" : "quick")
-              ? "Stop sharing" : "Enable sharing"}
+              ? publicBusy ? "Stopping..." : "Stop sharing" : publicBusy ? "Connecting..." : "Enable sharing"}
           </button>
         )}
+        {publicMsg ? <div role="alert" style={{ color: "#ffb4b4", marginTop: 8 }}>{publicMsg}</div> : null}
         {startActionDisabled && publicStatus?.mode !== (uiTunnelMode === "existing_named" ? "named" : "quick") ? (
           <div style={{ fontSize: 12, opacity: 0.78, marginTop: 8 }}>
             {uiTunnelMode === "existing_named" && !cloudflaredAvailable && !externalServiceRunning
@@ -2218,7 +2226,6 @@ export default function ConfigPage({
                 Controls for Quick link and sharing are in <b>Tunnel &amp; routing</b>.
               </div>
             ) : null}
-            {publicMsg ? <div style={{ color: "#ffb4b4" }}>{publicMsg}</div> : null}
             <div><b>OK</b>: {health.ok ? "yes" : "no"}</div>
             <div><b>Canonical public origin</b>: {publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</div>
             <div><b>Public state</b>: {publicStatus?.mode === "off" ? "Public: OFF / Local only" : publicStatus?.status === "online" ? "Public Test URL: ON" : "Public Test URL: OFF"}</div>

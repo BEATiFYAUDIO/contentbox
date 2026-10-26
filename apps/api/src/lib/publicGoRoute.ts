@@ -9,6 +9,7 @@ export type PublicGoRouteDependencies = {
   mutex: AsyncLifecycleMutex;
   requireAuth: unknown;
   getMode: () => "off" | "quick" | "named";
+  isNamedConfigured: () => boolean;
   handleNamed: (reply: ReplyLike) => Promise<unknown>;
   environmentForcesQuick: () => boolean;
   quick: () => QuickStartDependencies;
@@ -18,10 +19,13 @@ export type PublicGoRouteDependencies = {
 export function registerPublicGoRoute(app: any, deps: PublicGoRouteDependencies) {
   app.post("/api/public/go", { preHandler: deps.requireAuth }, async (request: any, reply: ReplyLike) => {
     return deps.mutex.runExclusive(async () => {
-      if (deps.getMode() === "named") return deps.handleNamed(reply);
-
-      const body = (request.body ?? {}) as { consent?: boolean; dontAskAgain?: boolean };
+      const body = (request.body ?? {}) as { consent?: boolean; dontAskAgain?: boolean; mode?: "quick" | "named" };
+      if (body.mode !== undefined && body.mode !== "quick" && body.mode !== "named") {
+        return reply.code(400).send({ error: "invalid_public_mode", message: "Choose a temporary or permanent connection." });
+      }
       const environmentForced = deps.environmentForcesQuick();
+      if (body.mode === "named" || (body.mode !== "quick" && !environmentForced &&
+          (deps.getMode() === "named" || deps.isNamedConfigured()))) return deps.handleNamed(reply);
       const result = await startQuickTransaction(deps.quick(), {
         consent: body.consent,
         dontAskAgain: body.dontAskAgain,

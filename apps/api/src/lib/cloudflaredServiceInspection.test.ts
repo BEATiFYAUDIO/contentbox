@@ -113,3 +113,29 @@ test("service inspection is wired for Windows Services, Linux systemd, and macOS
   assert.match(inspector, /launchctl/);
   assert.match(inspector, /NAMED_CONTROL_COMMAND_TIMEOUT_MS/g);
 });
+
+test("matching public boot identity proves readiness without service inspection permissions", () => {
+  const result = evaluateNamedRouteEvidence({
+    identityConnected: false, externalServiceRunning: false,
+    routeReachable: true, routeMatchesThisCore: true, localListenerReady: true
+  });
+  assert.equal(result.online, true);
+  assert.equal(result.connected, true);
+  assert.equal(result.reason, "route_verified_identity_unavailable");
+});
+test("a stopped listener cannot be online even with prior matching route evidence", () => {
+  assert.equal(evaluateNamedRouteEvidence({
+    identityConnected: true, externalServiceRunning: true,
+    routeReachable: true, routeMatchesThisCore: true, localListenerReady: false
+  }).online, false);
+});
+test("Windows service evidence survives a protected process command line", async () => {
+  const { inspectWindowsCloudflared } = await import("./tunnelInspection.js");
+  const result = await inspectWindowsCloudflared(1000, async () => JSON.stringify({
+    services: [{ Name: "Cloudflared", State: "Running", ProcessId: 42, PathName: "cloudflared tunnel run" }],
+    processes: [{ ProcessId: 42, CommandLine: null }]
+  }));
+  assert.equal(result.services[0].state, "running");
+  assert.equal(result.processes[0].pid, 42);
+  assert.equal(result.processes[0].commandLine, "cloudflared tunnel run");
+});

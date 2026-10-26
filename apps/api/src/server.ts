@@ -1,4 +1,5 @@
 ﻿import "dotenv/config";
+import { probePublicRoute } from "./lib/publicRouteProbe.js";
 import { getPrimaryFileObjectKeyFromManifest, getPrimaryFileMime, getStoredFileMime } from "./lib/primaryFileMetadata.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
@@ -10916,6 +10917,7 @@ const namedHealthCache: {
   identityVerified: boolean;
   routeReachable: boolean;
   routeVerified: boolean;
+  routeMessage: string | null;
 } = {
   key: null,
   ok: null,
@@ -10923,7 +10925,8 @@ const namedHealthCache: {
   inflight: false,
   identityVerified: false,
   routeReachable: false,
-  routeVerified: false
+  routeVerified: false,
+  routeMessage: null
 };
 let namedHealthRefreshPromise: Promise<boolean> | null = null;
 let namedHealthRefreshKey: string | null = null;
@@ -10986,6 +10989,7 @@ function invalidateNamedRuntimeCaches() {
   namedHealthCache.identityVerified = false;
   namedHealthCache.routeReachable = false;
   namedHealthCache.routeVerified = false;
+  namedHealthCache.routeMessage = null;
   tunnelControlInspection.invalidate();
   namedIdentityAliasKey = null;
   namedIdentityAliases.clear();
@@ -11072,6 +11076,7 @@ async function refreshNamedHealth(origin: string): Promise<boolean> {
       namedHealthCache.identityVerified = namedConnectedOk;
       namedHealthCache.routeReachable = publicRoute.reachable;
       namedHealthCache.routeVerified = publicRoute.sameInstance;
+      namedHealthCache.routeMessage = publicRoute.message;
       namedHealthCache.checkedAt = Date.now();
       return ok;
     } finally {
@@ -11649,16 +11654,9 @@ async function triggerPublicStartBestEffort() {
   return publicLifecycleMutex.runExclusive(() => triggerPublicStartBestEffortUnlocked());
 }
 
-async function checkPublicRoute(publicOrigin: string): Promise<{ reachable: boolean; sameInstance: boolean }> {
-  const base = publicOrigin.replace(/\/$/, "");
-  try {
-    const res = await fetchWithTimeout(`${base}/public/ping`, { method: "GET" } as any, 4000);
-    if (!res.ok) return { reachable: false, sameInstance: false };
-    const body = await res.json().catch(() => null) as any;
-    return { reachable: true, sameInstance: body?.bootId === BOOT_ID };
-  } catch {
-    return { reachable: false, sameInstance: false };
-  }
+async function checkPublicRoute(publicOrigin: string) {
+  return probePublicRoute(publicOrigin, BOOT_ID, (url) =>
+    fetchWithTimeout(url, { method: "GET" } as any, 4000));
 }
 
 async function refreshQuickRouteHealth(origin: string): Promise<void> {
@@ -23243,7 +23241,7 @@ async function handleNamedPublicStart(reply: any) {
           ...getPublicStatusCached(true),
           lastError: "external_named_route_unverified",
           message:
-            "cloudflared is managed outside Certifyd, but the configured durable host does not reach this Core listener on 127.0.0.1:4010. Check the Cloudflare published application route; Certifyd will not start or stop the external service."
+            namedHealthCache.routeMessage || "The external Cloudflare route could not be verified to this Core instance."
         });
       }
 
@@ -23340,6 +23338,7 @@ registerPublicGoRoute(app, {
   },
   quick: quickStartDependencies,
   getStatus: getPublicStatus,
+  isNamedConfigured,
   handleNamed: handleNamedPublicStart
 });
 
@@ -23399,7 +23398,7 @@ app.post("/api/public/named/verify", { preHandler: requireAuth }, async (_req: a
               : "Durable route verified to this Core instance. Start named tunnel to select it; the external service remains under operating-system control."
             : routeReachable
               ? "The configured host is reachable but does not terminate at this Core instance."
-              : "The configured host could not reach this Core public listener on 127.0.0.1:4010."
+              : namedHealthCache.routeMessage || "The configured host could not reach this Core public listener on 127.0.0.1:4010."
         });
       });
     } catch (error: any) {

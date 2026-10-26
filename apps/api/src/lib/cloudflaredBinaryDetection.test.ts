@@ -11,8 +11,10 @@ test("cloudflared is found in a restricted launcher's PATH", () => {
     const binary = path.join(root, "cloudflared");
     fs.writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     assert.equal(findCloudflaredBinary({ managedDir: path.join(root, "managed"), platform: "linux", pathEnv: root }), binary);
-    fs.chmodSync(binary, 0o644);
-    assert.notEqual(findCloudflaredBinary({ managedDir: path.join(root, "managed"), platform: "linux", pathEnv: root }), binary);
+    if (process.platform !== "win32") {
+      fs.chmodSync(binary, 0o644);
+      assert.notEqual(findCloudflaredBinary({ managedDir: path.join(root, "managed"), platform: "linux", pathEnv: root }), binary);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

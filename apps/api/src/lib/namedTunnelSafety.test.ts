@@ -138,7 +138,7 @@ test("Named verification starts the 4010 listener and requires this Core BOOT_ID
   assert.match(route, /withNamedVerificationWindow/);
   assert.match(verificationWindow, /publicServerLifecycle\.ensureStarted/);
   assert.match(verificationWindow, /PUBLIC_HTTP_PORT/);
-  assert.match(serverSource, /body\?\.bootId === BOOT_ID/);
+  assert.match(serverSource, /probePublicRoute\(publicOrigin, BOOT_ID/);
   assert.match(serverSource, /bootId: BOOT_ID/);
 });
 
