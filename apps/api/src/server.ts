@@ -12713,6 +12713,34 @@ function isStablePreviewObjectKey(contentId: string, objectKey: string) {
   return key === stablePreviewObjectKey(contentId, "mp4") || key === stablePreviewObjectKey(contentId, "mp3");
 }
 
+function isLegacyGeneratedPreviewRecord(contentId: string, objectKey: string, file: any): boolean {
+  if (String(file?.objectKey || file?.path || "").trim() !== objectKey) return false;
+  const name = String(file?.originalName || "").trim();
+  const mime = String(file?.mime || "").trim().toLowerCase();
+  return (name === `${contentId}-preview.mp3` && mime === "audio/mpeg") ||
+    (name === `${contentId}-preview.mp4` && mime === "video/mp4");
+}
+
+async function resolvePublishedPreviewObjectKey(contentId: string, manifestJson: any): Promise<string | null> {
+  const objectKey = asString(manifestJson?.preview || "").trim();
+  const primaryObjectKey = getPrimaryFileObjectKeyFromManifest(manifestJson);
+  if (!objectKey || objectKey === primaryObjectKey || !normalizeDeliveryObjectKey(objectKey).ok) return null;
+  if (isStablePreviewObjectKey(contentId, objectKey)) return objectKey;
+
+  // Older Core releases stored their FFmpeg-generated 20-second preview as a
+  // ContentFile at a hashed path. The manifest and generated filename must
+  // agree; an arbitrary extra file or the paid original is never a preview.
+  const manifestFile = Array.isArray(manifestJson?.files)
+    ? manifestJson.files.find((file: any) => String(file?.objectKey || file?.path || "").trim() === objectKey)
+    : null;
+  if (isLegacyGeneratedPreviewRecord(contentId, objectKey, manifestFile)) return objectKey;
+  const storedFile = await prisma.contentFile.findUnique({
+    where: { contentId_objectKey: { contentId, objectKey } },
+    select: { objectKey: true, originalName: true, mime: true }
+  });
+  return isLegacyGeneratedPreviewRecord(contentId, objectKey, storedFile) ? objectKey : null;
+}
+
 function isAudioVideoMime(mime: unknown): boolean {
   const normalized = asString(mime || "").trim().toLowerCase();
   return normalized.startsWith("audio/") || normalized.startsWith("video/");
@@ -31121,10 +31149,8 @@ async function handlePublicContent(req: any, reply: any) {
     if (/^https?:\/\//i.test(v)) return v;
     return baseUrl ? `${baseUrl}/public/content/${contentId}/preview-file?objectKey=${encodeURIComponent(v)}` : null;
   };
-  const manifestPreviewKey = asString((manifest.json as any)?.preview || "").trim();
-  const previewCandidate = manifestPreviewKey && isStablePreviewObjectKey(contentId, manifestPreviewKey) &&
-    manifestPreviewKey !== getPrimaryFileObjectKeyFromManifest(manifest.json)
-    ? normalizePreview(manifestPreviewKey) : null;
+  const manifestPreviewKey = await resolvePublishedPreviewObjectKey(contentId, manifest.json);
+  const previewCandidate = normalizePreview(manifestPreviewKey);
   const shouldPreview = shouldShowPreview({
     isFree: freeContent,
     priceSats: content.priceSats,
@@ -34601,8 +34627,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
       (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
       (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
       null;
-    const rawPreviewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview.trim()) || "";
-    const previewFromManifest = rawPreviewFromManifest && isStablePreviewObjectKey(contentId, rawPreviewFromManifest) ? rawPreviewFromManifest : "";
+    const previewFromManifest = await resolvePublishedPreviewObjectKey(contentId, manifestJson) || "";
     objectKey = previewFromManifest || "";
     const contentType = asString(content?.type || "").trim().toLowerCase();
     const isVideoLike = contentType === "video" || contentType === "movie" || contentType === "clip";
@@ -34664,13 +34689,12 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
   const manifestForAccess = await prisma.manifest.findUnique({ where: { contentId } });
   const manifestJsonForAccess = (manifestForAccess?.json || {}) as any;
-  const previewObjectKey = asString(manifestJsonForAccess?.preview || "").trim();
+  const previewObjectKey = await resolvePublishedPreviewObjectKey(contentId, manifestJsonForAccess);
   const coverObjectKey = asString(getCoverAssetFromManifest(manifestJsonForAccess)?.path || manifestJsonForAccess?.cover || "").trim();
   const freeContent = isFreeContent({ priceSats: content.priceSats });
   const paidContent = !freeContent && content.priceSats != null && content.priceSats > 0n;
   const isPublicPreviewAsset = Boolean(
-    previewObjectKey && isStablePreviewObjectKey(contentId, previewObjectKey) &&
-    previewObjectKey !== getPrimaryFileObjectKeyFromManifest(manifestJsonForAccess) && objectKey === previewObjectKey
+    previewObjectKey && objectKey === previewObjectKey
   );
   const isPublicCoverAsset = Boolean(coverObjectKey && objectKey === coverObjectKey);
   let deliveryAccess: "preview" | "full" | null = null;
@@ -34687,7 +34711,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   }
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
-  const derivedPreviewMime = !file && isStablePreviewObjectKey(contentId, objectKey)
+  const derivedPreviewMime = !file && previewObjectKey === objectKey
     ? objectKey.toLowerCase().endsWith(".mp3")
       ? "audio/mpeg"
       : "video/mp4"
@@ -41037,11 +41061,8 @@ async function handlePublicOffer(req: any, reply: any) {
     : null;
   const primaryFileMime = getPrimaryFileMime(manifestJson, primaryFile ? [primaryFile] : []);
   const freeContent = isFreeContent({ priceSats: content.priceSats });
-  const manifestPreviewObjectKey = asString(manifestJson?.preview || "").trim();
-  const previewObjectKey =
-    manifestPreviewObjectKey && manifestPreviewObjectKey !== primaryFileId && isStablePreviewObjectKey(contentId, manifestPreviewObjectKey)
-      ? manifestPreviewObjectKey
-      : freeContent ? primaryFileId : null;
+  const previewObjectKey = (await resolvePublishedPreviewObjectKey(contentId, manifestJson)) ||
+    (freeContent ? primaryFileId : null);
   const coverAsset = getCoverAssetFromManifest(manifestJson);
   const coverObjectKey = coverAsset?.path || null;
 
@@ -44253,8 +44274,7 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   let files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
 
   const manifestJson = (manifest?.json || {}) as any;
-  const rawPreviewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview.trim()) || "";
-  const previewFromManifest = rawPreviewFromManifest && isStablePreviewObjectKey(contentId, rawPreviewFromManifest) ? rawPreviewFromManifest : "";
+  const previewFromManifest = await resolvePublishedPreviewObjectKey(contentId, manifestJson) || "";
   const isOwnerPreview = access.reason === "owner";
   const primaryFileId =
     (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
@@ -44405,8 +44425,8 @@ async function handleReviewPreviewFile(req: any, reply: any) {
   let derivedPreviewMime: string | null = null;
   if (!file) {
     const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-    const manifestPreview = asString((manifest?.json as any)?.preview || "").trim();
-    if (manifestPreview && objectKey === manifestPreview && isStablePreviewObjectKey(contentId, objectKey)) {
+    const manifestPreview = await resolvePublishedPreviewObjectKey(contentId, manifest?.json || {});
+    if (manifestPreview && objectKey === manifestPreview) {
       derivedPreviewMime = objectKey.toLowerCase().endsWith(".mp3") ? "audio/mpeg" : "video/mp4";
     } else {
       return notFound(reply, "File not found");
@@ -44516,12 +44536,7 @@ async function handlePublicContentFile(req: any, reply: any) {
   const objectKeyCheck = normalizeDeliveryObjectKey(objectKey);
   if (!objectKeyCheck.ok) return forbidden(reply);
   objectKey = objectKeyCheck.objectKey;
-  const manifestPreviewObjectKey = asString(manifestJson?.preview || "").trim();
-  const isManifestPreviewAsset = Boolean(
-    manifestPreviewObjectKey
-    && objectKey === manifestPreviewObjectKey
-    && isStablePreviewObjectKey(content.id, objectKey)
-  );
+  const isManifestPreviewAsset = objectKey === await resolvePublishedPreviewObjectKey(content.id, manifestJson);
 
   const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
   const freeContent = isFreeContent({ priceSats: content.priceSats });

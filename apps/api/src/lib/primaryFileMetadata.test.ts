@@ -161,6 +161,62 @@ test("SQLite public routes: primary MIME, format coverage, publication compatibi
         assert.equal(offer.hlsRequired, true); assert.ok(offer.fullMediaUrl.includes("/hls/master.m3u8"));
       }
     });
+    await t.test("published paid works retain their distinct legacy generated previews without changing manifests", async () => {
+      const fixture = await f.seed("mp3", "audio/mpeg", { paid: true, type: "song" });
+      const legacyKey = `files/legacy-${fixture.id}.mp3`;
+      fs.renameSync(`${fixture.content.repoPath}/${fixture.previewKey}`, `${fixture.content.repoPath}/${legacyKey}`);
+      await f.db.contentFile.update({
+        where: { contentId_objectKey: { contentId: fixture.id, objectKey: fixture.previewKey } },
+        data: { objectKey: legacyKey, originalName: `${fixture.id}-preview.mp3` }
+      });
+      const legacyManifest = {
+        ...fixture.manifest,
+        preview: legacyKey,
+        files: fixture.manifest.files.map((file: any) => file.objectKey === fixture.previewKey
+          ? { ...file, objectKey: legacyKey, originalName: `${fixture.id}-preview.mp3` }
+          : file)
+      };
+      await f.db.manifest.update({ where: { contentId: fixture.id }, data: { json: legacyManifest } });
+      const before = await f.db.manifest.findUnique({ where: { contentId: fixture.id } });
+
+      const offer = (await f.app.inject(`/buy/content/${fixture.id}/offer`)).json();
+      assert.equal(offer.previewObjectKey, legacyKey);
+      assert.equal(offer.playback.mode, "preview");
+      const publicContent = (await f.app.inject(`/public/content/${fixture.id}`)).json();
+      assert.ok(publicContent.previewUrl?.includes(encodeURIComponent(legacyKey)));
+      const preview = `/public/content/${fixture.id}/preview-file?objectKey=${encodeURIComponent(legacyKey)}`;
+      for (const [url, headers] of [[preview, {}], [preview, { range: "bytes=0-3" }], [`/public/content/${fixture.id}/preview-file`, {}]] as const) {
+        const response = await f.app.inject({ url, headers });
+        assert.ok([200, 206].includes(response.statusCode), response.body);
+      }
+      const legacyFileRoute = `/content/${fixture.sha256}/${encodeURIComponent(legacyKey)}`;
+      assert.equal((await f.app.inject(legacyFileRoute)).statusCode, 200);
+      const original = `/public/content/${fixture.id}/preview-file?objectKey=${encodeURIComponent(fixture.key)}`;
+      assert.equal((await f.app.inject(original)).statusCode, 403);
+      assert.equal((await f.app.inject({ url: original, headers: { range: "bytes=0-3" } })).statusCode, 403);
+      assert.deepEqual(await f.db.manifest.findUnique({ where: { contentId: fixture.id } }), before);
+
+      // Old manifests may lack the preview filename while the original
+      // ContentFile record still identifies the generated clip.
+      await f.db.manifest.update({ where: { contentId: fixture.id }, data: {
+        json: { ...legacyManifest, files: legacyManifest.files.map((file: any) => file.objectKey === legacyKey
+          ? { objectKey: legacyKey, mime: "audio/mpeg" } : file) }
+      } });
+      assert.equal((await f.app.inject(`/buy/content/${fixture.id}/offer`)).json().previewObjectKey, legacyKey);
+
+      await f.db.contentFile.update({
+        where: { contentId_objectKey: { contentId: fixture.id, objectKey: legacyKey } },
+        data: { originalName: "unverified.mp3" }
+      });
+      assert.equal((await f.app.inject(`/buy/content/${fixture.id}/offer`)).json().previewObjectKey, null);
+      assert.equal((await f.app.inject(preview)).statusCode, 403);
+
+      await f.db.manifest.update({ where: { contentId: fixture.id }, data: { json: { ...legacyManifest, preview: fixture.key } } });
+      const unsafeOffer = (await f.app.inject(`/buy/content/${fixture.id}/offer`)).json();
+      assert.equal(unsafeOffer.previewObjectKey, null);
+      assert.equal(unsafeOffer.playback.mode, "none");
+      assert.equal((await f.app.inject(preview)).statusCode, 403);
+    });
     await t.test("Basic discovery still excludes paid works while reporting free file MIME", async () => {
       f.setNodeMode("basic"); const items = (await f.app.inject("/public/discoverable-content?limit=50")).json().items;
       assert.ok(items.length); assert.ok(items.every((x: any) => x.priceSats === 0)); assert.ok(items.every((x: any) => "primaryFileMime" in x));
