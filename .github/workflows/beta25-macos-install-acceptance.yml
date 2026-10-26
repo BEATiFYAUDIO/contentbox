@@ -45,7 +45,6 @@ jobs:
           mount_dir="$(mktemp -d)"
           cleanup() {
             "$app/Contents/Resources/stop.sh" || true
-            launchctl unsetenv CI || true
             hdiutil detach "$mount_dir" -quiet || true
           }
           trap cleanup EXIT
@@ -68,8 +67,8 @@ jobs:
           test -n "$(xattr -p com.apple.quarantine "$app")"
           spctl --assess --type execute --verbose=4 "$app"
           codesign --verify --deep --strict --all-architectures "$app"
-          launchctl setenv CI 1
-          open "$app" > "$RUNNER_TEMP/certifyd-open.log" 2>&1 &
+          # This documented argument skips the two interactive first-run choices.
+          open "$app" --args --lan > "$RUNNER_TEMP/certifyd-open.log" 2>&1 &
           open_pid=$!
           echo "Launch Services open PID: $open_pid"
 
@@ -92,5 +91,5 @@ jobs:
             echo "### $ARCH signed DMG installation"
             echo "Signing run: 40261699071"
             echo "SHA-256: $EXPECTED_SHA256"
-            echo "Quarantine, Gatekeeper, stapled ticket, Finder installation, Launch Services CI-mode start, health, dashboard: PASS"
+            echo "Quarantine, Gatekeeper, stapled ticket, Finder installation, Launch Services --lan start, health, dashboard: PASS"
           } >> "$GITHUB_STEP_SUMMARY"
