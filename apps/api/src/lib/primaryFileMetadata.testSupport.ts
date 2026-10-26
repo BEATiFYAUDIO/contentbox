@@ -94,6 +94,7 @@ export async function metadataFixture(source?: string) {
   const names = ["badRequest", "notFound", "forbidden", "unauthorized", "normalizePrimaryTopic", "resolvePublicAccessMode",
     "decodeDiscoverableCursor", "encodeDiscoverableCursor", "buildPublicRelationshipSummary", "getPublicOfferGate",
     "getCoverAssetFromManifest", "previewExtForMime", "stablePreviewObjectKey", "isStablePreviewObjectKey",
+    "isLegacyGeneratedPreviewRecord", "resolvePublishedPreviewObjectKey",
     "isAudioVideoMime", "isProtectedStreamOnlyMedia", "isEncryptedHlsPlaybackEnabled", "parseRangeHeader",
     "createPublicDeliveryToken", "verifyPublicDeliveryToken", "appendPublicDeliveryToken", "resolvePaymentMethodFromIntent",
     "handlePublicDiscoverableContent", "handlePublicContent", "handlePublicOffer", "handlePublicContentFile", "handlePublicPreviewFile"];
