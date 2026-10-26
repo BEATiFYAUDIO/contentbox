@@ -56,8 +56,14 @@ jobs:
           xcrun stapler validate "$dmg"
 
           hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -readonly
-          sudo ditto --rsrc --extattr "$mount_dir/Certifyd Core.app" "$app"
-          sudo xattr -w com.apple.quarantine '0083;00000000;Safari;' "$app"
+          osascript - "$mount_dir/Certifyd Core.app" <<'APPLESCRIPT'
+          on run argv
+            set sourceApp to POSIX file (item 1 of argv) as alias
+            tell application "Finder"
+              duplicate sourceApp to (path to applications folder) with replacing
+            end tell
+          end run
+          APPLESCRIPT
           test -n "$(xattr -p com.apple.quarantine "$app")"
           spctl --assess --type execute --verbose=4 "$app"
           codesign --verify --deep --strict --all-architectures "$app"
@@ -74,6 +80,7 @@ jobs:
           if [[ "$health" != 200 ]]; then
             cat "$RUNNER_TEMP/certifyd-open.log" || true
             pgrep -fl 'Certifyd|open' || true
+            find "$HOME/Library/Application Support/ContentBox/logs" -maxdepth 1 -type f -print -exec tail -n 30 {} \; 2>/dev/null || true
             exit 1
           fi
           test "$health" = 200
