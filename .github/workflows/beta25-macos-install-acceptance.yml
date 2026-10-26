@@ -2,6 +2,8 @@ name: Beta 25 macOS install acceptance
 
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/macos-developer-id-notarization]
 
 permissions:
   contents: read
