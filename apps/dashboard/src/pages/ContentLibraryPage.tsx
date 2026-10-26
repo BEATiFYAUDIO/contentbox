@@ -16,7 +16,8 @@ import {
 } from "../lib/libraryEligibility";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
-type PrimaryTopic = "entertainment" | "music" | "news" | "gaming" | "sports" | "technology";
+type PrimaryTopic = "entertainment" | "music" | "news" | "gaming" | "sports" | "technology"
+  | "legal" | "business-work" | "education-reference" | "art-design" | "books-writing";
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
 type AssetOriginFilter = "native" | "legacy";
 const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
@@ -34,7 +35,12 @@ const PRIMARY_TOPIC_OPTIONS: Array<{ value: PrimaryTopic; label: string }> = [
   { value: "news", label: "News" },
   { value: "gaming", label: "Gaming" },
   { value: "sports", label: "Sports" },
-  { value: "technology", label: "Technology" }
+  { value: "technology", label: "Technology" },
+  { value: "legal", label: "Legal" },
+  { value: "business-work", label: "Business & Work" },
+  { value: "education-reference", label: "Education & Reference" },
+  { value: "art-design", label: "Art, Design & Photography" },
+  { value: "books-writing", label: "Books & Writing" }
 ];
 
 function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
@@ -151,9 +157,7 @@ type Identity = {
   };
 };
 
-const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
 const STORAGE_PUBLIC_BUY_ORIGIN = "contentbox.publicBuyOrigin";
-const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
 
 function readStoredValue(key: string): string {
   if (typeof window === "undefined") return "";
@@ -321,9 +325,21 @@ type ParentLinkInfo = {
 type UploadState =
   | { status: "idle" }
   | { status: "preparing"; kind: "content" | "cover"; contentId: string; filename: string }
-  | { status: "uploading"; kind: "content" | "cover"; contentId: string; filename: string }
+  | {
+      status: "uploading";
+      kind: "content" | "cover";
+      contentId: string;
+      filename: string;
+      progressPercent: number | null;
+    }
+  | { status: "saving"; kind: "content" | "cover"; contentId: string; filename: string }
   | { status: "done"; kind: "content" | "cover"; contentId: string; filename: string }
   | { status: "error"; kind: "content" | "cover"; contentId: string; message: string };
+
+type UploadProgressHandlers = {
+  onProgress: (progressPercent: number | null) => void;
+  onTransferComplete: () => void;
+};
 
 function visibilityLabel(status: "DISABLED" | "UNLISTED" | "LISTED"): string {
   if (status === "LISTED") return "Discoverable";
@@ -372,7 +388,54 @@ function mediaTypeMismatchNotice(contentType: string, mime: string): string | nu
   return null;
 }
 
-async function uploadToRepo(contentId: string, file: File, idempotencyKey: string) {
+export function uploadMultipart(
+  url: string,
+  token: string,
+  idempotencyKey: string,
+  form: FormData,
+  progress: UploadProgressHandlers
+): Promise<{ ok: boolean; status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let transferComplete = false;
+    const notifyTransferComplete = () => {
+      if (transferComplete) return;
+      transferComplete = true;
+      progress.onTransferComplete();
+    };
+
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.setRequestHeader("x-idempotency-key", idempotencyKey);
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) {
+        progress.onProgress(null);
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      progress.onProgress(percent);
+    };
+    xhr.upload.onload = notifyTransferComplete;
+    xhr.onload = () => {
+      notifyTransferComplete();
+      resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        text: xhr.responseText || ""
+      });
+    };
+    xhr.onerror = () => reject(new Error("Media could not be saved. Try again."));
+    xhr.onabort = () => reject(new Error("Media could not be saved. Try again."));
+    xhr.send(form);
+  });
+}
+
+async function uploadToRepo(
+  contentId: string,
+  file: File,
+  idempotencyKey: string,
+  progress: UploadProgressHandlers
+) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
 
@@ -382,13 +445,9 @@ async function uploadToRepo(contentId: string, file: File, idempotencyKey: strin
   form.append("file", file);
 
   console.info("content.upload.request.start", { contentId, filename: file.name, size: file.size, type: file.type });
-  const res = await fetch(`${base}/content/${contentId}/files`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
-    body: form
-  });
+  const res = await uploadMultipart(`${base}/content/${contentId}/files`, token, idempotencyKey, form, progress);
 
-  const text = await res.text();
+  const text = res.text;
   let json: any = null;
   try {
     json = text ? JSON.parse(text) : null;
@@ -409,7 +468,7 @@ async function uploadToRepo(contentId: string, file: File, idempotencyKey: strin
   return json;
 }
 
-async function uploadSongCover(contentId: string, file: File) {
+async function uploadSongCover(contentId: string, file: File, progress: UploadProgressHandlers) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
   const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -425,12 +484,8 @@ async function uploadSongCover(contentId: string, file: File) {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await fetch(`${base}/content/${contentId}/cover`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
-    body: form
-  });
-  const text = await res.text();
+  const res = await uploadMultipart(`${base}/content/${contentId}/cover`, token, idempotencyKey, form, progress);
+  const text = res.text;
   let json: any = null;
   try {
     json = text ? JSON.parse(text) : null;
@@ -440,6 +495,9 @@ async function uploadSongCover(contentId: string, file: File) {
     const code = json?.code ? ` (${json.code})` : "";
     const msg = `${json?.error || json?.message || text || `Media could not be saved. Try again. (${res.status})`}${code}`;
     throw new Error(msg);
+  }
+  if (!json?.ok || !json?.coverObjectKey || !json?.manifestSha256) {
+    throw new Error("Upload response did not confirm a persisted cover.");
   }
   return json;
 }
@@ -572,9 +630,7 @@ export default function ContentLibraryPage({
   const discoveryPublishAllowed = capabilities?.publishToDiscovery ?? capabilities?.publicShare ?? canPublicShare;
   const discoveryFreeListingAllowedBase = isBasicTier || discoveryPublishAllowed;
   const apiBase = getApiBase();
-  const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
-  const envPublicStudioOrigin = ((import.meta as any).env?.VITE_PUBLIC_STUDIO_ORIGIN || "").toString().trim();
 
   const [items, setItems] = React.useState<ContentItem[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -582,9 +638,12 @@ export default function ContentLibraryPage({
 
   const [title, setTitle] = React.useState("");
   const [type, setType] = React.useState<ContentType>("song");
+  const [newPrimaryTopic, setNewPrimaryTopic] = React.useState<PrimaryTopic | "">("");
   const [creating, setCreating] = React.useState(false);
 
   const [upload, setUpload] = React.useState<UploadState>({ status: "idle" });
+  const uploadSubmissionRef = React.useRef(false);
+  const uploadBusy = upload.status === "preparing" || upload.status === "uploading" || upload.status === "saving";
 
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [filesByContent, setFilesByContent] = React.useState<Record<string, ContentFile[]>>({});
@@ -715,15 +774,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const routingOfflineReason = "Public routing is offline. Start or restore tunnel sharing in Tunnel & routing.";
   const networkPublishReasonResolved = publicRoutingOnline ? networkPublishReason : routingOfflineReason;
   const discoveryPublishReasonResolved = publicRoutingOnline ? discoveryPublishReason : routingOfflineReason;
-  const [publicBusy, setPublicBusy] = React.useState(false);
-  const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
-  const [publicAdvancedOpen, setPublicAdvancedOpen] = React.useState(false);
-  const [publicConsentOpen, setPublicConsentOpen] = React.useState(false);
-  const [publicConsentDontAskAgain, setPublicConsentDontAskAgain] = React.useState(false);
-  const [publicConsentBusy, setPublicConsentBusy] = React.useState(false);
-  const [, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
-  const [, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
   const [publicOriginFromApi, setPublicOriginFromApi] = React.useState<string>("");
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
@@ -772,7 +823,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     trashMode: boolean = showTrash,
     tombstoneMode: boolean = showTombstones,
     originFilter: AssetOriginFilter = assetOriginFilter
-  ) {
+  ): Promise<boolean> {
     const requestId = ++loadRequestRef.current;
     const isCurrent = () => requestId === loadRequestRef.current;
     setLoading(true);
@@ -806,8 +857,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         return !deleted;
       });
       if (!Array.isArray(data)) {
-        if (!isCurrent()) return;
+        if (!isCurrent()) return false;
         setError("Failed to load content (unexpected response)");
+        return false;
       }
       let mergedList: ContentItem[] = list;
 
@@ -977,7 +1029,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         mergedList = eligible;
       }
 
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       setParticipationByContentId(nextParticipationByContentId);
       setItems(mergedList);
       setPriceDraft((prev) => {
@@ -1010,13 +1062,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         setExpanded((m) => ({ ...m, [pendingOpenContentId]: true }));
         setPendingOpenContentId(null);
       }
+      return true;
     } catch (e: any) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       const msg = String(e?.message || "Failed to load content");
       setError(msg.includes("INVALID_TYPE") ? "Invalid library type filter." : msg);
+      return false;
     } finally {
-      if (!isCurrent()) return;
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }
 
@@ -1129,84 +1182,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const res = await api<any>("/api/public/status", "GET");
       setPublicStatus(res || null);
-      if (res?.state === "ACTIVE" && res?.publicOrigin) {
-        setPublicOrigin(res.publicOrigin);
-      }
     } catch {
       // ignore
-    }
-  }
-
-  function formatPublicError(code?: string | null) {
-    if (!code) return "We couldn’t start sharing from this device.";
-    if (code === "consent_required") return "Please approve the download to enable public link.";
-    if (code === "cloudflared_download_failed") return "Unable to download helper tool. Check your connection and try again.";
-    if (code === "cloudflared_unavailable") return "Helper tool unavailable. Try again.";
-    return "We couldn’t start sharing from this device.";
-  }
-
-  async function postPublicGo(consent?: boolean, dontAskAgain?: boolean) {
-    const token = getToken();
-    const body = consent ? { consent: true, dontAskAgain: Boolean(dontAskAgain) } : {};
-    const res = await fetch(`${apiBase}/api/public/go`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
-      },
-      body: JSON.stringify(body)
-    });
-    const text = await res.text();
-    let data: any = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text ? { error: text } : null;
-    }
-    return { ok: res.ok, data };
-  }
-
-  async function startPublicLink() {
-    try {
-      setPublicBusy(true);
-      setPublicMsg(null);
-      const status = await api<any>("/api/public/status", "GET");
-      setPublicStatus(status || null);
-      if (status?.consentRequired) {
-        setPublicConsentOpen(true);
-        setPublicBusy(false);
-        return;
-      }
-      setPublicStatus({ state: "STARTING" });
-      const res = await postPublicGo();
-      setPublicStatus(res.data || null);
-      if (!res.ok) {
-        setPublicMsg(formatPublicError(res.data?.lastError));
-      }
-      if (res.data?.state === "ACTIVE" && res.data?.publicOrigin) {
-        setPublicOrigin(res.data.publicOrigin);
-      }
-    } catch (e: any) {
-      setPublicStatus({ state: "ERROR" });
-      setPublicMsg(formatPublicError(null));
-    } finally {
-      setPublicBusy(false);
-    }
-  }
-
-  async function stopPublicLink() {
-    try {
-      setPublicBusy(true);
-      setPublicMsg(null);
-      await api("/api/public/stop", "POST");
-      setPublicStatus({ state: "STOPPED" });
-      setPublicOrigin("");
-      setPublicBuyOrigin("");
-      setPublicStudioOrigin("");
-    } catch (e: any) {
-      setPublicMsg(e?.message || "Failed to stop public link.");
-    } finally {
-      setPublicBusy(false);
     }
   }
 
@@ -1224,29 +1201,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function confirmPublicConsent() {
-    try {
-      setPublicConsentBusy(true);
-      setPublicMsg(null);
-      setPublicStatus({ state: "STARTING" });
-      const res = await postPublicGo(true, publicConsentDontAskAgain);
-      setPublicStatus(res.data || null);
-      if (!res.ok) {
-        setPublicMsg(formatPublicError(res.data?.lastError));
-      }
-      if (res.data?.state === "ACTIVE" && res.data?.publicOrigin) {
-        setPublicOrigin(res.data.publicOrigin);
-      }
-    } catch {
-      setPublicStatus({ state: "ERROR" });
-      setPublicMsg(formatPublicError(null));
-    } finally {
-      setPublicConsentBusy(false);
-      setPublicConsentOpen(false);
-      setPublicBusy(false);
-    }
-  }
-
   React.useEffect(() => {
     const token = getToken();
     if (!token) return;
@@ -1255,9 +1209,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       try {
         const cfg = await api<any>("/api/public/config", "GET");
         if (cancelled || !cfg) return;
-        setPublicOrigin((prev) => String(cfg?.publicOrigin || "").trim() || prev);
         setPublicBuyOrigin((prev) => String(cfg?.publicBuyOrigin || "").trim() || prev);
-        setPublicStudioOrigin((prev) => String(cfg?.publicStudioOrigin || "").trim() || prev);
       } catch {
         // keep existing fallbacks
       }
@@ -2165,7 +2117,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const created = await api<ContentItem>("/content", "POST", {
         title: nextTitle,
-        type
+        type,
+        primaryTopic: newPrimaryTopic || null
       });
       if (import.meta.env.DEV) {
         console.debug("createContent:response", { createdId: created?.id, status: created?.status, type: created?.type });
@@ -2173,6 +2126,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
       setTitle("");
       setType("song");
+      setNewPrimaryTopic("");
+      setPrimaryTopicDraft((previous) => ({ ...previous, [created.id]: created.primaryTopic || "" }));
 
       // Ensure we land back in the active authored/content view after creating
       setShowClearance(false);
@@ -2357,17 +2312,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     label?: string;
   }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
-    const busy =
-      (upload.status === "preparing" || upload.status === "uploading") &&
-      upload.kind === "content" &&
-      upload.contentId === contentId;
+    const active = uploadBusy && upload.kind === "content" && upload.contentId === contentId;
     const err = upload.status === "error" && upload.kind === "content" && upload.contentId === contentId;
     const authReady = Boolean(getToken());
-    const triggerDisabled = Boolean(disabled || busy || !authReady);
+    const triggerDisabled = Boolean(disabled || uploadBusy || !authReady);
 
     const onFileSelected = React.useCallback(
       async (file?: File) => {
-        if (!file) return;
+        if (!file || uploadSubmissionRef.current) return;
+        uploadSubmissionRef.current = true;
 
         setError(null);
         setLocalPreviewUrlByContent((prev) => {
@@ -2385,8 +2338,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         const idempotencyKey = uploadIdempotencyKey(contentId, file);
 
         try {
-          setUpload({ status: "uploading", kind: "content", contentId, filename: file.name });
-          const uploaded = await uploadToRepo(contentId, file, idempotencyKey);
+          setUpload({ status: "uploading", kind: "content", contentId, filename: file.name, progressPercent: null });
+          const uploaded = await uploadToRepo(contentId, file, idempotencyKey, {
+            onProgress: (progressPercent) =>
+              setUpload({ status: "uploading", kind: "content", contentId, filename: file.name, progressPercent }),
+            onTransferComplete: () => setUpload({ status: "saving", kind: "content", contentId, filename: file.name })
+          });
 
           await load();
 
@@ -2409,9 +2366,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           setUpload({ status: "done", kind: "content", contentId, filename: file.name });
         } catch (err: any) {
           setUpload({ status: "error", kind: "content", contentId, message: uploadErrorMessage(err) });
+        } finally {
+          uploadSubmissionRef.current = false;
         }
       },
-      [authReady, busy, contentId]
+      [contentId]
     );
 
     return (
@@ -2446,11 +2405,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
           title={triggerDisabled ? "Save unavailable" : "Save media into this content repo and commit"}
         >
-          {upload.status === "preparing" && upload.kind === "content" && upload.contentId === contentId
-            ? "Preparing your media…"
-            : busy
-              ? "Preparing your media…"
-              : label}
+          {active && upload.status === "uploading"
+            ? upload.progressPercent === null
+              ? "Uploading…"
+              : `Uploading ${upload.progressPercent}%`
+            : active && upload.status === "saving"
+              ? "Saving…"
+              : active
+                ? "Preparing your media…"
+                : label}
         </button>
         {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to save media</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Media could not be saved. Try again.</span> : null}
@@ -2468,16 +2431,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     label?: string;
   }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
-    const busy =
-      (upload.status === "preparing" || upload.status === "uploading") &&
-      upload.kind === "cover" &&
-      upload.contentId === contentId;
+    const active = uploadBusy && upload.kind === "cover" && upload.contentId === contentId;
     const authReady = Boolean(getToken());
-    const triggerDisabled = Boolean(disabled || busy || !authReady);
+    const triggerDisabled = Boolean(disabled || uploadBusy || !authReady);
 
     const onCoverSelected = React.useCallback(
       async (file?: File) => {
-        if (!file) return;
+        if (!file || uploadSubmissionRef.current) return;
+        uploadSubmissionRef.current = true;
 
         setError(null);
         setLocalCoverUrlByContent((prev) => {
@@ -2493,14 +2454,23 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         });
         setUpload({ status: "preparing", kind: "cover", contentId, filename: file.name });
         try {
-          setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name });
-          const uploaded = await uploadSongCover(contentId, file);
-          setUpload({ status: "done", kind: "cover", contentId, filename: file.name });
+          setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name, progressPercent: null });
+          const uploaded = await uploadSongCover(contentId, file, {
+            onProgress: (progressPercent) =>
+              setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name, progressPercent }),
+            onTransferComplete: () => setUpload({ status: "saving", kind: "cover", contentId, filename: file.name })
+          });
           const manifestSha = String(uploaded?.manifestSha256 || "").trim();
           setCoverCacheBustByContent((m) => ({ ...m, [contentId]: manifestSha || String(Date.now()) }));
-          await load();
-        } catch {
-          setUpload({ status: "error", kind: "cover", contentId, message: "Media could not be saved. Try again." });
+          const refreshed = await load();
+          if (!refreshed) {
+            throw new Error("Media saved, but the refreshed library could not be loaded. Refresh the page and check again.");
+          }
+          setUpload({ status: "done", kind: "cover", contentId, filename: file.name });
+        } catch (err: any) {
+          setUpload({ status: "error", kind: "cover", contentId, message: uploadErrorMessage(err) });
+        } finally {
+          uploadSubmissionRef.current = false;
         }
       },
       [contentId]
@@ -2539,7 +2509,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
           title={triggerDisabled ? "Cover save unavailable" : "Save album cover (jpg, png, webp)"}
         >
-          {busy ? "Saving image…" : label}
+          {active && upload.status === "uploading"
+            ? upload.progressPercent === null
+              ? "Uploading…"
+              : `Uploading ${upload.progressPercent}%`
+            : active && upload.status === "saving"
+              ? "Saving…"
+              : active
+                ? "Preparing image…"
+                : label}
         </button>
       </div>
     );
@@ -2547,47 +2525,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
   return (
     <div className="space-y-6">
-      {publicConsentOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-          <div className="w-full max-w-md rounded-xl border border-neutral-800 bg-neutral-950 p-4">
-            <div className="text-sm font-medium">Enable Public Link</div>
-            <div className="mt-2 text-xs text-neutral-400 space-y-2">
-              <div>To create a public link, Certifyd Creator needs to download a small helper tool to this device.</div>
-              <div>It will be stored inside your Certifyd Creator data folder and can be removed anytime.</div>
-              <div>This link works while Certifyd Creator is running and may change after restart.</div>
-            </div>
-            <label className="mt-3 flex items-center gap-2 text-xs text-neutral-400" htmlFor="public-consent-dont-ask">
-              <input
-                id="public-consent-dont-ask"
-                name="publicConsentDontAskAgain"
-                type="checkbox"
-                className="h-3 w-3"
-                checked={publicConsentDontAskAgain}
-                onChange={(e) => setPublicConsentDontAskAgain(e.target.checked)}
-              />
-              Don’t ask again on this device
-            </label>
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                onClick={() => setPublicConsentOpen(false)}
-                disabled={publicConsentBusy}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="text-xs rounded-lg border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
-                onClick={confirmPublicConsent}
-                disabled={publicConsentBusy}
-              >
-                {publicConsentBusy ? "Starting…" : "Download & Enable"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
       <div>
         <div className="text-lg font-semibold">Works catalog</div>
         <div className="text-sm text-neutral-400">Create Certifyd Works, connect Legacy works, and keep your catalog organized.</div>
@@ -2664,11 +2601,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         <div className="rounded-lg border border-red-900 bg-red-950/50 text-red-200 px-3 py-2 text-sm">{error}</div>
       )}
 
-      {(upload.status === "preparing" || upload.status === "uploading") && (
+      {(upload.status === "preparing" || upload.status === "uploading" || upload.status === "saving") && (
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/30 text-neutral-200 px-3 py-2 text-sm">
           {upload.status === "preparing"
-            ? `${upload.kind === "cover" ? "Saving image" : "Preparing your media"}… ${upload.filename}`
-            : `${upload.kind === "cover" ? "Saving image" : "Preparing your media"}… ${upload.filename}`}
+            ? `${upload.kind === "cover" ? "Preparing image" : "Preparing your media"}… ${upload.filename}`
+            : upload.status === "uploading"
+              ? `${upload.progressPercent === null ? "Uploading" : `Uploading ${upload.progressPercent}%`} — ${upload.filename}`
+              : "Saving and verifying your media… This may take a while for large videos."}
         </div>
       )}
 
@@ -2690,7 +2629,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       {upload.status === "done" && (
         <div className="rounded-lg border border-emerald-900 bg-emerald-950/30 text-emerald-200 px-3 py-2 text-sm">
           <div className="flex items-center justify-between gap-2">
-            <span>Media saved and ready.</span>
+            <span>Saved successfully</span>
             <button
               type="button"
               onClick={() => setUpload({ status: "idle" })}
@@ -2743,6 +2682,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 <option value="video">Video</option>
                 <option value="file">File</option>
               </select>
+            </div>
+
+            <div className="md:col-span-4">
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-primary-topic">
+                Primary topic (optional)
+              </label>
+              <select
+                id="content-primary-topic"
+                name="primaryTopic"
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={newPrimaryTopic}
+                onChange={(e) => setNewPrimaryTopic(e.target.value as PrimaryTopic | "")}
+              >
+                <option value="">None</option>
+                {PRIMARY_TOPIC_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <div className="mt-1 text-xs text-neutral-500">Choose a subject, regardless of file format. Use Technology for software and tools.</div>
             </div>
 
           </div>
@@ -3604,7 +3562,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ) : null}
 
                               {!isLegacyAsset && isOwner && allowUpload ? (
-                                <UploadButton contentId={it.id} disabled={busy} label="Save media" />
+                                <>
+                                  <UploadButton contentId={it.id} disabled={busy} label="Save media" />
+                                  {String(it.type || "").toLowerCase() === "video" ? (
+                                    <span className="text-xs text-neutral-500">Recommended for browser playback: MP4 with H.264 video and AAC audio.</span>
+                                  ) : null}
+                                </>
                               ) : null}
                               {!isLegacyAsset && isOwner && allowCoverUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
                                 <CoverUploadButton
@@ -3778,6 +3741,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           <div className="min-w-0 flex-1 space-y-3">
                             <div>
                               <div className="font-medium text-neutral-200">{it.title}</div>
+                              {publicationManifestSha256 ? (
+                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-neutral-300">
+                                  <span>Publication hash: <span className="break-all font-mono text-purple-200">{publicationManifestSha256}</span></span>
+                                  <button type="button" className="rounded border border-neutral-700 px-2 py-0.5 hover:bg-neutral-900" onClick={() => copyText(publicationManifestSha256)}>
+                                    Copy
+                                  </button>
+                                </div>
+                              ) : null}
                               <div className="mt-1 text-xs text-neutral-400">
                                 {publicationManifestSha256
                                   ? "Proven Legacy Work with a Publication Manifest. The Publication Hash is evidence metadata, not a media hash."
@@ -3962,6 +3933,79 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         );
                       })()}
 
+                      {(publishMsg[it.id] || (it.status === "published" && (networkPublishByContent[it.id]?.hasReceipt || networkPublishByContent[it.id]?.manifestHash || manifestSha256))) ? (
+                        <section className="space-y-2 rounded-lg border border-emerald-900/50 bg-emerald-950/10 px-3 py-3">
+                          <div className="text-xs font-medium text-emerald-200">Publication &amp; Proof</div>
+                      {it.status === "published" && (networkPublishByContent[it.id]?.manifestHash || manifestSha256) ? (
+                        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 text-xs text-neutral-200">
+                          <span>Publication hash: <span className="break-all font-mono">{networkPublishByContent[it.id]?.manifestHash || manifestSha256}</span></span>
+                          <button type="button" className="rounded border border-emerald-800 px-2 py-0.5 hover:bg-emerald-950/40" onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || manifestSha256)}>
+                            Copy
+                          </button>
+                        </div>
+                      ) : null}
+                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
+                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
+                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
+                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+                              <div>
+                                Status: <span className="text-emerald-200">Published</span>
+                              </div>
+                              <div>
+                                Published at:{" "}
+                                <span className="text-neutral-200">
+                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>
+                                  Media Hash:{" "}
+                                  <span className="text-neutral-200 break-all">
+                                    {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
+                                  </span>
+                                </span>
+                                {(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256) ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                                    onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "")}
+                                  >
+                                    Copy
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>
+                                  Publish receipt ID:{" "}
+                                  <span className="text-neutral-200 break-all">{networkPublishByContent[it.id]?.receiptId || "—"}</span>
+                                </span>
+                                {networkPublishByContent[it.id]?.receiptId ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                                    onClick={() => copyText(networkPublishByContent[it.id]?.receiptId || "")}
+                                  >
+                                    Copy
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div>
+                                Provider node ID:{" "}
+                                <span className="text-neutral-200 break-all">
+                                  {networkPublishByContent[it.id]?.providerNodeId || "—"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                          {publishMsg[it.id] ? (
+                            <div className="text-xs text-neutral-400">{publishMsg[it.id]}</div>
+                          ) : null}
+                        </section>
+                      ) : null}
+                      <details className="rounded-lg border border-neutral-800 bg-neutral-950/30 px-3 py-2">
+                        <summary className="cursor-pointer text-xs font-medium text-neutral-200">Advanced file and split details</summary>
+                        <div className="mt-3 space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="text-xs text-neutral-400">
                           Repo: <span className="text-neutral-300">{it.repoPath || "not set"}</span>
@@ -4202,6 +4246,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           </div>
                         )}
                       </div>
+
+                        </div>
+                      </details>
 
                       {/* Lineage summary */}
                       {(() => {
@@ -4839,8 +4886,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       {/* Network visibility panel */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="text-xs text-neutral-300 font-medium">Monetization</div>
-                        <div className="mt-2 rounded-md border border-sky-900/40 bg-sky-950/20 p-3">
-                          <div className="text-xs font-medium text-sky-200">Payment / Access Proof</div>
+                        <details className="mt-2 rounded-md border border-sky-900/40 bg-sky-950/20 p-3">
+                          <summary className="cursor-pointer text-xs font-medium text-sky-200">Payment and access details</summary>
                           <div className="mt-2 grid gap-1 text-xs text-neutral-300">
                             <div>
                               Access model: <span className="text-neutral-100">{monetizationAccessLabel}</span>
@@ -4867,7 +4914,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               Last payment method: <span className="text-neutral-100">{lastSale?.paidVia || "—"}</span>
                             </div>
                           </div>
-                        </div>
+                        </details>
                         <div className="mt-2 grid gap-3 md:grid-cols-3">
                           <div className="md:col-span-1">
                             <label className="block text-xs text-neutral-400 mb-1" htmlFor={`priceSats-${it.id}`}>
@@ -5018,7 +5065,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             </select>
                           </div>
                           <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
-                            <div>Used by fan/discovery feeds. Optional.</div>
+                            <div>Optional subject for discovery, independent of file format. Use Technology for software and tools.</div>
                             <button
                               type="button"
                               className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
@@ -5146,249 +5193,405 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       ) : null}
 
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-xs text-neutral-300 font-medium">Share</div>
-                        </div>
-                        <div className="mt-2 text-xs text-neutral-400 space-y-2">
-                          {(() => {
-                            const status = String(publicStatus?.status || "offline");
-                            const isStarting = status === "starting";
-                            const isOn = status === "online";
-                            const isError = status === "error";
-                            const isOffline = status === "offline";
-                            const isLocalOnly = publicStatus?.mode === "off";
-                            const originBase = isOn ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
-                            const publicUrl = originBase ? `${originBase.replace(/\/$/, "")}/p/${it.id}` : "";
-                            return (
-                              <div className="rounded-md border border-neutral-800 bg-neutral-900/30 p-3 space-y-2">
-                                <div className="flex items-center gap-2 text-xs text-neutral-300 font-medium">
-                                  <span>Public Link</span>
-                                  <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[10px] text-neutral-400">
-                                    {publicStatus?.mode === "named"
-                                      ? `Permanent (${publicStatus?.tunnelName || "Named"})`
-                                      : publicStatus?.mode === "quick"
-                                        ? "Temporary (Quick)"
-                                        : "Public: OFF / Local only"}
-                                  </span>
+                        <div className="text-xs text-neutral-300 font-medium">Credits &amp; Rights</div>
+                        <div className="mt-2 text-xs text-neutral-400">Owner: <span className="text-neutral-200">{ownerLabel}</span></div>
+                        {splitsAllowed && split ? (
+                          <div className="mt-1 text-xs text-neutral-300">Royalty split: {split.status === "locked" ? "Locked" : "Draft"} (v{split.versionNumber})</div>
+                        ) : null}
+                        <div className="mt-2 space-y-2 text-xs text-neutral-400">
+                          {creditsLoading[it.id] ? (
+                            <div>Loading credits…</div>
+                          ) : (creditsByContent[it.id] || []).length === 0 ? (
+                            <div className="text-neutral-500">No credits yet.</div>
+                          ) : (
+                            (creditsByContent[it.id] || []).map((c) => (
+                              <div key={c.id} className="flex items-center justify-between gap-3">
+                                <div className="text-neutral-200">
+                                  {c.name} — {c.role}
                                 </div>
-                                <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                                  <span
-                                    className={`rounded-full border px-2 py-0.5 ${
-                                      isOn
-                                        ? "border-emerald-900 bg-emerald-950/30 text-emerald-200"
-                                        : isStarting
-                                          ? "border-amber-900 bg-amber-950/30 text-amber-200"
-                                          : isError
-                                            ? "border-red-900 bg-red-950/30 text-red-200"
-                                            : "border-neutral-800 bg-neutral-950 text-neutral-400"
-                                    }`}
-                                  >
-                                    {status === "online"
-                                      ? "ONLINE"
-                                      : status === "starting"
-                                        ? "STARTING"
-                                        : status === "error"
-                                          ? "ERROR"
-                                          : "OFFLINE"}
-                                  </span>
-                                  <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
-                                    DDNS disabled
-                                  </span>
-                                </div>
-
-                                {isOffline ? (
-                                  <>
-                                    <div className="text-xs text-neutral-400">
-                                      {isLocalOnly
-                                        ? "Public: OFF / Local only. Set PUBLIC_MODE=quick to enable a temporary public test URL."
-                                        : publicStatus?.mode === "named"
-                                        ? "Permanent identity link (stable hostname)."
-                                        : "Temporary link (changes on restart)."}
-                                    </div>
-                                    {publicStatus?.message ? (
-                                      <div className="text-xs text-neutral-500">{publicStatus.message}</div>
-                                    ) : null}
-                                    {it.status !== "published" ? (
-                                      <div className="text-xs text-neutral-500">Publish to generate a public buy link.</div>
-                                    ) : null}
-                                    {publicStatus?.mode === "quick" ? (
-                                      <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
-                                    ) : null}
-                                    {publicStatus?.mode === "quick" && publicStatus?.namedConfigured ? (
-                                      <div className="text-xs text-amber-300">
-                                        Named tunnel configured, but local runtime is still in quick mode.
-                                      </div>
-                                    ) : null}
-                                    {!isLocalOnly ? (
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={startPublicLink}
-                                        disabled={publicBusy || isStarting || isOn}
-                                      >
-                                        Enable Public Link
-                                      </button>
-                                    ) : null}
-                                  </>
-                                ) : null}
-
-                                {isStarting ? (
-                                  <>
-                                    <div className="flex items-center gap-2 text-xs text-neutral-300">
-                                      <span className="inline-block h-3 w-3 rounded-full border border-neutral-500 border-t-transparent animate-spin" />
-                                      Starting public link…
-                                    </div>
-                                    <div className="text-xs text-neutral-400">Keep Certifyd Creator open.</div>
-                                  </>
-                                ) : null}
-
-                                {isOn ? (
-                                  <>
-                                    <label className="text-xs text-neutral-400" htmlFor={`public-link-${it.id}`}>
-                                      Public link
-                                    </label>
-                                    {it.status === "published" ? (
-                                      <div className="flex items-center gap-2">
-                                        <input
-                                          id={`public-link-${it.id}`}
-                                          name={`publicLink-${it.id}`}
-                                          readOnly
-                                          className="w-full rounded-md bg-neutral-950 border border-neutral-800 px-2 py-1 text-xs text-neutral-200"
-                                          value={publicUrl || "—"}
-                                          autoComplete="off"
-                                        />
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                          onClick={() => publicUrl && window.open(publicUrl, "_blank", "noopener,noreferrer")}
-                                          disabled={!publicUrl}
-                                        >
-                                          Open
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                          onClick={() => publicUrl && copyText(publicUrl)}
-                                          disabled={!publicUrl}
-                                        >
-                                          Copy link
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <div className="text-xs text-neutral-500">Publish this item to share it publicly.</div>
-                                    )}
-                                    <div className="text-xs text-neutral-400">
-                                      {publicStatus?.mode === "named"
-                                        ? "Identity link stays the same even when offline."
-                                        : "This link works while Certifyd Creator is running on this device."}
-                                    </div>
-                                    {publicStatus?.mode === "quick" ? (
-                                      <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
-                                    ) : (
-                                      <div className="text-xs text-neutral-500">If offline, recipients may see a connection error.</div>
-                                    )}
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={stopPublicLink}
-                                        disabled={publicBusy}
-                                      >
-                                        Stop sharing
-                                      </button>
-                                    </div>
-                                  </>
-                                ) : null}
-
-                                {isError ? (
-                                  <>
-                                    <div className="text-xs text-neutral-300 font-medium">Public link unavailable</div>
-                                    <div className="text-xs text-neutral-400">
-                                      {publicMsg || publicStatus?.message || "We couldn’t start sharing from this device."}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={startPublicLink}
-                                        disabled={publicBusy || isStarting || isOn}
-                                      >
-                                        Try again
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={() => setPublicAdvancedOpen((v) => !v)}
-                                      >
-                                        View details
-                                      </button>
-                                    </div>
-                                  </>
-                                ) : null}
-
-                                <div>
+                                <div className="flex items-center gap-2">
                                   <button
                                     type="button"
-                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                    onClick={() => setPublicAdvancedOpen((v) => !v)}
+                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                    onClick={async () => {
+                                      const name = window.prompt("Credit name", c.name || "");
+                                      if (!name) return;
+                                      const role = window.prompt("Role", c.role || "");
+                                      if (!role) return;
+                                      try {
+                                        await api(`/content/${it.id}/credits/${c.id}`, "PATCH", { name, role });
+                                        await loadCredits(it.id);
+                                      } catch (e: any) {
+                                        setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to update credit." }));
+                                      }
+                                    }}
                                   >
-                                    {publicAdvancedOpen ? "Hide details" : "Advanced"}
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                    onClick={async () => {
+                                      if (!window.confirm("Remove this credit?")) return;
+                                      try {
+                                        await api(`/content/${it.id}/credits/${c.id}`, "DELETE");
+                                        await loadCredits(it.id);
+                                      } catch (e: any) {
+                                        setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to remove credit." }));
+                                      }
+                                    }}
+                                  >
+                                    Remove
                                   </button>
                                 </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
 
-                                {publicAdvancedOpen ? (
-                                  <div className="text-[11px] text-neutral-500 space-y-1">
-                                    <div>Status: <span className="text-neutral-300">{status}</span></div>
-                                    <div>
-                                      Last check:{" "}
-                                      <span className="text-neutral-300">
-                                        {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
-                                      </span>
-                                    </div>
-                                    <div>Public origin: <span className="text-neutral-300 break-all">{publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span></div>
-                                    <div>Last error: <span className="text-neutral-300 break-all">{publicStatus?.lastError || publicMsg || "—"}</span></div>
-                                    <div>Consent required: <span className="text-neutral-300">{publicStatus?.consentRequired ? "yes" : "no"}</span></div>
-                                    <div>cloudflared available: <span className="text-neutral-300">{publicStatus?.cloudflared?.available ? "yes" : "no"}</span></div>
-                                    <div>cloudflared path: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.managedPath || "—"}</span></div>
-                                    <div>cloudflared version: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.version || "—"}</span></div>
-                                    <label className="flex items-center gap-2" htmlFor={`public-autostart-${it.id}`}>
-                                      <input
-                                        id={`public-autostart-${it.id}`}
-                                        name={`publicAutostart-${it.id}`}
-                                        type="checkbox"
-                                        className="h-3 w-3"
-                                        checked={Boolean(publicStatus?.autoStartEnabled)}
-                                        onChange={async (e) => {
-                                          try {
-                                            await api("/api/public/autostart", "POST", { enabled: e.target.checked });
-                                            await refreshPublicStatus();
-                                          } catch {
-                                            setPublicMsg("Failed to update auto-start setting.");
-                                          }
-                                        }}
-                                      />
-                                      Auto-start Public Link on launch
-                                    </label>
+                        <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <label className="sr-only" htmlFor={`credit-name-${it.id}`}>
+                            Credit name
+                          </label>
+                          <input
+                            id={`credit-name-${it.id}`}
+                            name={`creditName-${it.id}`}
+                            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
+                            placeholder="Name"
+                            value={creditNameDraft[it.id] || ""}
+                            onChange={(e) => setCreditNameDraft((m) => ({ ...m, [it.id]: e.target.value }))}
+                            autoComplete="name"
+                          />
+                          <label className="sr-only" htmlFor={`credit-role-${it.id}`}>
+                            Credit role
+                          </label>
+                          <input
+                            id={`credit-role-${it.id}`}
+                            name={`creditRole-${it.id}`}
+                            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
+                            placeholder="Role (Writer, Producer, Mix, Mastering, etc.)"
+                            value={creditRoleDraft[it.id] || ""}
+                            onChange={(e) => setCreditRoleDraft((m) => ({ ...m, [it.id]: e.target.value }))}
+                            autoComplete="off"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                          onClick={async () => {
+                            const name = (creditNameDraft[it.id] || "").trim();
+                            const role = (creditRoleDraft[it.id] || "").trim();
+                            if (!name || !role) {
+                              setCreditMsg((m) => ({ ...m, [it.id]: "Name and role required." }));
+                              return;
+                            }
+                            try {
+                              await api(`/content/${it.id}/credits`, "POST", { name, role });
+                              setCreditNameDraft((m) => ({ ...m, [it.id]: "" }));
+                              setCreditRoleDraft((m) => ({ ...m, [it.id]: "" }));
+                              setCreditMsg((m) => ({ ...m, [it.id]: "Saved." }));
+                              await loadCredits(it.id);
+                            } catch (e: any) {
+                              setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to add credit." }));
+                            }
+                          }}
+                        >
+                          Add credit
+                        </button>
+                        {creditMsg[it.id] ? <div className="mt-1 text-xs text-amber-300">{creditMsg[it.id]}</div> : null}
+                      </div>
+
+                      <section className="space-y-3">
+                        <h3 className="text-xs font-semibold text-neutral-200">Visibility &amp; Sharing</h3>
+                      {/* Network visibility panel */}
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-xs text-neutral-300 font-medium">Work visibility</div>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`text-[10px] px-2 py-1 rounded-full border ${
+                                storefrontStatus === "LISTED"
+                                  ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                                  : storefrontStatus === "UNLISTED"
+                                    ? "border-amber-900 text-amber-200 bg-amber-950/30"
+                                    : "border-neutral-800 text-neutral-400 bg-neutral-950/60"
+                              }`}
+                            >
+                              {visibilityLabel(storefrontStatus)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {parentLinkByContent[it.id] && parentLinkByContent[it.id]?.requiresApproval ? (
+                          <div className="mt-2 text-xs text-neutral-400">
+                            Clearance for public release:{" "}
+                            <span className="text-neutral-200">
+                              {parentLinkByContent[it.id]?.approvedAt ? "Cleared" : "Pending clearance"}
+                            </span>
+                          </div>
+                        ) : null}
+                        {parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt ? (
+                          <div className="mt-1 text-xs text-amber-300">
+                            Public network release is locked until clearance. Private direct-link access still works.
+                          </div>
+                        ) : null}
+                        {parentLinkByContent[it.id]?.requiresApproval &&
+                        !parentLinkByContent[it.id]?.approvedAt &&
+                        isOwner ? (
+                          <div className="mt-2 space-y-2 text-xs text-neutral-500">
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                                onClick={() =>
+                                  requestClearanceForContent(
+                                    it.id,
+                                    parentLinkByContent[it.id]!.linkId,
+                                    deriveClearanceRequestMode(parentLinkByContent[it.id])
+                                  )
+                                }
+                                disabled={!crossNodeAllowed}
+                                title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
+                              >
+                                {clearanceRequestActionLabel(parentLinkByContent[it.id])}
+                              </button>
+                              {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
+                                <button
+                                  type="button"
+                                  className="text-[11px] rounded border border-amber-900 px-2 py-0.5 text-amber-200 hover:bg-amber-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  onClick={() =>
+                                    requestClearanceForContent(
+                                      it.id,
+                                      parentLinkByContent[it.id]!.linkId,
+                                      deriveClearanceRequestMode(parentLinkByContent[it.id])
+                                    )
+                                  }
+                                  disabled={!crossNodeAllowed}
+                                  title={!crossNodeAllowed ? clearanceReason : "Retry request"}
+                                >
+                                  Retry
+                                </button>
+                              ) : null}
+                            </div>
+                            {!crossNodeAllowed ? (
+                              <div className="text-[11px] text-amber-300">
+                                {clearanceReason}{" "}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    window.history.pushState({}, "", "/config");
+                                    window.location.reload();
+                                  }}
+                                  className="underline text-amber-200 hover:text-amber-100"
+                                >
+                                  Set up named link
+                                </button>
+                              </div>
+                            ) : null}
+                            {clearanceRequestMsgByContent[it.id] ? (
+                              <div className="text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
+                            ) : null}
+                            {parentLinkByContent[it.id]?.clearanceRequest ? (
+                              <div className="text-[11px] text-neutral-400">
+                                Clearance requested:{" "}
+                                {titleCase(String(parentLinkByContent[it.id]!.clearanceRequest.status || "pending"))}
+                                {" "}•{" "}
+                                {formatDateLabel(parentLinkByContent[it.id]!.clearanceRequest.requestedAt)}
+                              </div>
+                            ) : null}
+                            {clearanceRequestMetaByContent[it.id]?.lastAttemptAt ? (
+                              <div className="text-[11px] text-neutral-500">
+                                Last attempt: {new Date(clearanceRequestMetaByContent[it.id]!.lastAttemptAt as string).toLocaleString()}
+                              </div>
+                            ) : null}
+                            {clearanceLinksByContent[it.id]?.length ? (
+                              <div className="space-y-1 text-[11px] text-neutral-400">
+                                <div className="text-neutral-500">Clearance links:</div>
+                                {clearanceLinksByContent[it.id]!.map((l, idx) => (
+                                  <div key={idx} className="flex items-center gap-2">
+                                    <span className="truncate">{l.email}</span>
                                     <button
                                       type="button"
                                       className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                      onClick={async () => {
-                                        try {
-                                          await api("/api/public/consent/reset", "POST");
-                                          await refreshPublicStatus();
-                                        } catch {
-                                          setPublicMsg("Failed to reset consent.");
-                                        }
-                                      }}
+                                      onClick={() => navigator.clipboard.writeText(l.url)}
                                     >
-                                      Reset Public Link consent
+                                      Copy approval link
                                     </button>
                                   </div>
-                                ) : null}
+                                ))}
                               </div>
-                            );
-                          })()}
+                            ) : null}
+                          </div>
+                        ) : null}
 
+                        <div className="mt-2 grid gap-3 md:grid-cols-3">
+                          <div className="md:col-span-1">
+                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`storefront-status-${it.id}`}>
+                              Visibility
+                            </label>
+                            <select
+                              id={`storefront-status-${it.id}`}
+                              name={`storefrontStatus-${it.id}`}
+                              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
+                              value={storefrontStatus}
+                              onChange={(e) =>
+                                updateStorefrontStatus(it.id, e.target.value as "DISABLED" | "UNLISTED" | "LISTED")
+                              }
+                              disabled={
+                                busy ||
+                                (parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt)
+                              }
+                            >
+                              <option value="DISABLED">Hidden</option>
+                              <option value="UNLISTED">Direct Link</option>
+                              <option value="LISTED">Discoverable</option>
+                            </select>
+                          </div>
+
+                          <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
+                            <div>Hidden: not reachable from public network routes.</div>
+                            <div>Direct Link: reachable by direct link (not discoverable).</div>
+                            <div>Discoverable: reachable and available for discovery surfaces.</div>
+                          </div>
+                        </div>
+
+                        <details className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/30 px-3 py-2">
+                          <summary className="cursor-pointer text-xs font-medium text-neutral-200">Advanced visibility checks</summary>
+                          <div className="mt-3 space-y-3">
+                        <div className="mt-3 space-y-2 text-xs text-neutral-400">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              Public metadata: <span className="text-neutral-300 break-all">{publicMetaUrl}</span>
+                            </div>
+                            <button
+                              type="button"
+                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={() => copyText(publicMetaUrl)}
+                            >
+                              Copy link
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              Public access: <span className="text-neutral-300 break-all">{publicAccessUrl}</span>
+                            </div>
+                            <button
+                              type="button"
+                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={() => copyText(publicAccessUrl)}
+                            >
+                              Copy link
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
+                          <div className="font-medium text-neutral-300 mb-1">Payment capability</div>
+                          {identitiesLoading ? (
+                            <div>Loading payout destinations…</div>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              <span
+                                className={`rounded-full border px-2 py-1 ${
+                                  onchainAvailable
+                                    ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                                    : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
+                                }`}
+                              >
+                                On-chain: {onchainAvailable ? "Available" : "Not configured"}
+                              </span>
+                              <span
+                                className={`rounded-full border px-2 py-1 ${
+                                  lightningAvailable
+                                    ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                                    : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
+                                }`}
+                              >
+                                Lightning: {lightningAvailable ? "Available" : "Not configured"}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-medium text-neutral-300">Network Visibility Payload</div>
+                            <button
+                              type="button"
+                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={async () => {
+                                setStorefrontPreviewLoading((m) => ({ ...m, [it.id]: true }));
+                                try {
+                                  const res = await fetch(publicMetaUrl);
+                                  const text = await res.text();
+                                  let json: any = null;
+                                  try {
+                                    json = text ? JSON.parse(text) : null;
+                                  } catch {
+                                    json = { error: text || "Invalid response" };
+                                  }
+                                  setStorefrontPreview((m) => ({ ...m, [it.id]: json }));
+                                } catch (e: any) {
+                                  setStorefrontPreview((m) => ({ ...m, [it.id]: { error: e?.message || "Failed to fetch" } }));
+                                } finally {
+                                  setStorefrontPreviewLoading((m) => ({ ...m, [it.id]: false }));
+                                }
+                              }}
+                            >
+                              {storefrontPreviewLoading[it.id] ? "Loading…" : "Preview network payload"}
+                            </button>
+                          </div>
+                          {storefrontPreview[it.id] ? (
+                            <pre className="mt-2 whitespace-pre-wrap break-words text-[11px] text-neutral-200">
+                              {JSON.stringify(storefrontPreview[it.id], null, 2)}
+                            </pre>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-3 flex items-center justify-between gap-3">
+                          <div className="text-xs text-neutral-500">
+                            {storefrontStatus === "DISABLED"
+                              ? "Enable network visibility (Direct Link or Discoverable) to test public purchase flow."
+                              : it.status !== "published"
+                                ? "Publish content to generate a manifest before purchase."
+                                : !manifestSha256
+                                  ? "Manifest missing."
+                                  : "Ready to validate the public purchase flow."}
+                          </div>
+                          <button
+                            type="button"
+                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                            onClick={() =>
+                              setTestPurchaseFor({
+                                contentId: it.id,
+                                manifestSha256,
+                                storefrontStatus,
+                                contentStatus: it.status
+                              })
+                            }
+                            disabled={(!isAuthed && storefrontStatus === "DISABLED") || it.status !== "published" || !manifestSha256}
+                          >
+                            Test public purchase flow
+                          </button>
+                        </div>
+                          </div>
+                        </details>
+                      </div>
+
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs text-neutral-300 font-medium">Work links</div>
+                        </div>
+                        <div className="mt-2 text-xs text-neutral-400 space-y-2">
+                          {it.status === "published" && publicStatus?.status === "online" && (publicStatus.canonicalOrigin || publicStatus.publicOrigin) ? (
+                            <div className="text-xs text-neutral-400">
+                              Public link: <a className="text-sky-300 break-all" href={`${String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").replace(/\/$/, "")}/p/${it.id}`} target="_blank" rel="noopener noreferrer">Open work</a>
+                            </div>
+                          ) : null}
+
+                          <details className="rounded-lg border border-neutral-800 px-3 py-2">
+                            <summary className="cursor-pointer text-xs font-medium text-neutral-200">Buy, local, embed &amp; P2P links</summary>
+                            <div className="mt-2 space-y-2">
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (activeOrigin || publicOriginFromApi || "").trim();
@@ -5421,9 +5624,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <>
                                 {isBasicTier ? null : (
                                   <>
-                                    <div className="flex items-center justify-between gap-2">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
                                       <div className="text-[11px] text-neutral-500">Buy links</div>
-                                      <div className="flex items-center gap-2">
+                                      <div className="flex flex-wrap items-center gap-2">
                                         {(["public", "config"] as const).map((tab) => {
                                           const active = (buyLinksTabByContent[it.id] || "public") === tab;
                                           return (
@@ -5442,7 +5645,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                                 }))
                                               }
                                             >
-                                              {tab === "public" ? "Hide" : "Show"}
+                                              {tab === "public" ? "Public buy link" : "Local, embed & P2P"}
                                             </button>
                                           );
                                         })}
@@ -5640,442 +5843,19 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               </>
                             );
                           })()}
+                            </div>
+                          </details>
                         </div>
                       </div>
 
-                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="text-xs text-neutral-300 font-medium">Credits</div>
-                        <div className="mt-2 space-y-2 text-xs text-neutral-400">
-                          {creditsLoading[it.id] ? (
-                            <div>Loading credits…</div>
-                          ) : (creditsByContent[it.id] || []).length === 0 ? (
-                            <div className="text-neutral-500">No credits yet.</div>
-                          ) : (
-                            (creditsByContent[it.id] || []).map((c) => (
-                              <div key={c.id} className="flex items-center justify-between gap-3">
-                                <div className="text-neutral-200">
-                                  {c.name} — {c.role}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    type="button"
-                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                    onClick={async () => {
-                                      const name = window.prompt("Credit name", c.name || "");
-                                      if (!name) return;
-                                      const role = window.prompt("Role", c.role || "");
-                                      if (!role) return;
-                                      try {
-                                        await api(`/content/${it.id}/credits/${c.id}`, "PATCH", { name, role });
-                                        await loadCredits(it.id);
-                                      } catch (e: any) {
-                                        setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to update credit." }));
-                                      }
-                                    }}
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                    onClick={async () => {
-                                      if (!window.confirm("Remove this credit?")) return;
-                                      try {
-                                        await api(`/content/${it.id}/credits/${c.id}`, "DELETE");
-                                        await loadCredits(it.id);
-                                      } catch (e: any) {
-                                        setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to remove credit." }));
-                                      }
-                                    }}
-                                  >
-                                    Remove
-                                  </button>
-                                </div>
-                              </div>
-                            ))
-                          )}
-                        </div>
 
-                        {publishMsg[it.id] ? (
-                          <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div>
-                        ) : null}
-                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
-                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
-                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
-                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
-                              <div>
-                                Status: <span className="text-emerald-200">Published</span>
-                              </div>
-                              <div>
-                                Published at:{" "}
-                                <span className="text-neutral-200">
-                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
-                                </span>
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span>
-                                  Media Hash:{" "}
-                                  <span className="text-neutral-200 break-all">
-                                    {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
-                                  </span>
-                                </span>
-                                {(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256) ? (
-                                  <button
-                                    type="button"
-                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
-                                    onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "")}
-                                  >
-                                    Copy
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span>
-                                  Publish receipt ID:{" "}
-                                  <span className="text-neutral-200 break-all">{networkPublishByContent[it.id]?.receiptId || "—"}</span>
-                                </span>
-                                {networkPublishByContent[it.id]?.receiptId ? (
-                                  <button
-                                    type="button"
-                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
-                                    onClick={() => copyText(networkPublishByContent[it.id]?.receiptId || "")}
-                                  >
-                                    Copy
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div>
-                                Provider node ID:{" "}
-                                <span className="text-neutral-200 break-all">
-                                  {networkPublishByContent[it.id]?.providerNodeId || "—"}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
 
-                        <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          <label className="sr-only" htmlFor={`credit-name-${it.id}`}>
-                            Credit name
-                          </label>
-                          <input
-                            id={`credit-name-${it.id}`}
-                            name={`creditName-${it.id}`}
-                            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
-                            placeholder="Name"
-                            value={creditNameDraft[it.id] || ""}
-                            onChange={(e) => setCreditNameDraft((m) => ({ ...m, [it.id]: e.target.value }))}
-                            autoComplete="name"
-                          />
-                          <label className="sr-only" htmlFor={`credit-role-${it.id}`}>
-                            Credit role
-                          </label>
-                          <input
-                            id={`credit-role-${it.id}`}
-                            name={`creditRole-${it.id}`}
-                            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
-                            placeholder="Role (Writer, Producer, Mix, Mastering, etc.)"
-                            value={creditRoleDraft[it.id] || ""}
-                            onChange={(e) => setCreditRoleDraft((m) => ({ ...m, [it.id]: e.target.value }))}
-                            autoComplete="off"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                          onClick={async () => {
-                            const name = (creditNameDraft[it.id] || "").trim();
-                            const role = (creditRoleDraft[it.id] || "").trim();
-                            if (!name || !role) {
-                              setCreditMsg((m) => ({ ...m, [it.id]: "Name and role required." }));
-                              return;
-                            }
-                            try {
-                              await api(`/content/${it.id}/credits`, "POST", { name, role });
-                              setCreditNameDraft((m) => ({ ...m, [it.id]: "" }));
-                              setCreditRoleDraft((m) => ({ ...m, [it.id]: "" }));
-                              setCreditMsg((m) => ({ ...m, [it.id]: "Saved." }));
-                              await loadCredits(it.id);
-                            } catch (e: any) {
-                              setCreditMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to add credit." }));
-                            }
-                          }}
-                        >
-                          Add credit
-                        </button>
-                        {creditMsg[it.id] ? <div className="mt-1 text-xs text-amber-300">{creditMsg[it.id]}</div> : null}
-                      </div>
 
-                      {/* Network visibility panel */}
-                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-xs text-neutral-300 font-medium">Network Visibility</div>
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`text-[10px] px-2 py-1 rounded-full border ${
-                                storefrontStatus === "LISTED"
-                                  ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
-                                  : storefrontStatus === "UNLISTED"
-                                    ? "border-amber-900 text-amber-200 bg-amber-950/30"
-                                    : "border-neutral-800 text-neutral-400 bg-neutral-950/60"
-                              }`}
-                            >
-                              {visibilityLabel(storefrontStatus)}
-                            </span>
-                          </div>
-                        </div>
+                      </section>
 
-                        {parentLinkByContent[it.id] && parentLinkByContent[it.id]?.requiresApproval ? (
-                          <div className="mt-2 text-xs text-neutral-400">
-                            Clearance for public release:{" "}
-                            <span className="text-neutral-200">
-                              {parentLinkByContent[it.id]?.approvedAt ? "Cleared" : "Pending clearance"}
-                            </span>
-                          </div>
-                        ) : null}
-                        {parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt ? (
-                          <div className="mt-1 text-xs text-amber-300">
-                            Public network release is locked until clearance. Private direct-link access still works.
-                          </div>
-                        ) : null}
-                        {parentLinkByContent[it.id]?.requiresApproval &&
-                        !parentLinkByContent[it.id]?.approvedAt &&
-                        isOwner ? (
-                          <div className="mt-2 space-y-2 text-xs text-neutral-500">
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                                onClick={() =>
-                                  requestClearanceForContent(
-                                    it.id,
-                                    parentLinkByContent[it.id]!.linkId,
-                                    deriveClearanceRequestMode(parentLinkByContent[it.id])
-                                  )
-                                }
-                                disabled={!crossNodeAllowed}
-                                title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
-                              >
-                                {clearanceRequestActionLabel(parentLinkByContent[it.id])}
-                              </button>
-                              {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
-                                <button
-                                  type="button"
-                                  className="text-[11px] rounded border border-amber-900 px-2 py-0.5 text-amber-200 hover:bg-amber-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  onClick={() =>
-                                    requestClearanceForContent(
-                                      it.id,
-                                      parentLinkByContent[it.id]!.linkId,
-                                      deriveClearanceRequestMode(parentLinkByContent[it.id])
-                                    )
-                                  }
-                                  disabled={!crossNodeAllowed}
-                                  title={!crossNodeAllowed ? clearanceReason : "Retry request"}
-                                >
-                                  Retry
-                                </button>
-                              ) : null}
-                            </div>
-                            {!crossNodeAllowed ? (
-                              <div className="text-[11px] text-amber-300">
-                                {clearanceReason}{" "}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    window.history.pushState({}, "", "/config");
-                                    window.location.reload();
-                                  }}
-                                  className="underline text-amber-200 hover:text-amber-100"
-                                >
-                                  Set up named link
-                                </button>
-                              </div>
-                            ) : null}
-                            {clearanceRequestMsgByContent[it.id] ? (
-                              <div className="text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
-                            ) : null}
-                            {parentLinkByContent[it.id]?.clearanceRequest ? (
-                              <div className="text-[11px] text-neutral-400">
-                                Clearance requested:{" "}
-                                {titleCase(String(parentLinkByContent[it.id]!.clearanceRequest.status || "pending"))}
-                                {" "}•{" "}
-                                {formatDateLabel(parentLinkByContent[it.id]!.clearanceRequest.requestedAt)}
-                              </div>
-                            ) : null}
-                            {clearanceRequestMetaByContent[it.id]?.lastAttemptAt ? (
-                              <div className="text-[11px] text-neutral-500">
-                                Last attempt: {new Date(clearanceRequestMetaByContent[it.id]!.lastAttemptAt as string).toLocaleString()}
-                              </div>
-                            ) : null}
-                            {clearanceLinksByContent[it.id]?.length ? (
-                              <div className="space-y-1 text-[11px] text-neutral-400">
-                                <div className="text-neutral-500">Clearance links:</div>
-                                {clearanceLinksByContent[it.id]!.map((l, idx) => (
-                                  <div key={idx} className="flex items-center gap-2">
-                                    <span className="truncate">{l.email}</span>
-                                    <button
-                                      type="button"
-                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                      onClick={() => navigator.clipboard.writeText(l.url)}
-                                    >
-                                      Copy approval link
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-
-                        <div className="mt-2 grid gap-3 md:grid-cols-3">
-                          <div className="md:col-span-1">
-                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`storefront-status-${it.id}`}>
-                              Visibility
-                            </label>
-                            <select
-                              id={`storefront-status-${it.id}`}
-                              name={`storefrontStatus-${it.id}`}
-                              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
-                              value={storefrontStatus}
-                              onChange={(e) =>
-                                updateStorefrontStatus(it.id, e.target.value as "DISABLED" | "UNLISTED" | "LISTED")
-                              }
-                              disabled={
-                                busy ||
-                                (parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt)
-                              }
-                            >
-                              <option value="DISABLED">Hidden</option>
-                              <option value="UNLISTED">Direct Link</option>
-                              <option value="LISTED">Discoverable</option>
-                            </select>
-                          </div>
-
-                          <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
-                            <div>Hidden: not reachable from public network routes.</div>
-                            <div>Direct Link: reachable by direct link (not discoverable).</div>
-                            <div>Discoverable: reachable and available for discovery surfaces.</div>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 space-y-2 text-xs text-neutral-400">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              Public metadata: <span className="text-neutral-300 break-all">{publicMetaUrl}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={() => copyText(publicMetaUrl)}
-                            >
-                              Copy link
-                            </button>
-                          </div>
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              Public access: <span className="text-neutral-300 break-all">{publicAccessUrl}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={() => copyText(publicAccessUrl)}
-                            >
-                              Copy link
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
-                          <div className="font-medium text-neutral-300 mb-1">Payment capability</div>
-                          {identitiesLoading ? (
-                            <div>Loading payout destinations…</div>
-                          ) : (
-                            <div className="flex flex-wrap gap-2">
-                              <span
-                                className={`rounded-full border px-2 py-1 ${
-                                  onchainAvailable
-                                    ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
-                                    : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
-                                }`}
-                              >
-                                On-chain: {onchainAvailable ? "Available" : "Not configured"}
-                              </span>
-                              <span
-                                className={`rounded-full border px-2 py-1 ${
-                                  lightningAvailable
-                                    ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
-                                    : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
-                                }`}
-                              >
-                                Lightning: {lightningAvailable ? "Available" : "Not configured"}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="font-medium text-neutral-300">Network Visibility Payload</div>
-                            <button
-                              type="button"
-                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={async () => {
-                                setStorefrontPreviewLoading((m) => ({ ...m, [it.id]: true }));
-                                try {
-                                  const res = await fetch(publicMetaUrl);
-                                  const text = await res.text();
-                                  let json: any = null;
-                                  try {
-                                    json = text ? JSON.parse(text) : null;
-                                  } catch {
-                                    json = { error: text || "Invalid response" };
-                                  }
-                                  setStorefrontPreview((m) => ({ ...m, [it.id]: json }));
-                                } catch (e: any) {
-                                  setStorefrontPreview((m) => ({ ...m, [it.id]: { error: e?.message || "Failed to fetch" } }));
-                                } finally {
-                                  setStorefrontPreviewLoading((m) => ({ ...m, [it.id]: false }));
-                                }
-                              }}
-                            >
-                              {storefrontPreviewLoading[it.id] ? "Loading…" : "Preview network payload"}
-                            </button>
-                          </div>
-                          {storefrontPreview[it.id] ? (
-                            <pre className="mt-2 whitespace-pre-wrap break-words text-[11px] text-neutral-200">
-                              {JSON.stringify(storefrontPreview[it.id], null, 2)}
-                            </pre>
-                          ) : null}
-                        </div>
-
-                        <div className="mt-3 flex items-center justify-between gap-3">
-                          <div className="text-xs text-neutral-500">
-                            {storefrontStatus === "DISABLED"
-                              ? "Enable network visibility (Direct Link or Discoverable) to test public purchase flow."
-                              : it.status !== "published"
-                                ? "Publish content to generate a manifest before purchase."
-                                : !manifestSha256
-                                  ? "Manifest missing."
-                                  : "Ready to validate the public purchase flow."}
-                          </div>
-                          <button
-                            type="button"
-                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                            onClick={() =>
-                              setTestPurchaseFor({
-                                contentId: it.id,
-                                manifestSha256,
-                                storefrontStatus,
-                                contentStatus: it.status
-                              })
-                            }
-                            disabled={(!isAuthed && storefrontStatus === "DISABLED") || it.status !== "published" || !manifestSha256}
-                          >
-                            Test public purchase flow
-                          </button>
-                        </div>
-                      </div>
-
+                      <details className="rounded-lg border border-neutral-800 bg-neutral-950/30 px-3 py-2">
+                        <summary className="cursor-pointer text-xs font-medium text-neutral-200">History and audit</summary>
+                        <div className="mt-3 space-y-3">
                       <HistoryFeed
                         title="Content history"
                         items={auditByContent[it.id] || []}
@@ -6094,6 +5874,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         exportName={`content-audit-${it.id}.json`}
                         eventFilter="content"
                       />
+                        </div>
+                      </details>
 
                     </div>
                   )}

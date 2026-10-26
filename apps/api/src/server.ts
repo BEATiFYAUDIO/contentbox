@@ -1,4 +1,5 @@
 ﻿import "dotenv/config";
+import { getPrimaryFileObjectKeyFromManifest, getPrimaryFileMime, getStoredFileMime } from "./lib/primaryFileMetadata.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
@@ -14,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
+import { inspectWindowsCloudflared, runInspectionCommand, TunnelInspectionCache, tunnelStartBlocker } from "./lib/tunnelInspection.js";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
 import { nip19 } from "nostr-tools";
@@ -27,6 +29,26 @@ import {
   stableStringify
 } from "./lib/proof.js";
 import { createPaymentProvider } from "./lib/payments.js";
+import { isCompleteHlsRendition, recoverHlsPromotion, stageAndPromoteHls } from "./lib/hlsRendition.js";
+import { dashboardAssetCacheControl } from "./lib/dashboardAssetCaching.js";
+import { jsonSafe } from "./lib/jsonSafe.js";
+import {
+  AudienceRateLimiter,
+  isAudienceCollectionEnabled,
+  isAutomatedAudienceRequest,
+  makeAudienceSession,
+  pruneAudienceV2,
+  recordBuyPageView,
+  validateAudienceViewBody,
+  verifyAudienceSession
+} from "./lib/audienceViews.js";
+import { buildAudienceReport, parseAudienceQuery } from "./lib/audienceAnalytics.js";
+import { beginAudienceTracking, endAudienceTracking, heartbeatAudienceTracking } from "./lib/audienceTrackingCoverage.js";
+import { audienceExportFilename, serializeAudienceExport } from "./lib/audienceExport.js";
+import { AudienceAllExportChangedError, AudienceAllExportLimitError, buildAudienceAllFile } from "./lib/audienceExportAll.js";
+import { cloudflareAudienceExportSource } from "./lib/cloudflareAudienceExportSource.js";
+import { CloudflareAudienceError, fetchCloudflareAudienceAggregates, normalizeCloudflareAudienceScope, verifyCloudflareAudienceAccess, verifyCloudflareAudienceHostname } from "./lib/cloudflareAudience.js";
+import { createSqliteBackup } from "./lib/sqliteBackup.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
@@ -62,7 +84,8 @@ import {
   testLightningNodeCredential,
   type LightningCredentialRole
 } from "./payments/lightning.js";
-import { finalizePurchase } from "./payments/finalizePurchase.js";
+import { finalizePurchase, SETTLEMENT_ALLOCATION_INVALID } from "./payments/finalizePurchase.js";
+import { bindPurchaseBuyer, readPurchaseBuyerBinding, recoverPurchaseFulfillment, trackSettledPurchase } from "./payments/purchaseFulfillment.js";
 import {
   getPublicOriginConfig,
   setPublicOriginConfig,
@@ -74,6 +97,10 @@ import {
   computePublicLinkState,
   getNamedTunnelConfig,
   isNamedConfigured,
+  resolveEffectivePublicMode,
+  publicAvailability,
+  resolvePublicModeSelection,
+  shouldAutoStartSelectedQuick,
   type PublicMode,
   type PublicLinkState
 } from "./lib/publicLinkState.js";
@@ -99,7 +126,29 @@ import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
 import { validateNodeMode, writeNodeConfig, writeProductTier } from "./lib/nodeConfig.js";
 import { deriveActivationStatusMessageFromNetwork, deriveUserNetworkStatusFromState } from "./lib/userNetworkStatus.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
-import { startPublicServer } from "./publicServer.js";
+import { activateVerifiedNamedSharing } from "./lib/namedSharingActivation.js";
+import { findCloudflaredBinary } from "./lib/cloudflaredBinaryDetection.js";
+import {
+  classifyNamedControlOwnership,
+  findExactConfiguredTunnel,
+  namedConfigurationCacheKey,
+  normalizeTunnelIdentity
+} from "./lib/namedTunnelSafety.js";
+import {
+  parseLinuxCloudflaredService,
+  parseSysVCloudflaredService,
+  parseMacCloudflaredServices,
+  parseMacSystemCloudflaredService,
+  serviceInspectionSummary,
+  shouldDeferToExternalConnector,
+  evaluateNamedRouteEvidence,
+  type CloudflaredServiceRecord
+} from "./lib/cloudflaredServiceInspection.js";
+import { AsyncLifecycleMutex, startAutomaticQuickRuntime, startNamedRuntimeAtStartup } from "./lib/publicLifecycle.js";
+import { registerPublicGoRoute, registerPublicStopRoute } from "./lib/publicGoRoute.js";
+import { PublicStateEpoch } from "./lib/publicServingGate.js";
+import { resolveSelectedParticipationMode, type ParticipationMode } from "./lib/participationMode.js";
+import { PublicServerLifecycle } from "./publicServer.js";
 import { shouldBlockPrivateHostRequest } from "./security/privateHostGuard.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 import { SingleFlight } from "./lib/asyncPrimitives.js";
@@ -115,6 +164,7 @@ import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import {
   evaluatePublicMediaDelivery,
+  isCurrentPaidReceiptDelivery,
   normalizeDeliveryObjectKey,
   redactSensitiveUrl,
   resolveDeliveryPath,
@@ -367,7 +417,12 @@ const ALLOWED_PRIMARY_TOPICS = [
   "news",
   "gaming",
   "sports",
-  "technology"
+  "technology",
+  "legal",
+  "business-work",
+  "education-reference",
+  "art-design",
+  "books-writing"
 ] as const;
 
 type PrimaryTopic = (typeof ALLOWED_PRIMARY_TOPICS)[number];
@@ -788,6 +843,8 @@ type PublicDeliveryTokenClaims = {
   access: "preview" | "full";
   buyerSessionId?: string | null;
   receiptProofAccess?: boolean;
+  receiptIntentId?: string;
+  receiptTokenDigest?: string;
 };
 
 type HlsRenditionInfo = {
@@ -1265,17 +1322,6 @@ function percentToPrimitive(x: unknown): string | number | null {
   return String(x);
 }
 
-function jsonSafe<T>(value: T): T {
-  if (typeof value === "bigint") return value.toString() as unknown as T;
-  if (Array.isArray(value)) return value.map((v) => jsonSafe(v)) as unknown as T;
-  if (value && typeof value === "object") {
-    const out: any = {};
-    for (const [k, v] of Object.entries(value as any)) out[k] = jsonSafe(v);
-    return out as T;
-  }
-  return value;
-}
-
 function jsonStringifySafe(value: unknown): string {
   return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
 }
@@ -1296,6 +1342,11 @@ function execFileAsync(cmd: string, args: string[], options?: Parameters<typeof 
     });
   });
 }
+
+const NAMED_CONTROL_COMMAND_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.NAMED_CONTROL_COMMAND_TIMEOUT_MS || "10000")
+);
 
 type HistoryActor =
   | { kind: "user"; id: string; email?: string | null; displayName?: string | null }
@@ -1377,6 +1428,8 @@ function createPublicDeliveryToken(input: {
   access: "preview" | "full";
   buyerSessionId?: string | null;
   receiptProofAccess?: boolean;
+  receiptIntentId?: string;
+  receiptTokenDigest?: string;
 }) {
   const objectKeyCheck = normalizeDeliveryObjectKey(input.objectKey);
   if (!objectKeyCheck.ok) throw new Error(`invalid delivery object key: ${objectKeyCheck.reason}`);
@@ -1387,7 +1440,11 @@ function createPublicDeliveryToken(input: {
       scope: "public_delivery",
       access: input.access,
       ...(input.buyerSessionId ? { buyerSessionId: input.buyerSessionId } : {}),
-      ...(input.receiptProofAccess === true ? { receiptProofAccess: true } : {})
+      ...(input.receiptProofAccess === true ? {
+        receiptProofAccess: true,
+        receiptIntentId: input.receiptIntentId,
+        receiptTokenDigest: input.receiptTokenDigest
+      } : {})
     } satisfies PublicDeliveryTokenClaims,
     { expiresIn: `${PUBLIC_DELIVERY_TOKEN_TTL_SECONDS}s` }
   );
@@ -1400,7 +1457,7 @@ async function verifyPublicDeliveryToken(
   if (!token) return { ok: false, access: null };
   try {
     const decoded = (await app.jwt.verify(token)) as PublicDeliveryTokenClaims;
-    const session = input.paidContent ? await resolveBuyerSession(input.req, input.reply) : null;
+    const session = input.paidContent ? await resolveBuyerReadSession(input.req, input.reply) : null;
     const requestBuyerSessionId = session?.id || null;
     const checked = validatePublicDeliveryTokenClaims(decoded, {
       contentId: input.contentId,
@@ -1409,23 +1466,26 @@ async function verifyPublicDeliveryToken(
       requestBuyerSessionId
     });
     if (!checked.ok) return { ok: false, access: null };
+    if (input.paidContent && checked.access === "full") {
+      if (decoded.receiptProofAccess) {
+        if (!decoded.receiptIntentId || !decoded.receiptTokenDigest) return { ok: false, access: null };
+        const intent = await prisma.paymentIntent.findUnique({ where: { id: decoded.receiptIntentId } });
+        if (!isCurrentPaidReceiptDelivery({
+          contentId: input.contentId,
+          claimedDigest: decoded.receiptTokenDigest,
+          currentToken: intent?.receiptToken,
+          intentContentId: intent?.contentId,
+          status: intent?.status,
+          expiresAt: intent?.receiptTokenExpiresAt
+        })) return { ok: false, access: null };
+      } else if (!session?.buyer?.id || !await hasAccess(session.buyer.id, input.contentId)) {
+        return { ok: false, access: null };
+      }
+    }
     return { ok: true, access: checked.access };
   } catch {
     return { ok: false, access: null };
   }
-}
-
-function getPrimaryFileObjectKeyFromManifest(manifestJson: any): string | null {
-  const primary = manifestJson?.primaryFile;
-  const primaryKey =
-    typeof primary === "string"
-      ? primary
-      : primary && typeof primary === "object"
-        ? primary.path || primary.filename || primary.objectKey
-        : null;
-  if (primaryKey) return String(primaryKey).trim() || null;
-  const first = Array.isArray(manifestJson?.files) ? manifestJson.files[0] : null;
-  return String(first?.objectKey || first?.path || first?.filename || "").trim() || null;
 }
 
 function appendPublicDeliveryToken(url: string | null, token: string | null): string | null {
@@ -1518,6 +1578,7 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
 
   if (candidate.startsWith(DASHBOARD_DIST_DIR) && fsSync.existsSync(candidate) && fsSync.statSync(candidate).isFile()) {
     reply.type(contentTypeForAsset(candidate));
+    reply.header("cache-control", dashboardAssetCacheControl(pathname));
     if (method === "HEAD") {
       reply.code(200).send();
       return true;
@@ -1538,6 +1599,7 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
   }
 
   reply.type("text/html; charset=utf-8");
+  reply.header("cache-control", "no-store");
   if (method === "HEAD") {
     reply.code(200).send();
     return true;
@@ -1550,7 +1612,20 @@ const BUYER_SESSION_COOKIE = "cb_buyer_session";
 const BUYER_ACCESS_COOKIE = "cb_buyer_access_session";
 const BUYER_SESSION_DAYS = 30;
 const AUDIENCE_SESSION_COOKIE = "cb_audience_session";
-const AUDIENCE_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
+const audienceRateLimiter = new AudienceRateLimiter();
+let lastAudiencePruneMs = 0;
+let audiencePruneInFlight = false;
+let audienceRetentionTimer: ReturnType<typeof setInterval> | null = null;
+let audienceTrackingTimer: ReturnType<typeof setInterval> | null = null;
+let audienceTrackingWindowId: string | null = null;
+let audienceHeartbeatInFlight = false;
+async function runAudienceRetention() {
+  if (audiencePruneInFlight) return;
+  audiencePruneInFlight = true;
+  try { await pruneAudienceV2(prisma); }
+  catch (err) { app.log.warn({ err }, "audience.prune_failed"); }
+  finally { audiencePruneInFlight = false; }
+}
 
 function getCookie(req: any, name: string): string | null {
   try {
@@ -1659,11 +1734,10 @@ function buildAudienceSessionCookie(sessionId: string, req: any, maxAgeSeconds: 
 }
 
 function getOrCreateAudienceSessionId(req: any, reply: any): string {
-  const existing = asString(getCookie(req, AUDIENCE_SESSION_COOKIE) || "").trim();
+  const existing = verifyAudienceSession(asString(getCookie(req, AUDIENCE_SESSION_COOKIE) || ""), JWT_SECRET);
   if (existing) return existing;
-  const sessionId = `aud_${crypto.randomUUID().replace(/-/g, "")}`;
-  // Keep audience session longer than dedupe window; rotate naturally with browser/session hygiene.
-  const cookie = buildAudienceSessionCookie(sessionId, req, 60 * 60 * 24 * 30);
+  const { id: sessionId, cookieValue } = makeAudienceSession(JWT_SECRET);
+  const cookie = buildAudienceSessionCookie(cookieValue, req, 60 * 60 * 24 * 30);
   reply.header("set-cookie", cookie);
   return sessionId;
 }
@@ -1799,6 +1873,7 @@ const fanReturnUrlOrigins = new Set(
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
+const publicStateEpoch = new PublicStateEpoch(BOOT_ID);
 const STARTED_AT = new Date().toISOString();
 const STARTED_AT_MS = Date.parse(STARTED_AT) || Date.now();
 const NODE_ID = (process.env.NODE_ID || "").trim() || os.hostname();
@@ -1860,6 +1935,7 @@ if (!fsSync.existsSync(QUICK_TUNNEL_CONFIG_PATH)) {
   } catch {}
 }
 const tunnelManager = new TunnelManager({
+  beforeSpawn: () => assertTunnelStartSafe(),
   targetPort: PUBLIC_HTTP_PORT,
   binDir: CLOUDFLARED_BIN_DIR,
   quickConfigPath: QUICK_TUNNEL_CONFIG_PATH,
@@ -1875,20 +1951,28 @@ const tunnelManager = new TunnelManager({
     error: (msg) => app.log.error(msg)
   }
 });
+const publicServerLifecycle = new PublicServerLifecycle();
+const publicLifecycleMutex = new AsyncLifecycleMutex();
+let quickRouteHealth: { origin: string; checkedAt: number; sameInstance: boolean } | null = null;
+let quickRouteProbe: Promise<void> | null = null;
 
 function resolveCloudflaredCmdFast(): string | null {
-  const envPath = String(process.env.CLOUDFLARED_PATH || "").trim();
-  if (envPath && fsSync.existsSync(envPath)) return envPath;
-  const localBin = path.join(CLOUDFLARED_BIN_DIR, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
-  if (fsSync.existsSync(localBin)) return localBin;
-  return null;
+  return findCloudflaredBinary({
+    configuredPath: String(process.env.CLOUDFLARED_PATH || "").trim(),
+    managedDir: CLOUDFLARED_BIN_DIR,
+    platform: process.platform,
+    pathEnv: process.env.PATH
+  });
 }
 
 function resolveCloudflaredCmd(): string | null {
   const fast = resolveCloudflaredCmdFast();
   if (fast) return fast;
   try {
-    const res = spawnSync("cloudflared", ["--version"], { stdio: "ignore" });
+    const res = spawnSync("cloudflared", ["--version"], {
+      stdio: "ignore",
+      timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS
+    });
     if (res.status === 0) return "cloudflared";
   } catch {}
   return null;
@@ -1900,7 +1984,10 @@ function hasCloudflaredBinary(): boolean {
 
 function readCloudflaredVersionSync(binPath: string): string | null {
   try {
-    const res = spawnSync(binPath, ["--version"], { encoding: "utf8" });
+    const res = spawnSync(binPath, ["--version"], {
+      encoding: "utf8",
+      timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS
+    });
     if (res.status === 0) return String(res.stdout || "").trim() || null;
   } catch {}
   return null;
@@ -1934,8 +2021,8 @@ function getCloudflaredStatus(): { available: boolean; managedPath: string | nul
     ? { available: false, managedPath: null, version: null }
     : {
         available: true,
-        managedPath: resolved === "cloudflared" ? null : resolved,
-        version: null
+        managedPath: resolved,
+        version: readCloudflaredVersionSync(resolved)
       };
   cloudflaredStatusCache = {
     expiresAt: now + CLOUDFLARED_STATUS_CACHE_TTL_MS,
@@ -1953,6 +2040,7 @@ type LocalState = {
   };
   publicSharingAutoStart?: boolean;
   publicSharingProtocol?: "http2" | "quic";
+  publicSharingModeOverride?: PublicMode;
   namedTunnelToken?: string;
   namedTunnelDisabled?: boolean;
   backupsEnabled?: boolean;
@@ -1984,7 +2072,10 @@ function writeLocalState(next: LocalState) {
     const tmp = `${STATE_FILE}.tmp`;
     fsSync.writeFileSync(tmp, JSON.stringify(next, null, 2));
     fsSync.renameSync(tmp, STATE_FILE);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getPublicSharingConsent() {
@@ -2029,13 +2120,33 @@ function setPublicSharingAutoStart(enabled: boolean) {
   writeLocalState(s);
 }
 
-function getConfiguredPublicMode(): PublicMode {
-  if (PUBLIC_MODE === "off" || PUBLIC_MODE === "quick" || PUBLIC_MODE === "named") {
-    return PUBLIC_MODE as PublicMode;
-  }
+function getPublicSharingModeOverride(): PublicMode | null {
+  const value = readLocalState().publicSharingModeOverride;
+  return value === "off" || value === "quick" || value === "named" ? value : null;
+}
+
+function setPublicSharingModeOverride(mode: PublicMode | null) {
+  const s = readLocalState();
+  if ((s.publicSharingModeOverride || null) === mode) return;
+  publicStateEpoch.invalidate();
+  if (mode) s.publicSharingModeOverride = mode;
+  else delete s.publicSharingModeOverride;
+  writeLocalState(s);
+  publicStatusCache = null;
+}
+
+function getPublicModeSelection() {
   const consent = getPublicSharingConsent();
-  if ((consent.granted || consent.dontAskAgain) && getPublicSharingAutoStart()) return "quick";
-  return "off";
+  return resolvePublicModeSelection({
+    envMode: PUBLIC_MODE,
+    persistedMode: getPublicSharingModeOverride(),
+    consentGranted: consent.granted || consent.dontAskAgain,
+    autoStartEnabled: getPublicSharingAutoStart()
+  });
+}
+
+function getConfiguredPublicMode(): PublicMode {
+  return getPublicModeSelection().mode;
 }
 
 function getPublicSharingProtocolPreference(): "auto" | "http2" | "quic" {
@@ -5537,6 +5648,9 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   const participantExecutionMode = intent.payoutExecutionMode === "participant";
   if (intent.paymentReceiptId) {
     const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+    // Disabled preparation is not new evidence about an existing payout. Keep
+    // historical success/failure and receipt state intact; do not reconcile it.
+    if (participantExecutionMode && !payoutRuntime.participantPayoutsEnabled) return intent;
     const settledExisting = intent;
     try {
       await ensureParticipantPayoutRowsForProviderIntent(settledExisting);
@@ -10158,7 +10272,7 @@ function getCapabilityContextCached(force = false) {
 }
 
 type ProviderServiceProfile = {
-  participationMode: "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+  participationMode: ParticipationMode;
   hasStablePublicRoute: boolean;
   stablePublicRouteOrigin: string | null;
   temporaryNodeEndpointOrigin: string | null;
@@ -10204,17 +10318,13 @@ function resolveProviderServiceProfile(input: {
   const hasLocalInvoiceMinting = Boolean(input.hasLocalInvoiceMinting);
   const localSovereignReady = Boolean(input.localSovereignReady);
 
-  // Participation posture is effective capability truth:
-  // - Basic: no stable named route yet
-  // - Sovereign Creator: stable named route, optional provider commerce
-  // - Sovereign Node: stable named route + verified local sovereign stack
-  const participationMode: ProviderServiceProfile["participationMode"] = !hasStablePublicRoute
-    ? "basic_creator"
-    : localSovereignReady
-      ? "sovereign_node"
-      : providerConnected
-        ? "sovereign_creator_with_provider"
-        : "sovereign_creator";
+  // Route and service readiness determine whether the selected posture is
+  // healthy. They never activate a higher posture on the user's behalf.
+  const participationMode = resolveSelectedParticipationMode({
+    nodeMode: ctx.nodeMode,
+    productTier: ctx.productTier,
+    providerConnected
+  });
 
   const providerCommerceEligible = participationMode !== "basic_creator";
   const needsProviderInvoicing = providerCommerceEligible && !hasLocalInvoiceMinting && providerConfigured;
@@ -10503,7 +10613,7 @@ async function runBackup() {
     if (!fsSync.existsSync(source)) {
       throw new Error(`SQLite database file not found: ${source}`);
     }
-    await fs.copyFile(source, fullPath);
+    await createSqliteBackup(prisma, BACKUP_DIR, filename);
   }
   const st = await fs.stat(fullPath);
   await pruneBackups();
@@ -10601,37 +10711,61 @@ function toEpochMs(value: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-function runWindowsCloudflaredProcessQuery(args: string[]): string {
-  const candidates = [
-    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-    "powershell.exe",
-    "powershell"
-  ];
-  for (const cmd of candidates) {
+async function inspectCloudflaredServices(): Promise<CloudflaredServiceRecord[]> {
+  // Keep Beta 24 service discovery while using Beta 25's bounded async runner.
+  // Windows service and process inventories are queried together below.
+  if (process.platform === "linux") {
+    let records: CloudflaredServiceRecord[] = [];
     try {
-      const ps = spawnSync(cmd, args, { encoding: "utf8" });
-      if (!ps.error && String(ps.stdout || "").trim()) {
-        return String(ps.stdout || "");
-      }
-    } catch {}
+      records = parseLinuxCloudflaredService(await runInspectionCommand("systemctl",
+        ["show", "cloudflared.service", "--property=Id,LoadState,ActiveState,MainPID,ExecStart", "--no-pager"],
+        NAMED_CONTROL_COMMAND_TIMEOUT_MS));
+    } catch { /* Fall back to the shipped SysV service inspection. */ }
+    if (records.length) return records;
+    const script = "/etc/init.d/cloudflared";
+    if (!fsSync.existsSync(script)) return [];
+    try {
+      await runInspectionCommand(script, ["status"], NAMED_CONTROL_COMMAND_TIMEOUT_MS);
+      return parseSysVCloudflaredService(true, 0);
+    } catch (error: any) {
+      return parseSysVCloudflaredService(true, typeof error?.code === "number" ? error.code : null);
+    }
   }
-  try {
-    const wmic = spawnSync(
-      "wmic",
-      ["process", "where", "name='cloudflared.exe'", "get", "CommandLine", "/format:list"],
-      { encoding: "utf8" }
-    );
-    if (!wmic.error) return String(wmic.stdout || "");
-  } catch {}
-  return "";
+  if (process.platform === "darwin") {
+    const records: CloudflaredServiceRecord[] = [];
+    try {
+      records.push(...parseMacCloudflaredServices(await runInspectionCommand("launchctl", ["list"], NAMED_CONTROL_COMMAND_TIMEOUT_MS)));
+    } catch { /* System launch daemons may be outside the user launchctl list. */ }
+    try {
+      for (const file of (await fs.readdir("/Library/LaunchDaemons")).filter((name) => /cloudflared.*\.plist$/i.test(name))) {
+        const label = file.replace(/\.plist$/i, "");
+        if (records.some((record) => record.name === label)) continue;
+        let output = "";
+        try { output = await runInspectionCommand("launchctl", ["print", `system/${label}`], NAMED_CONTROL_COMMAND_TIMEOUT_MS); }
+        catch { /* The existing parser retains unknown/stopped service state. */ }
+        records.push(parseMacSystemCloudflaredService(label, output));
+      }
+    } catch { /* No accessible system launch-daemon inventory. */ }
+    return records;
+  }
+  return [];
 }
 
-function detectTunnelControlMode() {
+async function detectTunnelControlMode() {
   const serviceScriptPath = "/etc/init.d/cloudflared";
   const localConfigPath =
     String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() ||
     path.join(os.homedir(), ".cloudflared", "config.yml");
   const localConfigPresent = fsSync.existsSync(localConfigPath);
+  const configuredIdentities = getConfiguredNamedIdentityAliases();
+  const processRecords: Array<{ pid?: number | null; commandLine: string; serviceManaged?: boolean }> = [];
+  const windows = process.platform === "win32" ? await inspectWindowsCloudflared(NAMED_CONTROL_COMMAND_TIMEOUT_MS) : null;
+  const serviceRecords = windows ? windows.services : await inspectCloudflaredServices();
+  const serviceInspection = serviceInspectionSummary(serviceRecords);
+  for (const service of serviceRecords) {
+    if (service.state !== "running") continue;
+    processRecords.push({ pid: service.pid, commandLine: service.commandLine, serviceManaged: true });
+  }
 
   let serviceScriptHasToken = false;
   if (fsSync.existsSync(serviceScriptPath)) {
@@ -10640,6 +10774,7 @@ function detectTunnelControlMode() {
       serviceScriptHasToken =
         /tunnel\s+run\s+--token/i.test(script) ||
         /--token\s+["'$]?\w+/i.test(script);
+      // Configuration is not evidence of a running service (Beta 24 behavior).
     } catch {}
   }
 
@@ -10647,57 +10782,46 @@ function detectTunnelControlMode() {
   let activeProcessConfig = false;
   let activeServiceTokenProcess = false;
   let activeAppManagedTokenProcess = false;
-  if (process.platform === "win32") {
+  const inventory = windows ? windows.processes : (await runInspectionCommand(
+    "ps", ["-eo", "pid=,args="], NAMED_CONTROL_COMMAND_TIMEOUT_MS
+  )).split("\n").flatMap((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.*)$/);
+    return match ? [{ pid: Number(match[1]), commandLine: match[2] }] : [];
+  });
+  for (const record of inventory) {
+    const lower = record.commandLine.toLowerCase();
+    if (!lower.includes("cloudflared") || !lower.includes("tunnel") || !lower.includes("run")) continue;
+    if (lower.includes("--token")) activeProcessToken = true;
+    if (lower.includes("--config")) activeProcessConfig = true;
+    processRecords.push({ ...record, serviceManaged: record.pid !== tunnelManager.status().pid });
+  }
+
+  if (localConfigPresent) {
     try {
-      let output = runWindowsCloudflaredProcessQuery([
-        "-NoProfile",
-        "-Command",
-        "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Select-Object -ExpandProperty CommandLine"
-      ]);
-      if (!String(output || "").trim()) {
-        output = runWindowsCloudflaredProcessQuery([
-          "-NoProfile",
-          "-Command",
-          "Get-WmiObject Win32_Process -Filter \"Name='cloudflared.exe'\" | Select-Object -ExpandProperty CommandLine"
-        ]);
-      }
-      for (const line of output.split("\n")) {
-        const lower = line.toLowerCase();
-        if (!lower.includes("cloudflared")) continue;
-        if (!lower.includes("tunnel")) continue;
-        if (!lower.includes("run")) continue;
-        if (lower.includes("--token")) activeProcessToken = true;
-        if (lower.includes("--config")) activeProcessConfig = true;
-        const hasToken = lower.includes("--token");
-        const hasAppManagedPath =
-          lower.includes("contentbox-data") || lower.includes(".bin\\cloudflared.exe") || lower.includes(".bin/cloudflared.exe");
-        if (hasToken && hasAppManagedPath) activeAppManagedTokenProcess = true;
-        if (hasToken && !hasAppManagedPath) activeServiceTokenProcess = true;
-      }
-    } catch {}
-  } else {
-    try {
-      const ps = spawnSync("ps", ["-eo", "args"], { encoding: "utf8" });
-      const output = String(ps?.stdout || "");
-      for (const line of output.split("\n")) {
-        const lower = line.toLowerCase();
-        if (!lower.includes("cloudflared")) continue;
-        if (!lower.includes("tunnel")) continue;
-        if (!lower.includes("run")) continue;
-        if (lower.includes("--token")) activeProcessToken = true;
-        if (lower.includes("--config")) activeProcessConfig = true;
-        const hasToken = lower.includes("--token");
-        const hasAppManagedPath =
-          lower.includes("contentbox-data") || lower.includes("/.bin/cloudflared");
-        if (hasToken && hasAppManagedPath) activeAppManagedTokenProcess = true;
-        if (hasToken && !hasAppManagedPath) activeServiceTokenProcess = true;
+      const configText = fsSync.readFileSync(localConfigPath, "utf8");
+      const configuredInFile = String(configText.match(/^\s*tunnel\s*:\s*["']?([^\s"'#]+)/im)?.[1] || "")
+        .trim()
+        .toLowerCase();
+      if (configuredInFile && configuredIdentities.includes(configuredInFile)) {
+        for (const processRecord of processRecords) {
+          if (/--config(?:\s|=)/i.test(processRecord.commandLine)) {
+            processRecord.commandLine = `${processRecord.commandLine} ${configuredInFile}`;
+          }
+        }
       }
     } catch {}
   }
 
-  const hasServiceOwnedActiveToken =
-    activeServiceTokenProcess ||
-    (serviceScriptHasToken && activeProcessToken && !activeAppManagedTokenProcess);
+  const ownership = classifyNamedControlOwnership({
+    configuredIdentities,
+    ownedPid: tunnelManager.status().pid,
+    processes: processRecords
+  });
+  activeServiceTokenProcess = ownership === "service-external";
+  activeAppManagedTokenProcess = ownership === "app-managed";
+  const ownedPid = tunnelManager.status().pid;
+  const externalProcessRunning = processRecords.some((record) => record.serviceManaged || (record.pid && record.pid !== ownedPid));
+  const hasServiceOwnedActiveToken = ownership === "service-external";
 
   const mode: "service_token" | "local_config" | "unknown" =
     hasServiceOwnedActiveToken
@@ -10714,6 +10838,8 @@ function detectTunnelControlMode() {
         : "Tunnel control mode could not be determined.";
 
   return {
+    inspectionAvailable: true,
+    inspectionCheckedAt: Date.now(),
     mode,
     message,
     serviceScriptPath: fsSync.existsSync(serviceScriptPath) ? serviceScriptPath : null,
@@ -10723,7 +10849,9 @@ function detectTunnelControlMode() {
     activeProcessToken,
     activeProcessConfig,
     activeServiceTokenProcess,
-    activeAppManagedTokenProcess
+    activeAppManagedTokenProcess,
+    externalProcessRunning,
+    ...serviceInspection
   };
 }
 
@@ -10735,63 +10863,72 @@ const TUNNEL_CONTROL_MODE_STALE_TTL_MS = Math.max(
   TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
   Number(process.env.TUNNEL_CONTROL_MODE_STALE_TTL_MS || "120000")
 );
-let tunnelControlModeCache:
-  | {
-      expiresAt: number;
-      staleExpiresAt: number;
-      value: ReturnType<typeof detectTunnelControlMode>;
-    }
-  | null = null;
-function getTunnelControlModeFallback(): ReturnType<typeof detectTunnelControlMode> {
-  const serviceScriptPath = "/etc/init.d/cloudflared";
-  const localConfigPath =
-    String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() ||
-    path.join(os.homedir(), ".cloudflared", "config.yml");
+type TunnelControlInspection = Awaited<ReturnType<typeof detectTunnelControlMode>>;
+const tunnelControlInspection = new TunnelInspectionCache(detectTunnelControlMode, {
+  freshMs: TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
+  staleMs: TUNNEL_CONTROL_MODE_STALE_TTL_MS,
+  failureBackoffMs: 5_000
+});
+function getTunnelControlModeFallback(): TunnelControlInspection {
   return {
+    inspectionAvailable: false,
+    inspectionCheckedAt: 0,
     mode: "unknown",
-    message: "Tunnel control mode could not be determined.",
-    serviceScriptPath: fsSync.existsSync(serviceScriptPath) ? serviceScriptPath : null,
+    message: "Tunnel inspection is unavailable or refreshing; ownership is unknown.",
+    serviceScriptPath: null,
     serviceScriptHasToken: false,
-    localConfigPath: localConfigPath || null,
-    localConfigPresent: fsSync.existsSync(localConfigPath),
+    localConfigPath: null,
+    localConfigPresent: false,
     activeProcessToken: false,
     activeProcessConfig: false,
     activeServiceTokenProcess: false,
-    activeAppManagedTokenProcess: false
+    activeAppManagedTokenProcess: false,
+    externalProcessRunning: false,
+    serviceDetected: false,
+    serviceRunning: false,
+    serviceCount: 0,
+    runningServiceCount: 0,
+    servicePids: [] as number[]
   };
 }
-function getTunnelControlModeCached(force = false): ReturnType<typeof detectTunnelControlMode> {
-  const now = Date.now();
-  if (!force && tunnelControlModeCache && tunnelControlModeCache.expiresAt > now) {
-    return tunnelControlModeCache.value;
-  }
-  if (!force && tunnelControlModeCache && tunnelControlModeCache.staleExpiresAt > now) {
-    return tunnelControlModeCache.value;
-  }
-  const value = detectTunnelControlMode();
-  tunnelControlModeCache = {
-    expiresAt: now + TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
-    staleExpiresAt: now + TUNNEL_CONTROL_MODE_STALE_TTL_MS,
-    value
-  };
-  return value;
+function getTunnelControlModeCached(force = false): TunnelControlInspection {
+  return tunnelControlInspection.read(force) || getTunnelControlModeFallback();
+}
+async function getFreshTunnelControlMode(): Promise<TunnelControlInspection> {
+  return await tunnelControlInspection.refresh() || getTunnelControlModeFallback();
+}
+async function assertTunnelStartSafe() {
+  const result = tunnelStartBlocker(await getFreshTunnelControlMode());
+  if (!result.ok) throw Object.assign(new Error(result.message), { code: result.code });
 }
 
 function shouldDeferNamedTunnelToServiceControl() {
   const tc = getTunnelControlModeCached();
-  if (process.platform !== "win32") {
-    return { shouldDefer: false, tunnelControl: tc };
-  }
-  const shouldDefer = tc.mode === "service_token" && Boolean(tc.activeServiceTokenProcess);
+  const shouldDefer = shouldDeferToExternalConnector(tc);
   return { shouldDefer, tunnelControl: tc };
 }
 
-const namedHealthCache: { ok: boolean | null; checkedAt: number | null; inflight: boolean } = {
+const namedHealthCache: {
+  key: string | null;
+  ok: boolean | null;
+  checkedAt: number | null;
+  inflight: boolean;
+  identityVerified: boolean;
+  routeReachable: boolean;
+  routeVerified: boolean;
+} = {
+  key: null,
   ok: null,
   checkedAt: null,
-  inflight: false
+  inflight: false,
+  identityVerified: false,
+  routeReachable: false,
+  routeVerified: false
 };
 let namedHealthRefreshPromise: Promise<boolean> | null = null;
+let namedHealthRefreshKey: string | null = null;
+let namedIdentityAliasKey: string | null = null;
+let namedIdentityAliases = new Set<string>();
 let lastNamedOwnershipReconcileAt = 0;
 const TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS = Math.max(
   15_000,
@@ -10809,6 +10946,55 @@ let tunnelConflictGuardState: TunnelConflictGuardState = {
   firstDetectedAtMs: null,
   persistent: false
 };
+
+function currentNamedHealthCacheKey() {
+  const cfg = getNamedTunnelConfig();
+  const stored = getPublicOriginConfig();
+  return namedConfigurationCacheKey({
+    provider: stored.provider || process.env.PUBLIC_TUNNEL_PROVIDER,
+    tunnelName: cfg?.tunnelName,
+    publicOrigin: cfg?.publicOrigin,
+    disabled: isNamedTunnelDisabled()
+  });
+}
+
+function getConfiguredNamedIdentityAliases(): string[] {
+  const key = currentNamedHealthCacheKey();
+  const configured = normalizeTunnelIdentity(getNamedTunnelConfig()?.tunnelName);
+  if (namedIdentityAliasKey !== key) {
+    namedIdentityAliasKey = key;
+    namedIdentityAliases = new Set(configured ? [configured] : []);
+  }
+  return [...namedIdentityAliases];
+}
+
+function rememberConfiguredNamedIdentity(match: any) {
+  getConfiguredNamedIdentityAliases();
+  const name = normalizeTunnelIdentity(match?.name);
+  const id = normalizeTunnelIdentity(match?.id);
+  const changed = Boolean((name && !namedIdentityAliases.has(name)) || (id && !namedIdentityAliases.has(id)));
+  if (name) namedIdentityAliases.add(name);
+  if (id) namedIdentityAliases.add(id);
+  if (changed) tunnelControlInspection.invalidate();
+}
+
+function invalidateNamedRuntimeCaches() {
+  publicStateEpoch.invalidate();
+  namedHealthCache.key = null;
+  namedHealthCache.ok = null;
+  namedHealthCache.checkedAt = null;
+  namedHealthCache.identityVerified = false;
+  namedHealthCache.routeReachable = false;
+  namedHealthCache.routeVerified = false;
+  tunnelControlInspection.invalidate();
+  namedIdentityAliasKey = null;
+  namedIdentityAliases.clear();
+  lastNamedOwnershipReconcileAt = 0;
+  tunnelManager.invalidateNamedIntent();
+  publicStatusCache = null;
+  localSovereignReadinessCache = null;
+  localSovereignReadinessInflight = null;
+}
 
 function getServiceManagedNamedStartupGraceState(input: {
   nowMs?: number;
@@ -10829,74 +11015,78 @@ function getServiceManagedNamedStartupGraceState(input: {
   };
 }
 
-function reconcileNamedTunnelOwnership(force = false) {
+async function reconcileNamedTunnelOwnershipUnlocked(force = false) {
   const now = Date.now();
   if (!force && now - lastNamedOwnershipReconcileAt < 15_000) return;
   lastNamedOwnershipReconcileAt = now;
 
-  const defer = shouldDeferNamedTunnelToServiceControl();
-  if (!defer.shouldDefer) return;
+  const control = await getFreshTunnelControlMode();
+  if (!control.inspectionAvailable || !control.activeServiceTokenProcess) return;
 
   const st = tunnelManager.status();
   if (st.status === "ACTIVE" || st.status === "STARTING") {
-    tunnelManager.stop().catch((e) => app.log.warn(String(e?.message || e)));
+    await tunnelManager.stop().catch((e) => app.log.warn(String(e?.message || e)));
   }
 
-  if (process.platform === "win32") {
-    try {
-      const escapedPort = String(PUBLIC_HTTP_PORT).replace(/[^\d]/g, "");
-      const cmd = [
-        "$procs = Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Where-Object {",
-        "  $_.CommandLine -and",
-        "  ($_.CommandLine -match 'contentbox-data\\\\\\\\.bin\\\\\\\\cloudflared\\\\.exe') -and",
-        "  ($_.CommandLine -match 'tunnel\\\\s+run') -and",
-        "  ($_.CommandLine -match '--token') -and",
-        `  ($_.CommandLine -match '--url\\\\s+http://127\\\\.0\\\\.0\\\\.1:${escapedPort}')`,
-        "};",
-        "foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }"
-      ].join(" ");
-      for (const shell of [
-        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-        "powershell.exe",
-        "powershell"
-      ]) {
-        try {
-          const res = spawnSync(shell, ["-NoProfile", "-Command", cmd], { stdio: "ignore" });
-          if (!res.error) break;
-        } catch {}
-      }
-    } catch {}
-  }
+}
+
+function reconcileNamedTunnelOwnership(force = false) {
+  return publicLifecycleMutex
+    .runExclusive(() => reconcileNamedTunnelOwnershipUnlocked(force))
+    .catch((e) => app.log.warn(String(e?.message || e)));
 }
 
 async function refreshNamedHealth(origin: string): Promise<boolean> {
-  if (namedHealthRefreshPromise) return namedHealthRefreshPromise;
+  const key = currentNamedHealthCacheKey();
+  const stateSnapshot = publicStateEpoch.capture(key);
+  if (namedHealthRefreshPromise && namedHealthRefreshKey === key) return namedHealthRefreshPromise;
+  if (namedHealthRefreshPromise) await namedHealthRefreshPromise.catch(() => false);
+  namedHealthRefreshKey = key;
   namedHealthRefreshPromise = (async () => {
     namedHealthCache.inflight = true;
     try {
       const defer = shouldDeferNamedTunnelToServiceControl();
       const localOk = defer.shouldDefer ? true : await checkLocalPublicHealth();
-      const publicOk = await checkPublicPing(origin);
-      const namedConnectedOk = publicOk ? true : await checkNamedTunnelConnected().catch(() => false);
-      // A successful canonical public-origin probe proves the configured named tunnel
-      // is serving, even when that hostname routes to the API port instead of the
-      // public-file port. Only require local public health for the weaker
-      // cloudflared-connection fallback.
-      const ok = Boolean(publicOk || (localOk && namedConnectedOk));
+      const publicRoute = await checkPublicRoute(origin);
+      const namedConnectedOk = await checkNamedTunnelConnected().catch(() => false);
+      const externalServiceRunning = Boolean(
+        defer.tunnelControl.serviceRunning ||
+        defer.tunnelControl.activeServiceTokenProcess ||
+        defer.tunnelControl.externalProcessRunning
+      );
+      // A listed exact tunnel proves Cloudflare identity. For remotely managed
+      // services without account credentials, a BOOT_ID match proves the configured
+      // durable route terminates at this exact Core instance without granting Core
+      // ownership of that service.
+      const evidence = evaluateNamedRouteEvidence({
+        identityConnected: namedConnectedOk,
+        externalServiceRunning,
+        routeReachable: publicRoute.reachable,
+        routeMatchesThisCore: publicRoute.sameInstance,
+        localListenerReady: localOk
+      });
+      const ok = evidence.online;
+      if (!publicStateEpoch.isCurrent(stateSnapshot, currentNamedHealthCacheKey())) return false;
+      namedHealthCache.key = key;
       namedHealthCache.ok = ok;
+      namedHealthCache.identityVerified = namedConnectedOk;
+      namedHealthCache.routeReachable = publicRoute.reachable;
+      namedHealthCache.routeVerified = publicRoute.sameInstance;
       namedHealthCache.checkedAt = Date.now();
       return ok;
     } finally {
       namedHealthCache.inflight = false;
       namedHealthRefreshPromise = null;
+      namedHealthRefreshKey = null;
     }
   })();
   return namedHealthRefreshPromise;
 }
 
 async function ensureNamedHealthFresh(origin: string, force = false): Promise<boolean> {
+  const key = currentNamedHealthCacheKey();
   const checkedAt = namedHealthCache.checkedAt || 0;
-  if (!force && checkedAt && Date.now() - checkedAt <= NAMED_HEALTH_REFRESH_INTERVAL_MS) {
+  if (!force && namedHealthCache.key === key && checkedAt && Date.now() - checkedAt <= NAMED_HEALTH_REFRESH_INTERVAL_MS) {
     return namedHealthCache.ok === true;
   }
   return refreshNamedHealth(origin);
@@ -10906,11 +11096,14 @@ function getPublicLinkState(): PublicLinkState {
   const namedCfg = getNamedTunnelConfig();
   const quick = tunnelManager.status();
   const namedDisabled = isNamedTunnelDisabled();
-  const namedHealthOk = namedCfg ? namedHealthCache.ok : null;
+  const namedHealthOk = namedCfg && namedHealthCache.key === currentNamedHealthCacheKey() ? namedHealthCache.ok : null;
   const nodeMode = getNodeModeStatus().nodeMode;
-  const preferNamed = (nodeMode === "advanced" || nodeMode === "lan") && isNamedConfigured();
-  const configuredPublicMode = getConfiguredPublicMode();
-  const publicModeEnv = preferNamed ? "named" : configuredPublicMode;
+  const modeSelection = getPublicModeSelection();
+  const publicModeEnv = resolveEffectivePublicMode({
+    selection: modeSelection,
+    nodeMode,
+    namedConfigured: isNamedConfigured()
+  });
   const state = computePublicLinkState({
     publicModeEnv,
     dbModeEnv: dbModeCompatFromStorage(RUNTIME_CONFIG.storage),
@@ -11004,9 +11197,9 @@ function derivePublicHostInvariant(input: {
   };
 }
 
-function getPublicStatus() {
+function getPublicStatus(reconcileOwnership = true) {
   const defer = shouldDeferNamedTunnelToServiceControl();
-  if (defer.shouldDefer) {
+  if (reconcileOwnership && defer.shouldDefer) {
     reconcileNamedTunnelOwnership();
   }
   const state = getPublicLinkState();
@@ -11016,15 +11209,25 @@ function getPublicStatus() {
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
   const autoStartEnabled = getPublicSharingAutoStart();
+  const modeSelection = getPublicModeSelection();
   const quickState = tunnelManager.status();
   const suppressAppManagedTransport = defer.shouldDefer && state.mode === "named";
   const transportQuickStatus = suppressAppManagedTransport ? "STOPPED" : quickState.status;
   const transportQuickOrigin = suppressAppManagedTransport ? null : quickState.publicOrigin || null;
-  const consentRequired = state.mode === "quick" && !cloudflared.available && !consentGranted;
+  const consentRequired =
+    (state.mode === "off" || (state.mode === "quick" && modeSelection.source !== "environment")) && !consentGranted;
   const productTier = resolveProductTier().productTier;
   const advancedNeedsNamed = productTier === "advanced";
   const namedConfigured = Boolean(namedCfg);
   const namedOnline = state.mode === "named" && state.status === "online";
+  const namedRuntime = tunnelManager.status();
+  const namedOwnership = tunnelControl.activeAppManagedTokenProcess
+    ? "core-managed"
+    : tunnelControl.activeServiceTokenProcess ||
+        ((tunnelControl.serviceRunning || tunnelControl.externalProcessRunning) &&
+          namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeVerified)
+      ? "external-service"
+      : "unknown";
   const startupGraceState = getServiceManagedNamedStartupGraceState({
     namedConfigured,
     namedOnline,
@@ -11092,6 +11295,32 @@ function getPublicStatus() {
   return {
     mode: state.mode,
     status: state.status,
+    connection: {
+      type: state.mode === "quick" ? "temporary" : state.mode === "named" ? "permanent" : "none",
+      authority: state.mode === "quick" ? "core-managed" : namedOwnership,
+      serviceInstalled: tunnelControl.serviceDetected,
+      serviceRunning: tunnelControl.serviceRunning,
+      connectorConnected: state.mode === "quick"
+        ? quickState.status === "ACTIVE"
+        : state.mode === "named"
+          ? namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.ok === true
+          : false
+    },
+    sharing: { enabled: state.mode !== "off", consentGranted },
+    explicitActivationRequired: modeSelection.source === "default" && namedConfigured,
+    listener: {
+      status: publicServerLifecycle.isStarted() ? "listening" : "not_listening",
+      port: PUBLIC_HTTP_PORT
+    },
+    availability: publicAvailability({
+      mode: state.mode,
+      status: state.status,
+      listenerStarted: publicServerLifecycle.isStarted(),
+      routeMatchesThisCore: state.mode === "named"
+        ? namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeVerified
+        : quickRouteHealth?.origin === state.canonicalOrigin && quickRouteHealth.sameInstance &&
+          Date.now() - quickRouteHealth.checkedAt < 60_000
+    }),
     canonicalOrigin: state.canonicalOrigin,
     canonicalOriginConfigured,
     canonicalOriginReachable,
@@ -11107,6 +11336,19 @@ function getPublicStatus() {
     tunnelName: namedCfg?.tunnelName || null,
     namedTokenStored: Boolean(getNamedTunnelToken()),
     namedConfigured,
+    configuredNamedOrigin: namedCfg?.publicOrigin || null,
+    tunnelState: {
+      configured: namedConfigured,
+      identityVerified: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.identityVerified,
+      serviceDetected: Boolean(tunnelControl.serviceDetected || tunnelControl.externalProcessRunning),
+      serviceRunning: Boolean(tunnelControl.serviceRunning || tunnelControl.externalProcessRunning),
+      routeReachable: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeReachable,
+      routeVerified: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeVerified,
+      connected: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.ok === true,
+      ownership: namedOwnership,
+      controllableByCore: namedOwnership === "core-managed" && Boolean(namedRuntime.pid),
+      publicListenerReady: publicServerLifecycle.isStarted()
+    },
     quickModeWithNamedConfig: state.mode === "quick" && namedConfigured,
     namedDisabled: isNamedTunnelDisabled(),
     transport: {
@@ -11118,10 +11360,14 @@ function getPublicStatus() {
       },
       named: {
         configured: namedConfigured,
+        selected: state.mode === "named",
         tunnelName: namedCfg?.tunnelName || null,
         publicOrigin: namedCfg?.publicOrigin || null,
         online: namedOnline,
-        status: namedConfigured ? (namedOnline ? "online" : "offline") : "not_configured"
+        status: namedConfigured ? (namedOnline ? "online" : "offline") : "not_configured",
+        routeVerified: namedHealthCache.key === currentNamedHealthCacheKey() && namedHealthCache.routeVerified,
+        ownership: namedOwnership,
+        connectorRunning: Boolean(tunnelControl.serviceRunning || tunnelControl.externalProcessRunning || namedRuntime.pid)
       }
     },
     advancedPublicLink: {
@@ -11136,7 +11382,7 @@ function getPublicStatus() {
     tunnelControl,
     hostInvariant,
     consentRequired,
-    autoStartEnabled: state.mode === "quick" ? true : autoStartEnabled
+    autoStartEnabled
   };
 }
 
@@ -11178,6 +11424,9 @@ function refreshPublicStatusInBackground() {
 
 function getPublicStatusCached(force = false) {
   const now = Date.now();
+  // Do not let the outer status cache extend the life of ownership evidence.
+  const control = getTunnelControlModeCached();
+  if (publicStatusCache && publicStatusCache.value.tunnelControl !== control) publicStatusCache = null;
   if (!force && publicStatusCache && publicStatusCache.expiresAt > now) {
     return publicStatusCache.value;
   }
@@ -11258,7 +11507,7 @@ async function warmStartupRuntimeCaches() {
   const startedAtMs = Date.now();
   const tasks: Array<Promise<unknown>> = [
     Promise.resolve().then(() => getPublicStatusCached(true)),
-    Promise.resolve().then(() => getTunnelControlModeCached(true)),
+    getFreshTunnelControlMode(),
     Promise.resolve().then(() => getCapabilityContextCached(true)),
     getLocalSovereignReadinessCached(true),
     getCachedCreatorSignalNodeDetails(),
@@ -11281,7 +11530,56 @@ async function warmStartupRuntimeCaches() {
   app.log.info({ durationMs }, "startup.runtime_cache_warm.ready");
 }
 
-async function triggerPublicStartBestEffort() {
+function quickStartDependencies() {
+  return {
+    validate: async () =>
+      isNamedConfigured()
+        ? {
+            ok: false as const,
+            code: "named_configured",
+            message: "Named tunnel configured. Disable named mode to use a temporary link."
+          }
+        : { ok: true as const },
+    hasConsent: () => {
+      const consent = getPublicSharingConsent();
+      return consent.granted || consent.dontAskAgain;
+    },
+    grantConsent: (dontAskAgain: boolean) => {
+      setPublicSharingConsent(true, dontAskAgain);
+    },
+    snapshot: () => ({ mode: getPublicSharingModeOverride(), autoStart: getPublicSharingAutoStart() }),
+    setMode: (mode: PublicMode | null) => setPublicSharingModeOverride(mode),
+    setAutoStart: (enabled: boolean) => setPublicSharingAutoStart(enabled),
+    startListener: async () => {
+      await publicServerLifecycle.ensureStarted(registerPublicRoutes, getPublicBindHost("quick"));
+    },
+    stopListener: async () => {
+      await publicServerLifecycle.stop();
+    },
+    prepareTunnel: (signal?: AbortSignal) => tunnelManager.ensureBinary(signal),
+    startTunnel: () => tunnelManager.startQuick(),
+    stopTunnel: () => tunnelManager.stop()
+  };
+}
+
+async function startConfiguredQuickRuntime() {
+  const selection = getPublicModeSelection();
+  if (selection.mode !== "quick") return tunnelManager.status();
+  const consent = getPublicSharingConsent();
+  if (
+    !shouldAutoStartSelectedQuick({
+      selection,
+      consentGranted: consent.granted || consent.dontAskAgain,
+      autoStartEnabled: getPublicSharingAutoStart()
+    })
+  ) {
+    return tunnelManager.status();
+  }
+  if (isNamedConfigured()) return tunnelManager.status();
+  return startAutomaticQuickRuntime(quickStartDependencies());
+}
+
+async function triggerPublicStartBestEffortUnlocked() {
   const state = getPublicLinkState();
   if (state.mode === "off") {
     app.log.info(
@@ -11305,23 +11603,25 @@ async function triggerPublicStartBestEffort() {
       );
       return;
     }
-    const prep = await tunnelManager.ensureBinary();
-    if (!prep.ok) {
-      app.log.warn({ lastError: prep.error || "cloudflared_unavailable" }, "public.quick.start_skipped");
-      return;
+    try {
+      const status = await startConfiguredQuickRuntime();
+      const publicUrl = status.publicOrigin || tunnelManager.status().publicOrigin || null;
+      app.log.info({ publicMode: "quick", publicUrl }, "public.quick.url_ready");
+    } catch (e: any) {
+      app.log.warn({ err: String(e?.message || e) }, "public.quick.start_failed");
     }
-    tunnelManager
-      .startQuick()
-      .then((status) => {
-        const publicUrl = status.publicOrigin || tunnelManager.status().publicOrigin || null;
-        app.log.info({ publicMode: "quick", publicUrl }, "public.quick.url_ready");
-      })
-      .catch((e) => app.log.warn({ err: String(e?.message || e) }, "public.quick.start_failed"));
     return;
   }
   if (state.mode === "named") {
     const cfg = getNamedTunnelConfig();
     if (!cfg) return;
+    // Exact tunnel listing also records the configured name/UUID pair used by
+    // the ownership classifier for token-based service processes.
+    const alreadyOnline = await ensureNamedHealthFresh(cfg.publicOrigin, true);
+    if (alreadyOnline) {
+      app.log.info({ publicOrigin: cfg.publicOrigin }, "public.named.autostart_adopted_existing_tunnel");
+      return;
+    }
     const defer = shouldDeferNamedTunnelToServiceControl();
     if (defer.shouldDefer) {
       reconcileNamedTunnelOwnership(true);
@@ -11331,32 +11631,62 @@ async function triggerPublicStartBestEffort() {
       );
       return;
     }
-    const alreadyOnline = await ensureNamedHealthFresh(cfg.publicOrigin, true);
-    if (alreadyOnline) {
-      app.log.info({ publicOrigin: cfg.publicOrigin }, "public.named.autostart_adopted_existing_tunnel");
-      return;
-    }
     const cur = tunnelManager.status();
     if ((cur.status === "ACTIVE" || cur.status === "STARTING") && cur.publicOrigin === cfg.publicOrigin) return;
     const namedToken = getNamedTunnelToken();
-    tunnelManager
+    await tunnelManager
       .startNamed({
         publicOrigin: cfg.publicOrigin,
         tunnelName: String(cfg.tunnelName || "").trim(),
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
         token: namedToken
       })
-      .catch(() => {});
+      .catch(() => tunnelManager.status());
   }
 }
 
-async function checkPublicPing(publicOrigin: string): Promise<boolean> {
+async function triggerPublicStartBestEffort() {
+  return publicLifecycleMutex.runExclusive(() => triggerPublicStartBestEffortUnlocked());
+}
+
+async function checkPublicRoute(publicOrigin: string): Promise<{ reachable: boolean; sameInstance: boolean }> {
   const base = publicOrigin.replace(/\/$/, "");
   try {
-    const res = await fetchWithTimeout(`${base}/health`, { method: "GET" } as any, 4000);
-    return res.ok;
+    const res = await fetchWithTimeout(`${base}/public/ping`, { method: "GET" } as any, 4000);
+    if (!res.ok) return { reachable: false, sameInstance: false };
+    const body = await res.json().catch(() => null) as any;
+    return { reachable: true, sameInstance: body?.bootId === BOOT_ID };
   } catch {
-    return false;
+    return { reachable: false, sameInstance: false };
+  }
+}
+
+async function refreshQuickRouteHealth(origin: string): Promise<void> {
+  if (quickRouteProbe) return quickRouteProbe;
+  quickRouteProbe = (async () => {
+    const result = await checkPublicRoute(origin);
+    if (tunnelManager.status().publicOrigin !== origin) return;
+    quickRouteHealth = { origin, checkedAt: Date.now(), sameInstance: result.sameInstance };
+    publicStatusCache = null;
+  })();
+  try { await quickRouteProbe; } finally { quickRouteProbe = null; }
+}
+
+async function listCloudflaredTunnels(): Promise<{
+  available: boolean;
+  tunnels: any[] | null;
+  error: string | null;
+}> {
+  const cloudflaredCmd = resolveCloudflaredCmd();
+  if (!cloudflaredCmd) return { available: false, tunnels: null, error: "cloudflared_not_available" };
+  try {
+    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "list", "--output", "json"], {
+      timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS
+    });
+    const parsed = JSON.parse(stdout || "[]");
+    return { available: true, tunnels: Array.isArray(parsed) ? parsed : [], error: null };
+  } catch (error: any) {
+    return { available: true, tunnels: null, error: String(error?.message || "list_failed") };
   }
 }
 
@@ -11364,28 +11694,12 @@ async function checkNamedTunnelConnected(): Promise<boolean> {
   const cfg = getNamedTunnelConfig();
   const tunnelName = String(cfg?.tunnelName || "").trim().toLowerCase();
   if (!tunnelName) return false;
-  const cloudflaredCmd = resolveCloudflaredCmd();
-  if (!cloudflaredCmd) return false;
-  try {
-    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "list", "--output", "json"]);
-    const parsed = JSON.parse(stdout || "[]");
-    const tunnels = Array.isArray(parsed) ? parsed : [];
-    const match = tunnels.find((t: any) => {
-      const name = String(t?.name || "").trim().toLowerCase();
-      const id = String(t?.id || "").trim().toLowerCase();
-      return name === tunnelName || id === tunnelName;
-    });
-    if (Boolean(match && Array.isArray(match.connections) && match.connections.length > 0)) return true;
-
-    // Machine-local fallback: if the configured tunnel name drifts, but exactly one
-    // tunnel is actually connected on this host, avoid false "offline" posture.
-    // We do not apply this when multiple tunnels are connected to prevent ambiguity.
-    const connected = tunnels.filter((t: any) => Array.isArray(t?.connections) && t.connections.length > 0);
-    if (!match && connected.length === 1) return true;
-    return false;
-  } catch {
-    return false;
-  }
+  const configurationKey = currentNamedHealthCacheKey();
+  const listed = await listCloudflaredTunnels();
+  if (configurationKey !== currentNamedHealthCacheKey()) return false;
+  const match = listed.tunnels ? findExactConfiguredTunnel(listed.tunnels, tunnelName) : null;
+  if (match) rememberConfiguredNamedIdentity(match);
+  return Boolean(match && Array.isArray(match.connections) && match.connections.length > 0);
 }
 
 async function checkLocalPublicHealth(): Promise<boolean> {
@@ -11423,7 +11737,7 @@ function isPublicCorsPath(url?: string) {
 app.register(cors, {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (origin === "https://fan.certifyd.me" || allowedOrigins.includes(origin)) return cb(null, true);
     if (process.env.NODE_ENV !== "production") {
       const devAllowed = [
         "http://localhost:5173",
@@ -11437,7 +11751,7 @@ app.register(cors, {
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key", "Range"],
   credentials: true,
   preflightContinue: false,
   optionsSuccessStatus: 204
@@ -12413,12 +12727,18 @@ function isProtectedStreamOnlyMedia(input: { paidContent: boolean; deliveryMode?
 }
 
 function isEncryptedHlsPlaybackEnabled(): boolean {
-  return String(process.env.PUBLIC_ENCRYPTED_HLS_ENABLED || "").trim() === "1";
+  return String(process.env.PUBLIC_ENCRYPTED_HLS_ENABLED || "1").trim() !== "0";
 }
 
 function stableHlsPrefix(contentId: string, sourceObjectKey: string): string {
   const sourceHash = crypto.createHash("sha256").update(sourceObjectKey).digest("hex").slice(0, 16);
   return `streams/${contentId}/${sourceHash}`;
+}
+
+function privateHlsKeyPath(contentId: string, sourceObjectKey: string): string {
+  const id = crypto.createHash("sha256").update(contentId).digest("hex");
+  const source = crypto.createHash("sha256").update(sourceObjectKey).digest("hex");
+  return path.join(CONTENTBOX_ROOT, "hls-keys", id, `${source}.key`);
 }
 
 function stableHlsInfo(contentId: string, sourceObjectKey: string, mime: string): HlsRenditionInfo {
@@ -12475,71 +12795,64 @@ async function ensureEncryptedHlsRendition(content: any, files: any[], manifestR
     const playlistResolved = resolveDeliveryPath(content.repoPath, hlsInfo.playlistObjectKey);
     const keyResolved = resolveDeliveryPath(content.repoPath, hlsInfo.keyObjectKey);
     if (!playlistResolved.ok || !keyResolved.ok) return null;
-    if (fsSync.existsSync(playlistResolved.absPath) && fsSync.existsSync(keyResolved.absPath)) return hlsInfo;
+    const privateKeyPath = privateHlsKeyPath(content.id, sourceKeyCheck.objectKey);
+    const renditionPaths = { playlistPath: playlistResolved.absPath, privateKeyPath };
+    recoverHlsPromotion(renditionPaths);
+    if (await isCompleteHlsRendition(renditionPaths)) return hlsInfo;
 
     const inputResolved = resolveDeliveryPath(content.repoPath, sourceKeyCheck.objectKey);
     if (!inputResolved.ok || !fsSync.existsSync(inputResolved.absPath)) return null;
-    await fs.mkdir(path.dirname(playlistResolved.absPath), { recursive: true });
+    await stageAndPromoteHls(renditionPaths, async ({ playlistPath, segmentPattern, keyInfoPath }) => {
+      const videoArgs = [
+        "-y",
+        "-i",
+        inputResolved.absPath,
+        "-map",
+        "0:v:0?",
+        "-map",
+        "0:a:0?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "24",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-hls_time",
+        "6",
+        "-hls_playlist_type",
+        "vod",
+        "-hls_key_info_file",
+        keyInfoPath,
+        "-hls_segment_filename",
+        segmentPattern,
+        playlistPath
+      ];
+      const audioArgs = [
+        "-y",
+        "-i",
+        inputResolved.absPath,
+        "-vn",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-hls_time",
+        "6",
+        "-hls_playlist_type",
+        "vod",
+        "-hls_key_info_file",
+        keyInfoPath,
+        "-hls_segment_filename",
+        segmentPattern,
+        playlistPath
+      ];
 
-    const keyBytes = crypto.randomBytes(16);
-    await fs.writeFile(keyResolved.absPath, keyBytes);
-    const keyInfoPath = path.join(os.tmpdir(), `contentbox-hls-keyinfo-${content.id}-${Date.now()}.txt`);
-    const segmentPattern = path.join(path.dirname(playlistResolved.absPath), "seg%05d.ts");
-    const iv = crypto.randomBytes(16).toString("hex");
-    await fs.writeFile(keyInfoPath, `enc.key\n${keyResolved.absPath}\n${iv}\n`, "utf8");
-
-    const videoArgs = [
-      "-y",
-      "-i",
-      inputResolved.absPath,
-      "-map",
-      "0:v:0?",
-      "-map",
-      "0:a:0?",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "24",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "160k",
-      "-hls_time",
-      "6",
-      "-hls_playlist_type",
-      "vod",
-      "-hls_key_info_file",
-      keyInfoPath,
-      "-hls_segment_filename",
-      segmentPattern,
-      playlistResolved.absPath
-    ];
-    const audioArgs = [
-      "-y",
-      "-i",
-      inputResolved.absPath,
-      "-vn",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "160k",
-      "-hls_time",
-      "6",
-      "-hls_playlist_type",
-      "vod",
-      "-hls_key_info_file",
-      keyInfoPath,
-      "-hls_segment_filename",
-      segmentPattern,
-      playlistResolved.absPath
-    ];
-
-    await execFileAsync("ffmpeg", mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
-    try {
-      fsSync.unlinkSync(keyInfoPath);
-    } catch {}
+      await execFileAsync("ffmpeg", mime.startsWith("video/") ? videoArgs : audioArgs, { maxBuffer: 1024 * 1024 * 8 });
+    });
 
     await commitAll(content.repoPath, `generate encrypted stream ${content.id}`).catch(() => {});
     app.log.info({ contentId: content.id, playlistObjectKey: hlsInfo.playlistObjectKey }, "hls.artifact.ready");
@@ -13347,43 +13660,48 @@ async function buildParentPublishAnchor(contentId: string): Promise<ParentPublis
 }
 
 async function handlePublicAudienceInteraction(req: any, reply: any) {
-  const body = (req.body ?? {}) as { contentId?: string; eventType?: string };
-  const contentId = asString(body.contentId || "").trim();
-  const eventTypeRaw = asString(body.eventType || "view").trim().toLowerCase();
-  if (!contentId) return badRequest(reply, "contentId required");
-  if (eventTypeRaw !== "view") return badRequest(reply, "unsupported eventType");
-  const deduped = await recordAudienceViewEvent(contentId, req, reply);
-  return reply.send({ ok: true, deduped });
-}
-
-async function recordAudienceViewEvent(contentId: string, req: any, reply: any): Promise<boolean> {
+  const contentId = validateAudienceViewBody(req.body);
+  if (!contentId) return badRequest(reply, "Invalid audience view event");
+  if (!audienceTrackingWindowId || !isAudienceCollectionEnabled(process.env.CONTENTBOX_AUDIENCE_ENABLED)) return reply.send({ ok: true, recorded: false, disabled: true });
+  if (isAutomatedAudienceRequest(req.headers || {})) return reply.send({ ok: true, recorded: false, filtered: true });
+  const origin = asString(req.headers?.origin || "").trim();
+  if (origin) {
+    try {
+      if (new URL(origin).host !== asString(req.headers?.host || "").trim().toLowerCase()) return forbidden(reply);
+    } catch { return forbidden(reply); }
+  }
+  if (asString(req.headers?.["sec-fetch-site"] || "").toLowerCase() === "cross-site") return forbidden(reply);
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    select: { id: true, deletedAt: true }
+    select: { id: true, deletedAt: true, status: true, ownerUserId: true }
   });
-  if (!content || content.deletedAt) return true;
-
+  if (!content || content.deletedAt || content.status !== "published") return notFound(reply, "Content not found");
+  const bearer = asString(req.headers?.authorization || "").match(/^Bearer (.+)$/i)?.[1];
+  if (bearer) {
+    try {
+      const claims = await app.jwt.verify<JwtUser>(bearer);
+      if (claims.sub === content.ownerUserId) {
+        const owner = await prisma.user.findUnique({ where: { id: claims.sub }, select: { tokenVersion: true } });
+        if (owner && (owner.tokenVersion ?? 0) === (claims.tokenVersion ?? 0)) {
+          return reply.send({ ok: true, recorded: false, owner: true });
+        }
+      }
+    } catch { /* An invalid token is not an authenticated owner. */ }
+  }
   const sessionId = getOrCreateAudienceSessionId(req, reply);
-  const dedupeSince = new Date(Date.now() - AUDIENCE_DEDUPE_WINDOW_MS);
-  const existing = await prisma.audienceEvent.findFirst({
-    where: {
-      contentId,
-      eventType: "view" as any,
-      sessionId,
-      createdAt: { gte: dedupeSince }
-    },
-    select: { id: true }
-  });
-  if (existing) return true;
-
-  await prisma.audienceEvent.create({
-    data: {
-      contentId,
-      eventType: "view" as any,
-      sessionId
+  if (!audienceRateLimiter.allow(sessionId)) return reply.code(429).send({ error: "Audience rate limit" });
+  try {
+    const recorded = await recordBuyPageView(prisma, contentId, sessionId);
+    const now = Date.now();
+    if (recorded && now - lastAudiencePruneMs >= 60 * 1000) {
+      lastAudiencePruneMs = now;
+      void runAudienceRetention();
     }
-  });
-  return false;
+    return reply.send({ ok: true, recorded, deduped: !recorded });
+  } catch (err) {
+    req.log.warn({ err }, "audience.record_failed");
+    return reply.code(503).send({ error: "Audience recording unavailable" });
+  }
 }
 
 async function proxyPublicRouteToMainApp(
@@ -13434,6 +13752,9 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.addHook("onRequest", (req: any, reply: any, done: any) => {
     const url = asString(req?.raw?.url || req?.url || "");
     const path = url.split("?")[0] || "";
+    if (!publicStateEpoch.allowsPublicRequest(getPublicLinkState().mode, path)) {
+      return reply.code(404).send({ error: "Not Found" });
+    }
     if (path === "/buy" || path.startsWith("/buy/")) {
       setPublicDebugHeaders(req, reply);
     }
@@ -13858,7 +14179,8 @@ function registerPublicRoutes(appPublic: any) {
 }
 
 function handlePublicPing(_req: any, reply: any) {
-  return reply.send({ ok: true, ts: new Date().toISOString() });
+  reply.header("cache-control", "no-store");
+  return reply.send({ ok: true, ts: new Date().toISOString(), bootId: BOOT_ID });
 }
 
 app.get("/health", async () => ({ ok: true }));
@@ -13891,7 +14213,8 @@ app.get("/.well-known/certifyd-node", async (_req: any, reply: any) => {
   return reply.send(publicDoc);
 });
 app.get("/public/ping", async (_req: any, reply: any) => {
-  return reply.send({ ok: true, ts: new Date().toISOString() });
+  reply.header("cache-control", "no-store");
+  return reply.send({ ok: true, ts: new Date().toISOString(), bootId: BOOT_ID });
 });
 
 app.addHook("onRequest", (req: any, reply: any, done: any) => {
@@ -15563,13 +15886,15 @@ app.post("/auth/signup", async (req, reply) => {
   const passwordHash = await bcrypt.hash(password, 10);
   const userCount = await prisma.user.count();
 
-  const user = await prisma.user.create({
-    data: {
-      email,
-      displayName: body.displayName?.trim() || null,
-      passwordHash
-    },
-    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: { email, displayName: body.displayName?.trim() || null, passwordHash },
+      select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
+    });
+    if (audienceTrackingWindowId) await tx.audienceTrackingActivation.create({
+      data: { userId: created.id, activatedAt: created.createdAt, freshAccount: true }
+    });
+    return created;
   });
 
   let recoveryKey: string | null = null;
@@ -18587,30 +18912,44 @@ registerWitnessRoutes(app, { prisma, requireAuth });
 registerCertifydArRoutes(app, { prisma, requireAuth });
 
 // Public exposure control
-app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/public/status", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const refresh = req.query?.refresh === "1";
+  const observe = req.query?.observe === "1";
+  if (refresh) {
+    cloudflaredStatusCache = null;
+    tunnelControlInspection.invalidate();
+    publicStatusCache = null;
+  }
   const state = getPublicLinkState();
+  if (state.mode === "quick" && state.canonicalOrigin && state.status === "online" &&
+      (!quickRouteHealth || quickRouteHealth.origin !== state.canonicalOrigin ||
+        Date.now() - quickRouteHealth.checkedAt > 20_000)) {
+    await refreshQuickRouteHealth(state.canonicalOrigin).catch(() => {});
+  }
   if (state.mode === "named" && state.canonicalOrigin) {
     await ensureNamedHealthFresh(state.canonicalOrigin, true).catch(() => false);
+    if (observe) return reply.send(getPublicStatus(false));
     return reply.send(getPublicStatusCached(true));
   }
+  if (observe) return reply.send(getPublicStatus(false));
   const nodeMode = getNodeMode();
   if (state.mode === "quick" && nodeMode === "basic") {
     const defer = shouldDeferNamedTunnelToServiceControl();
     const namedConfigured = Boolean(getNamedTunnelConfig());
     if (namedConfigured || defer.shouldDefer) {
       if (defer.shouldDefer) reconcileNamedTunnelOwnership();
-      return reply.send(getPublicStatusCached());
+      return reply.send(getPublicStatusCached(refresh));
     }
     const consent = getPublicSharingConsent();
     const consentGranted = consent.granted || consent.dontAskAgain;
     if (consentGranted && getPublicSharingAutoStart()) {
       const st = tunnelManager.status();
       if (st.status === "STOPPED") {
-        tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
+        triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
       }
     }
   }
-  return reply.send(getPublicStatusCached());
+  return reply.send(getPublicStatusCached(refresh));
 });
 
 function getNodeModeStatus() {
@@ -18881,6 +19220,9 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   try {
     await writeNodeConfig(next);
     await writeProductTier(next);
+    capabilityContextCache = null;
+    publicStatusCache = null;
+    profileServiceModeCache = null;
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to persist node mode", message: String(e?.message || e) });
   }
@@ -19762,32 +20104,73 @@ app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, rep
   const publicOriginFallback = normalizeOrigin(String(body.publicOriginFallback || "").trim());
   const publicBuyOriginFallback = normalizeOrigin(String(body.publicBuyOriginFallback || "").trim());
   const publicStudioOriginFallback = normalizeOrigin(String(body.publicStudioOriginFallback || "").trim());
-  setPublicOriginConfig({
-    provider: body.provider !== undefined ? provider || null : undefined,
-    domain: body.domain !== undefined ? domain || null : undefined,
-    tunnelName: body.tunnelName !== undefined ? tunnelName || null : undefined,
-    publicOrigin: body.publicOrigin !== undefined ? publicOrigin || null : undefined,
-    publicBuyOrigin: body.publicBuyOrigin !== undefined ? publicBuyOrigin || null : undefined,
-    publicStudioOrigin: body.publicStudioOrigin !== undefined ? publicStudioOrigin || null : undefined,
-    publicOriginFallback: body.publicOriginFallback !== undefined ? publicOriginFallback || null : undefined,
-    publicBuyOriginFallback: body.publicBuyOriginFallback !== undefined ? publicBuyOriginFallback || null : undefined,
-    publicStudioOriginFallback: body.publicStudioOriginFallback !== undefined ? publicStudioOriginFallback || null : undefined,
-    publicLocation: body.publicLocation !== undefined ? normalizePublicLocationConfig(body.publicLocation) : undefined
+  return publicLifecycleMutex.runExclusive(async () => {
+    setPublicOriginConfig({
+      provider: body.provider !== undefined ? provider || null : undefined,
+      domain: body.domain !== undefined ? domain || null : undefined,
+      tunnelName: body.tunnelName !== undefined ? tunnelName || null : undefined,
+      publicOrigin: body.publicOrigin !== undefined ? publicOrigin || null : undefined,
+      publicBuyOrigin: body.publicBuyOrigin !== undefined ? publicBuyOrigin || null : undefined,
+      publicStudioOrigin: body.publicStudioOrigin !== undefined ? publicStudioOrigin || null : undefined,
+      publicOriginFallback: body.publicOriginFallback !== undefined ? publicOriginFallback || null : undefined,
+      publicBuyOriginFallback: body.publicBuyOriginFallback !== undefined ? publicBuyOriginFallback || null : undefined,
+      publicStudioOriginFallback: body.publicStudioOriginFallback !== undefined ? publicStudioOriginFallback || null : undefined,
+      publicLocation: body.publicLocation !== undefined ? normalizePublicLocationConfig(body.publicLocation) : undefined
+    });
+    invalidateNamedRuntimeCaches();
+    const config = getPublicOriginConfig();
+    return reply.send({
+      ok: true,
+      provider: config.provider || null,
+      domain: config.domain || null,
+      tunnelName: config.tunnelName || null,
+      publicOrigin: config.publicOrigin || null,
+      publicBuyOrigin: config.publicBuyOrigin || null,
+      publicStudioOrigin: config.publicStudioOrigin || null,
+      publicOriginFallback: config.publicOriginFallback || null,
+      publicBuyOriginFallback: config.publicBuyOriginFallback || null,
+      publicStudioOriginFallback: config.publicStudioOriginFallback || null,
+      publicLocation: normalizePublicLocationConfig(config.publicLocation || null),
+      updatedAt: config.updatedAt || null
+    });
   });
-  const config = getPublicOriginConfig();
-  return reply.send({
-    ok: true,
-    provider: config.provider || null,
-    domain: config.domain || null,
-    tunnelName: config.tunnelName || null,
-    publicOrigin: config.publicOrigin || null,
-    publicBuyOrigin: config.publicBuyOrigin || null,
-    publicStudioOrigin: config.publicStudioOrigin || null,
-    publicOriginFallback: config.publicOriginFallback || null,
-    publicBuyOriginFallback: config.publicBuyOriginFallback || null,
-    publicStudioOriginFallback: config.publicStudioOriginFallback || null,
-    publicLocation: normalizePublicLocationConfig(config.publicLocation || null),
-    updatedAt: config.updatedAt || null
+});
+
+app.post("/api/public/named/remove", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return publicLifecycleMutex.runExclusive(async () => {
+    const nodeMode = getNodeModeStatus().nodeMode;
+    if (nodeMode === "advanced" || nodeMode === "lan") {
+      return reply.code(409).send({
+        error: "BASIC_MODE_REQUIRED",
+        message: "Switch this node to Basic Creator before removing its durable Named Tunnel configuration."
+      });
+    }
+    if (String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() || String(process.env.CLOUDFLARED_TUNNEL_NAME || "").trim()) {
+      return reply.code(409).send({
+        error: "ENVIRONMENT_NAMED_CONFIG",
+        message: "Named Tunnel configuration is controlled by this installation's environment and cannot be removed in the dashboard."
+      });
+    }
+    const cfg = getNamedTunnelConfig();
+    const runtime = tunnelManager.status();
+    const ownsConfiguredNamedChild = Boolean(
+      cfg?.publicOrigin &&
+      runtime.pid &&
+      tunnelManager.activeTransport() === "named"
+    );
+    if (ownsConfiguredNamedChild) await tunnelManager.stop();
+    setPublicOriginConfig({ provider: null, domain: null, tunnelName: null, publicOrigin: null });
+    setPublicSharingModeOverride("off");
+    setNamedTunnelDisabled(false);
+    invalidateNamedRuntimeCaches();
+    const quickStillActive = tunnelManager.status().status === "ACTIVE" && /\.trycloudflare\.com\/?$/i.test(String(tunnelManager.status().publicOrigin || ""));
+    if (!quickStillActive) await publicServerLifecycle.stop();
+    return reply.send({
+      ...getPublicStatusCached(true),
+      ok: true,
+      removed: true,
+      message: "Named Tunnel configuration removed. Externally managed Cloudflare services and saved connector credentials were not changed."
+    });
   });
 });
 
@@ -19812,6 +20195,9 @@ async function detectConfiguredNamedTunnel() {
     return {
       configuredTunnelName: null,
       namedTunnelDetected: false,
+      identityVerified: false,
+      routeReachable: false,
+      routeVerified: false,
       discoveredTunnelName: null,
       verifiedPublicOrigin: null,
       reason: "tunnel_name_not_configured",
@@ -19824,6 +20210,9 @@ async function detectConfiguredNamedTunnel() {
     return {
       configuredTunnelName,
       namedTunnelDetected: false,
+      identityVerified: false,
+      routeReachable: false,
+      routeVerified: false,
       discoveredTunnelName: null,
       verifiedPublicOrigin: null,
       reason: "provider_not_cloudflare",
@@ -19839,70 +20228,77 @@ async function detectConfiguredNamedTunnel() {
           configuredDomain && shouldDeriveNamedTunnelOrigin()
             ? normalizeOrigin(`${configuredTunnelName}.${configuredDomain}`)
             : null,
-          normalizeOrigin(configuredDomain),
-          configuredDomain && !configuredDomain.includes("://") ? normalizeOrigin(`certifyd.${configuredDomain}`) : null,
-          configuredDomain && !configuredDomain.includes("://") ? normalizeOrigin(`public.${configuredDomain}`) : null
+          normalizeOrigin(configuredDomain)
         ].filter(Boolean) as string[]
       )
     );
     for (const origin of candidates) {
       const base = origin.replace(/\/+$/, "");
-      for (const probePath of ["/.well-known/contentbox", "/health", "/public/ping"]) {
-        try {
-          const res = await fetchWithTimeout(
-            `${base}${probePath}`,
-            { method: "GET", headers: { Accept: "application/json" } as any } as any,
-            2500
-          );
-          if (res.ok) return { ok: true, origin: base, probePath };
-        } catch {}
+      const route = await checkPublicRoute(base);
+      if (route.reachable) {
+        return { ok: true, sameInstance: route.sameInstance, origin: base, probePath: "/public/ping" };
       }
     }
-    return { ok: false, origin: null as string | null, probePath: null as string | null };
+    return { ok: false, sameInstance: false, origin: null as string | null, probePath: null as string | null };
   };
 
-  const cloudflaredCmd = resolveCloudflaredCmd();
-  if (!cloudflaredCmd) {
+  const configurationKey = currentNamedHealthCacheKey();
+  const listed = await listCloudflaredTunnels();
+  if (configurationKey !== currentNamedHealthCacheKey()) {
+    return {
+      configuredTunnelName,
+      namedTunnelDetected: false,
+      identityVerified: false,
+      routeReachable: false,
+      routeVerified: false,
+      discoveredTunnelName: null,
+      verifiedPublicOrigin: null,
+      reason: "configuration_changed",
+      tunnels: [] as any[]
+    };
+  }
+  if (!listed.available) {
     const probe = await probeConfiguredPublicOrigin();
     return {
       configuredTunnelName,
-      namedTunnelDetected: probe.ok,
-      discoveredTunnelName: probe.ok ? configuredTunnelName : null,
+      namedTunnelDetected: probe.sameInstance,
+      identityVerified: false,
+      routeReachable: probe.ok,
+      routeVerified: probe.sameInstance,
+      discoveredTunnelName: null,
       verifiedPublicOrigin: probe.origin,
-      reason: probe.ok ? "origin_probe_ok_cloudflared_unavailable" : "cloudflared_not_available",
+      reason: probe.sameInstance ? "route_verified_identity_unavailable" : probe.ok ? "origin_reachable_wrong_instance" : "cloudflared_not_available",
       tunnels: [] as any[]
     };
   }
 
-  try {
-    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "list", "--output", "json"]);
-    const parsed = JSON.parse(stdout || "[]");
-    const tunnels = Array.isArray(parsed) ? parsed : [];
-    const wanted = configuredTunnelName.toLowerCase();
-    const match = tunnels.find((t: any) => {
-      const name = String(t?.name || "").trim().toLowerCase();
-      const id = String(t?.id || "").trim().toLowerCase();
-      return name === wanted || id === wanted;
-    });
+  if (listed.tunnels) {
+    const match = findExactConfiguredTunnel(listed.tunnels, configuredTunnelName);
+    if (match) rememberConfiguredNamedIdentity(match);
     return {
       configuredTunnelName,
       namedTunnelDetected: Boolean(match),
+      identityVerified: Boolean(match),
+      routeReachable: false,
+      routeVerified: false,
       discoveredTunnelName: match ? String(match?.name || match?.id || "") : null,
       verifiedPublicOrigin: null,
       reason: match ? null : "not_found",
-      tunnels
-    };
-  } catch (e: any) {
-    const probe = await probeConfiguredPublicOrigin();
-    return {
-      configuredTunnelName,
-      namedTunnelDetected: probe.ok,
-      discoveredTunnelName: probe.ok ? configuredTunnelName : null,
-      verifiedPublicOrigin: probe.origin,
-      reason: probe.ok ? "origin_probe_ok_list_failed" : String(e?.message || "list_failed"),
-      tunnels: [] as any[]
+      tunnels: listed.tunnels
     };
   }
+  const probe = await probeConfiguredPublicOrigin();
+  return {
+    configuredTunnelName,
+    namedTunnelDetected: probe.sameInstance,
+    identityVerified: false,
+    routeReachable: probe.ok,
+    routeVerified: probe.sameInstance,
+    discoveredTunnelName: null,
+    verifiedPublicOrigin: probe.origin,
+    reason: probe.sameInstance ? "route_verified_identity_unavailable" : probe.ok ? "origin_reachable_wrong_instance" : listed.error || "list_failed",
+    tunnels: [] as any[]
+  };
 }
 
 app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -19919,8 +20315,13 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
       tunnels: detected.tunnels,
       configuredTunnelName: detected.configuredTunnelName,
       namedTunnelDetected: detected.namedTunnelDetected,
+      identityVerified: detected.identityVerified,
+      routeReachable: detected.routeReachable,
+      routeVerified: detected.routeVerified,
+      verifiedPublicOrigin: detected.verifiedPublicOrigin,
       discoveredTunnelName: detected.discoveredTunnelName,
-      reason: detected.reason
+      reason: detected.reason,
+      tunnelControl: getTunnelControlModeCached(true)
     });
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to list tunnels", details: e?.message || String(e) });
@@ -22743,156 +23144,314 @@ app.post("/api/diagnostics/backups/settings", { preHandler: requireAuth }, async
   return reply.send({ ok: true, enabled: setBackupsEnabled(enabled) });
 });
 
-app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const state = getPublicLinkState();
-  const body = (_req.body ?? {}) as { consent?: boolean; dontAskAgain?: boolean };
+async function withNamedVerificationWindow<T>(operation: (snapshot: ReturnType<PublicStateEpoch["capture"]>) => Promise<T>) {
+  const listenerWasStarted = publicServerLifecycle.isStarted();
+  const snapshot = publicStateEpoch.beginProbe(currentNamedHealthCacheKey());
+  try {
+    await publicServerLifecycle.ensureStarted(registerPublicRoutes, getPublicBindHost("named"), PUBLIC_HTTP_PORT);
+    return await operation(snapshot);
+  } finally {
+    publicStateEpoch.finishProbe(snapshot);
+    if (!listenerWasStarted && getPublicLinkState().mode === "off") {
+      await publicServerLifecycle.stop();
+    }
+  }
+}
 
-  if (state.mode === "off") {
+function namedVerificationStillCurrent(snapshot: ReturnType<PublicStateEpoch["capture"]>) {
+  return publicStateEpoch.isCurrent(snapshot, currentNamedHealthCacheKey());
+}
+
+function selectVerifiedNamedMode(snapshot: ReturnType<PublicStateEpoch["capture"]>) {
+  return activateVerifiedNamedSharing({
+    isCurrent: () => namedVerificationStillCurrent(snapshot),
+    persistSelection: () => {
+      const state = readLocalState();
+      const next: LocalState = {
+        ...state,
+        publicSharingConsent: {
+          granted: true,
+          dontAskAgain: Boolean(state.publicSharingConsent?.dontAskAgain),
+          grantedAt: state.publicSharingConsent?.grantedAt || new Date().toISOString()
+        },
+        publicSharingAutoStart: true,
+        namedTunnelDisabled: false,
+        publicSharingModeOverride: "named"
+      };
+      if (!writeLocalState(next)) return false;
+      publicStateEpoch.invalidate();
+      publicStatusCache = null;
+      return true;
+    }
+  });
+}
+
+async function handleNamedPublicStart(reply: any) {
+  const cfg = getNamedTunnelConfig();
+  if (!cfg) {
     return reply.code(409).send({
       ...getPublicStatus(),
-      lastError: "public_mode_disabled"
+      lastError: "missing_named_tunnel_config"
     });
   }
+  try {
+    return await withNamedVerificationWindow(async (verification) => {
+      let switchedFromQuick = false;
+      const stopOwnedQuickForSwitch = async () => {
+        if (tunnelManager.activeTransport() !== "quick") return true;
+        const stopped = await tunnelManager.stop();
+        switchedFromQuick = stopped.status === "STOPPED";
+        return switchedFromQuick;
+      };
+      const restoreQuickAfterFailedSwitch = async () => {
+        if (!switchedFromQuick) return null;
+        if (tunnelManager.activeTransport() === "named") await tunnelManager.stop();
+        const restored = await tunnelManager.startQuick();
+        return restored.status === "ACTIVE" ? null : restored.lastError || "Quick Tunnel recovery failed";
+      };
+      const alreadyOnline = await ensureNamedHealthFresh(cfg.publicOrigin, true);
+      if (alreadyOnline) {
+        if (!(await stopOwnedQuickForSwitch())) {
+          return reply.code(503).send({ ...getPublicStatusCached(true), lastError: "quick_tunnel_stop_failed" });
+        }
+        const activation = selectVerifiedNamedMode(verification);
+        if (activation !== "activated") {
+          await restoreQuickAfterFailedSwitch();
+          return reply.code(409).send({
+            ...getPublicStatusCached(true),
+            lastError: activation === "save_failed" ? "named_selection_not_saved" : "named_verification_stale",
+            message: activation === "save_failed"
+              ? "Named route verified, but Certifyd could not save public-sharing consent and mode. Check local data permissions and retry."
+              : "Named Tunnel verification was discarded because public routing changed while the check was running."
+          });
+        }
+        return reply.send({
+          ...getPublicStatusCached(true),
+          message: "Named tunnel is online."
+        });
+      }
 
-  if (state.mode === "named") {
+      const namedToken = getNamedTunnelToken();
+      const configPath = String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null;
+      const currentControl = await getFreshTunnelControlMode();
+      const inspectionBlocker = tunnelStartBlocker(currentControl);
+      if (!inspectionBlocker.ok) return reply.code(409).send({
+        ...getPublicStatusCached(), lastError: inspectionBlocker.code, message: inspectionBlocker.message
+      });
+      if (!namedToken && !configPath && (currentControl.serviceRunning || currentControl.externalProcessRunning)) {
+        return reply.code(409).send({
+          ...getPublicStatusCached(true),
+          lastError: "external_named_route_unverified",
+          message:
+            "cloudflared is managed outside Certifyd, but the configured durable host does not reach this Core listener on 127.0.0.1:4010. Check the Cloudflare published application route; Certifyd will not start or stop the external service."
+        });
+      }
+
+      let allowDiscoveredNamedBootstrap = false;
+      let discoveredTunnelName: string | null = null;
+      if (!namedToken && !configPath) {
+        const detected = await detectConfiguredNamedTunnel();
+        allowDiscoveredNamedBootstrap = detected.namedTunnelDetected;
+        discoveredTunnelName = detected.discoveredTunnelName;
+      }
+      if (!namedToken && !configPath && !allowDiscoveredNamedBootstrap) {
+        return reply.code(409).send({
+          ...getPublicStatus(),
+          lastError: "named_token_missing",
+          message: "Named tunnel requires a connector token. Add it in Config -> Tunnel & routing."
+        });
+      }
+
+      const defer = shouldDeferNamedTunnelToServiceControl();
+      if (defer.shouldDefer) {
+        reconcileNamedTunnelOwnership(true);
+        return reply.code(409).send({
+          ...getPublicStatus(),
+          lastError: "external_named_route_unverified",
+          message: "The external cloudflared service remains untouched, but its route could not be verified to this Core instance."
+        });
+      }
+
+      if (!(await stopOwnedQuickForSwitch())) {
+        return reply.code(503).send({ ...getPublicStatusCached(true), lastError: "quick_tunnel_stop_failed" });
+      }
+      const current = tunnelManager.status();
+      let status = current;
+      if (!((current.status === "ACTIVE" || current.status === "STARTING") && current.publicOrigin === cfg.publicOrigin)) {
+        try {
+          status = await tunnelManager.startNamed({
+            publicOrigin: cfg.publicOrigin,
+            tunnelName: String(cfg.tunnelName || "").trim(),
+            configPath,
+            token: namedToken
+          });
+        } catch (error: any) {
+          const recoveryError = await restoreQuickAfterFailedSwitch();
+          return reply.code(503).send({
+            ...getPublicStatusCached(true),
+            lastError: "named_tunnel_failed",
+            message: recoveryError || String(error?.message || "Named Tunnel failed to start")
+          });
+        }
+      }
+      if (status.status === "ACTIVE") {
+        const connected = await ensureNamedHealthFresh(cfg.publicOrigin, true).catch(() => false);
+        const activation = connected ? selectVerifiedNamedMode(verification) : "stale";
+        if (connected && activation === "activated") {
+          return reply.send({
+            ...getPublicStatusCached(true),
+            discoveredTunnelName
+          });
+        }
+        const recoveryError = await restoreQuickAfterFailedSwitch();
+        return reply.code(503).send({
+          ...getPublicStatusCached(true),
+          lastError: activation === "save_failed" ? "named_selection_not_saved"
+            : namedVerificationStillCurrent(verification) ? "named_route_unverified" : "named_verification_stale",
+          message: recoveryError
+            ? `Named route not verified; temporary link recovery failed: ${recoveryError}`
+            : activation === "save_failed"
+              ? "Named route verified, but Certifyd could not save public-sharing consent and mode. Check local data permissions and retry."
+              : "Named connector started, but the durable route could not be verified to this Core instance."
+        });
+      }
+      const recoveryError = await restoreQuickAfterFailedSwitch();
+      return reply.code(503).send({
+        ...getPublicStatus(),
+        lastError: recoveryError || status.lastError || "named_tunnel_failed"
+      });
+    });
+  } catch (error: any) {
+    return reply.code(503).send({
+      ...getPublicStatus(),
+      lastError: "public_listener_unavailable",
+      message: String(error?.message || "Public listener could not start on 127.0.0.1:4010.")
+    });
+  }
+}
+
+registerPublicGoRoute(app, {
+  requireAuth,
+  mutex: publicLifecycleMutex,
+  getMode: () => getPublicLinkState().mode,
+  environmentForcesQuick: () => {
+    const selection = getPublicModeSelection();
+    return selection.mode === "quick" && selection.source === "environment";
+  },
+  quick: quickStartDependencies,
+  getStatus: getPublicStatus,
+  handleNamed: handleNamedPublicStart
+});
+
+app.post("/api/public/named/start", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return publicLifecycleMutex.runExclusive(() => handleNamedPublicStart(reply));
+});
+
+app.post("/api/public/named/verify", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return publicLifecycleMutex.runExclusive(async () => {
     const cfg = getNamedTunnelConfig();
     if (!cfg) {
       return reply.code(409).send({
         ...getPublicStatus(),
-        lastError: "missing_named_tunnel_config"
+        lastError: "missing_named_tunnel_config",
+        message: "Save a Named Tunnel and durable public origin before verification."
       });
     }
-    const alreadyOnline = await ensureNamedHealthFresh(cfg.publicOrigin, true);
-    if (alreadyOnline) {
-      return reply.send({
-        ...getPublicStatusCached(true),
-        message: "Named tunnel is already online."
-      });
-    }
-    const namedToken = getNamedTunnelToken();
-    const configPath = String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null;
-    let allowDiscoveredNamedBootstrap = false;
-    let discoveredTunnelName: string | null = null;
-    if (!namedToken && !configPath) {
-      const detected = await detectConfiguredNamedTunnel();
-      allowDiscoveredNamedBootstrap = detected.namedTunnelDetected;
-      discoveredTunnelName = detected.discoveredTunnelName;
-    }
-    if (!namedToken && !configPath && !allowDiscoveredNamedBootstrap) {
-      return reply.code(409).send({
-        ...getPublicStatus(),
-        lastError: "named_token_missing",
-        message: "Named tunnel requires a connector token. Add it in Config -> Tunnel & routing."
-      });
-    }
-    const defer = shouldDeferNamedTunnelToServiceControl();
-    if (defer.shouldDefer) {
-      reconcileNamedTunnelOwnership(true);
-      return reply.send({
-        ...getPublicStatus(),
-        message: "Service-managed cloudflared tunnel is active; app-managed named tunnel start skipped."
-      });
-    }
-    const cur = tunnelManager.status();
-    if ((cur.status === "ACTIVE" || cur.status === "STARTING") && cur.publicOrigin === cfg.publicOrigin) {
-      return reply.send({
-        ...getPublicStatus()
-      });
-    }
-    const status = await tunnelManager.startNamed({
-      publicOrigin: cfg.publicOrigin,
-      tunnelName: String(cfg.tunnelName || "").trim(),
-      configPath,
-      token: namedToken
-    });
-    if (status.status === "ACTIVE") {
-      return reply.send({
-        ...getPublicStatus(),
-        discoveredTunnelName
-      });
-    }
-    return reply.code(503).send({
-      ...getPublicStatus(),
-      lastError: status.lastError || "named_tunnel_failed"
-    });
-  }
-
-  // quick
-  if (isNamedConfigured()) {
-    return reply.code(409).send({
-      ...getPublicStatus(),
-      lastError: "named_configured",
-      message: "Named tunnel configured. Disable named mode to use a temporary link."
-    });
-  }
-
-  const cloudflared = getCloudflaredStatus();
-  const consent = getPublicSharingConsent();
-  const consentGranted = consent.granted || consent.dontAskAgain;
-  if (!cloudflared.available && !consentGranted) {
-    if (body?.consent !== true) {
-      return reply.code(409).send({ ...getPublicStatus(), lastError: "consent_required", consentRequired: true });
-    }
-    setPublicSharingConsent(true, body?.dontAskAgain === true);
-  }
-
-  const prep = await tunnelManager.ensureBinary();
-  if (!prep.ok) {
-    tunnelManager.setError("cloudflared_download_failed");
-    return reply.code(503).send({
-      ...getPublicStatus(),
-      lastError: "cloudflared_download_failed",
-      consentRequired: false
-    });
-  }
-  const status = getPublicStatus();
-  if (status.status === "online") return reply.send(status);
-  if (tunnelManager.status().status === "ERROR") {
-    await tunnelManager.stop();
-  }
-  tunnelManager.startQuick().catch(() => {});
-  return reply.send({ ...getPublicStatus(), status: "starting" });
-});
-
-app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  await tunnelManager.stop();
-  if (process.platform !== "win32") {
     try {
-      spawnSync("pkill", ["-f", "cloudflared tunnel run"], { stdio: "ignore" });
-    } catch {}
-  }
-  const status = getPublicStatus();
-  return reply.send({
-    ...status,
-    state: "STOPPED",
-    publicOrigin: null,
-    lastError: null
+      return await withNamedVerificationWindow(async (verification) => {
+        const detected = await detectConfiguredNamedTunnel();
+        const connected = await ensureNamedHealthFresh(cfg.publicOrigin, true).catch(() => false);
+        if (!namedVerificationStillCurrent(verification)) {
+          return reply.code(409).send({
+            ...getPublicStatusCached(true),
+            ok: false,
+            configured: true,
+            lastError: "named_verification_stale",
+            reason: "configuration_or_mode_changed",
+            message: "Named Tunnel verification was discarded because public routing changed while the check was running."
+          });
+        }
+        const status = getPublicStatusCached(true);
+        const identityVerified = Boolean(detected.identityVerified || status.tunnelState?.identityVerified);
+        const routeReachable = Boolean(detected.routeReachable || status.tunnelState?.routeReachable);
+        const routeVerified = Boolean(detected.routeVerified || status.tunnelState?.routeVerified);
+        const reason = connected
+          ? identityVerified
+            ? "identity_and_route_verified"
+            : "route_verified_identity_unavailable"
+          : detected.reason || "named_route_offline";
+        return reply.code(connected ? 200 : 409).send({
+          ...status,
+          ok: connected,
+          configured: true,
+          identityVerified,
+          routeReachable,
+          routeVerified,
+          tunnels: detected.tunnels,
+          configuredTunnelName: detected.configuredTunnelName,
+          namedTunnelDetected: detected.namedTunnelDetected,
+          discoveredTunnelName: detected.discoveredTunnelName,
+          ownership: status.tunnelState?.ownership || "unknown",
+          reason,
+          message: connected
+            ? identityVerified
+              ? "Named Tunnel identity and route verified. Start named tunnel to select it for public sharing."
+              : "Durable route verified to this Core instance. Start named tunnel to select it; the external service remains under operating-system control."
+            : routeReachable
+              ? "The configured host is reachable but does not terminate at this Core instance."
+              : "The configured host could not reach this Core public listener on 127.0.0.1:4010."
+        });
+      });
+    } catch (error: any) {
+      return reply.code(503).send({
+        ...getPublicStatus(),
+        lastError: "public_listener_unavailable",
+        message: String(error?.message || "Public listener could not start on 127.0.0.1:4010.")
+      });
+    }
   });
 });
 
+registerPublicStopRoute(app, {
+  requireAuth,
+  mutex: publicLifecycleMutex,
+  getMode: () => getPublicLinkState().mode,
+  getSelection: getPublicModeSelection,
+  stopTunnel: () => tunnelManager.stop(),
+  stopListener: () => publicServerLifecycle.stop(),
+  persistMode: () => setPublicSharingModeOverride("off"),
+  setAutoStart: setPublicSharingAutoStart,
+  getStatus: getPublicStatus
+});
+
 app.post("/api/public/consent/reset", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  clearPublicSharingConsent();
-  return reply.send(getPublicStatus());
+  return publicLifecycleMutex.runExclusive(async () => {
+    clearPublicSharingConsent();
+    return reply.send(getPublicStatus());
+  });
 });
 
 app.post("/api/public/named-token", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const detected = await detectConfiguredNamedTunnel();
-  if (detected.namedTunnelDetected) {
-    return reply.send({
-      ok: true,
-      stored: Boolean(getNamedTunnelToken()),
-      skipped: true,
-      reason: "existing_named_tunnel_detected",
-      tunnelName: detected.discoveredTunnelName || detected.configuredTunnelName
-    });
-  }
-  const body = (_req.body ?? {}) as { token?: string };
-  const token = String(body?.token || "").trim();
-  if (!token || token.length < 20) {
-    return reply.code(400).send({ error: "Invalid token" });
-  }
-  setNamedTunnelToken(token);
-  return reply.send({ ok: true, stored: true });
+  return publicLifecycleMutex.runExclusive(async () => {
+    const detected = await detectConfiguredNamedTunnel();
+    if (detected.namedTunnelDetected) {
+      return reply.send({
+        ok: true,
+        stored: Boolean(getNamedTunnelToken()),
+        skipped: true,
+        reason: "existing_named_tunnel_detected",
+        tunnelName: detected.discoveredTunnelName || detected.configuredTunnelName
+      });
+    }
+    const body = (_req.body ?? {}) as { token?: string };
+    const token = String(body?.token || "").trim();
+    if (!token || token.length < 20) {
+      return reply.code(400).send({ error: "Invalid token" });
+    }
+    setNamedTunnelToken(token);
+    invalidateNamedRuntimeCaches();
+    return reply.send({ ok: true, stored: true });
+  });
 });
 
 app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -22919,7 +23478,8 @@ app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async 
   const originCert = String(process.env.TUNNEL_ORIGIN_CERT || "").trim() || path.join(os.homedir(), ".cloudflared", "cert.pem");
   try {
     const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "token", tunnelName], {
-      env: { ...process.env, TUNNEL_ORIGIN_CERT: originCert }
+      env: { ...process.env, TUNNEL_ORIGIN_CERT: originCert },
+      timeout: NAMED_CONTROL_COMMAND_TIMEOUT_MS
     } as any);
     const token = String(stdout || "").trim();
     if (!token) return reply.code(500).send({ error: "Token generation failed" });
@@ -22930,24 +23490,41 @@ app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async 
 });
 
 app.post("/api/public/named-token/clear", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  clearNamedTunnelToken();
-  return reply.send({ ok: true, stored: false });
+  return publicLifecycleMutex.runExclusive(async () => {
+    clearNamedTunnelToken();
+    invalidateNamedRuntimeCaches();
+    return reply.send({ ok: true, stored: false });
+  });
 });
 
 app.post("/api/public/named/disable", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  setNamedTunnelDisabled(true);
-  return reply.send({ ok: true, disabled: true });
+  return publicLifecycleMutex.runExclusive(async () => {
+    if (tunnelManager.activeTransport() === "named") {
+      await tunnelManager.stop();
+    }
+    setPublicSharingModeOverride("off");
+    setPublicSharingAutoStart(false);
+    setNamedTunnelDisabled(true);
+    invalidateNamedRuntimeCaches();
+    await publicServerLifecycle.stop();
+    return reply.send({ ok: true, disabled: true });
+  });
 });
 
 app.post("/api/public/named/enable", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  setNamedTunnelDisabled(false);
-  return reply.send({ ok: true, disabled: false });
+  return publicLifecycleMutex.runExclusive(async () => {
+    setNamedTunnelDisabled(false);
+    invalidateNamedRuntimeCaches();
+    return reply.send({ ok: true, disabled: false });
+  });
 });
 
 app.post("/api/public/autostart", { preHandler: requireAuth }, async (req: any, reply: any) => {
-  const body = (req.body ?? {}) as { enabled?: boolean };
-  setPublicSharingAutoStart(Boolean(body.enabled));
-  return reply.send(getPublicStatus());
+  return publicLifecycleMutex.runExclusive(async () => {
+    const body = (req.body ?? {}) as { enabled?: boolean };
+    setPublicSharingAutoStart(Boolean(body.enabled));
+    return reply.send(getPublicStatus());
+  });
 });
 
 // Buyer library (entitlements)
@@ -28148,7 +28725,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
 
   // Best-effort: trigger public sharing on publish
   try {
-    await triggerPublicStartBestEffort();
+    triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
   } catch {}
 
   const providerNodeIdForReceipt = delegatedPublishRecord?.providerNodeId || (isNetworkProviderConfigured(providerCfg) ? providerCfg.providerNodeId : null);
@@ -30517,8 +31094,6 @@ async function handlePublicContent(req: any, reply: any) {
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest) return notFound(reply, "Manifest not found");
-  // Audience signal: public content-open surface (best-effort, deduped, non-blocking).
-  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   const commerceAuthority = await resolveCommerceAuthorityForUser(content.ownerUserId);
   const owner = await prisma.user.findUnique({
     where: { id: content.ownerUserId },
@@ -30547,7 +31122,10 @@ async function handlePublicContent(req: any, reply: any) {
     if (/^https?:\/\//i.test(v)) return v;
     return baseUrl ? `${baseUrl}/public/content/${contentId}/preview-file?objectKey=${encodeURIComponent(v)}` : null;
   };
-  const previewCandidate = normalizePreview((manifest.json as any)?.preview || null);
+  const manifestPreviewKey = asString((manifest.json as any)?.preview || "").trim();
+  const previewCandidate = manifestPreviewKey && isStablePreviewObjectKey(contentId, manifestPreviewKey) &&
+    manifestPreviewKey !== getPrimaryFileObjectKeyFromManifest(manifest.json)
+    ? normalizePreview(manifestPreviewKey) : null;
   const shouldPreview = shouldShowPreview({
     isFree: freeContent,
     priceSats: content.priceSats,
@@ -30556,6 +31134,18 @@ async function handlePublicContent(req: any, reply: any) {
   });
   const manifestJson = (manifest.json || {}) as any;
   const primaryObjectKey = getPrimaryFileObjectKeyFromManifest(manifestJson);
+  const primaryMime = asString(
+    (Array.isArray(manifestJson.files)
+      ? manifestJson.files.find((file: any) => (file?.path || file?.objectKey) === primaryObjectKey)?.mime
+      : null) || ""
+  );
+  const primaryFile = primaryObjectKey
+    ? await prisma.contentFile.findUnique({
+        where: { contentId_objectKey: { contentId, objectKey: primaryObjectKey } },
+        select: { objectKey: true, mime: true }
+      })
+    : null;
+  const primaryFileMime = getPrimaryFileMime(manifestJson, primaryFile ? [primaryFile] : []);
   let buyerSessionId: string | null = null;
   try {
     const buyerSession = await resolveBuyerReadSession(req, reply);
@@ -30564,9 +31154,18 @@ async function handlePublicContent(req: any, reply: any) {
     buyerSessionId = null;
   }
   const fullMediaUrl =
-    baseUrl && hasFull && primaryObjectKey && (freeContent || buyerSessionId)
+    baseUrl && hasFull && primaryObjectKey && (freeContent || buyerSessionId) &&
+    (isEncryptedHlsPlaybackEnabled() || !isProtectedStreamOnlyMedia({
+      paidContent: !freeContent && content.priceSats != null && content.priceSats > 0n,
+      deliveryMode: (content as any).deliveryMode || null,
+      mime: primaryMime
+    }))
       ? appendPublicDeliveryToken(
-          `${baseUrl}/public/content/${contentId}/preview-file?objectKey=${encodeURIComponent(primaryObjectKey)}`,
+          `${baseUrl}/public/content/${contentId}/${isEncryptedHlsPlaybackEnabled() && isProtectedStreamOnlyMedia({
+            paidContent: !freeContent && content.priceSats != null && content.priceSats > 0n,
+            deliveryMode: (content as any).deliveryMode || null,
+            mime: primaryMime
+          }) ? "hls/master.m3u8" : "preview-file"}?objectKey=${encodeURIComponent(primaryObjectKey)}`,
           createPublicDeliveryToken({
             contentId,
             objectKey: primaryObjectKey,
@@ -30576,11 +31175,13 @@ async function handlePublicContent(req: any, reply: any) {
         )
       : null;
 
+  reply.header("Cache-Control", "no-store");
   return reply.send({
     contentId: content.id,
     title: content.title,
     description: content.description || null,
     primaryTopic: normalizePrimaryTopic((content as any).primaryTopic),
+    primaryFileMime,
     creatorHandle: resolveCreatorHandleForDiscoverable(owner || null),
     creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload(owner?.avatarUrl || null, canonicalOrigin),
     storefrontStatus: content.storefrontStatus,
@@ -32157,6 +32758,8 @@ async function handlePublicDiscoverySignals(req: any, reply: any) {
 
 async function handlePublicDiscoverableContent(req: any, reply: any) {
   applyFanReadCors(req, reply);
+  // This buyer-aware projection is read fresh; do not cache MIME or ownership at the edge.
+  reply.header("Cache-Control", "no-store");
   const query = (req.query ?? {}) as { topic?: string; limit?: string | number; cursor?: string };
   const topic = normalizePrimaryTopic(query.topic);
   if (query.topic != null && !topic) {
@@ -32205,7 +32808,20 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
           }
         : {})
     } as any,
-    include: {
+    // Avoid hydrating unused publication/proof JSON and private content fields for every card.
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      type: true,
+      primaryTopic: true,
+      status: true,
+      deletedAt: true,
+      priceSats: true,
+      deliveryMode: true,
+      createdAt: true,
+      updatedAt: true,
+      files: { select: { objectKey: true, mime: true } },
       owner: { select: { displayName: true, email: true, avatarUrl: true, ...PUBLIC_PROFILE_THEME_USER_SELECT } },
       credits: { select: { id: true } },
       splitVersions: {
@@ -32228,6 +32844,14 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
   });
 
   const pageRows = rows.slice(0, limit);
+  // Match offer lookup by contentId, including legacy records without manifestId.
+  const manifests = pageRows.length
+    ? await prisma.manifest.findMany({
+        where: { contentId: { in: pageRows.map((row) => row.id) } },
+        select: { contentId: true, json: true }
+      })
+    : [];
+  const manifestByContentId = new Map(manifests.map((manifest) => [manifest.contentId, manifest.json]));
   const entitlementByContentId = new Map<string, boolean>();
   if (buyerId && pageRows.length) {
     const contentIds = pageRows.map((row) => row.id);
@@ -32338,6 +32962,7 @@ async function handlePublicDiscoverableContent(req: any, reply: any) {
         creatorAvatarUrl: resolveCreatorAvatarUrlForPublicPayload((row as any).owner?.avatarUrl || null, canonicalOrigin),
         profileTheme: publicProfileThemeFromUser((row as any).owner),
         contentType: row.type,
+        primaryFileMime: getPrimaryFileMime(manifestByContentId.get(row.id), row.files),
         primaryTopic: normalizePrimaryTopic((row as any).primaryTopic),
         coverUrl,
         previewUrl,
@@ -33199,7 +33824,7 @@ let profileServiceModeCache:
     }
   | null = null;
 let creatorSignalNodeDetailsInflight: Promise<CreatorSignalNodeDetails> | null = null;
-type ProfileServiceMode = "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+type ProfileServiceMode = ParticipationMode;
 let profileServiceModeInflight: Promise<ProfileServiceMode> | null = null;
 
 async function getCachedCreatorSignalNodeDetails(): Promise<CreatorSignalNodeDetails> {
@@ -34025,7 +34650,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
         }
       }
     }
-    if (!objectKey) {
+    if (!objectKey && isFreeContent({ priceSats: content.priceSats })) {
       objectKey = (typeof primaryFileId === "string" && primaryFileId) || "";
     }
     if (!objectKey) return notFound(reply, "preview not available");
@@ -34044,7 +34669,10 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const coverObjectKey = asString(getCoverAssetFromManifest(manifestJsonForAccess)?.path || manifestJsonForAccess?.cover || "").trim();
   const freeContent = isFreeContent({ priceSats: content.priceSats });
   const paidContent = !freeContent && content.priceSats != null && content.priceSats > 0n;
-  const isPublicPreviewAsset = Boolean(previewObjectKey && objectKey === previewObjectKey);
+  const isPublicPreviewAsset = Boolean(
+    previewObjectKey && isStablePreviewObjectKey(contentId, previewObjectKey) &&
+    previewObjectKey !== getPrimaryFileObjectKeyFromManifest(manifestJsonForAccess) && objectKey === previewObjectKey
+  );
   const isPublicCoverAsset = Boolean(coverObjectKey && objectKey === coverObjectKey);
   let deliveryAccess: "preview" | "full" | null = null;
   if (deliveryToken) {
@@ -34068,13 +34696,11 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const mime = file?.mime || derivedPreviewMime || "application/octet-stream";
 
   if (
-    isEncryptedHlsPlaybackEnabled() &&
     isProtectedStreamOnlyMedia({
       paidContent,
       deliveryMode: (content as any).deliveryMode || null,
       mime
     }) &&
-    deliveryAccess === "full" &&
     !isPublicPreviewAsset &&
     !isPublicCoverAsset
   ) {
@@ -34107,7 +34733,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   reply.header("Accept-Ranges", "bytes");
   reply.header("X-ContentBox-Access", accessMode);
 
-  reply.type(mime);
+  reply.type(getStoredFileMime(manifestJsonForAccess, objectKey, file ? [file] : []) || derivedPreviewMime || "application/octet-stream");
   const parsed = parseRangeHeader(typeof range === "string" ? range : undefined, effectiveSize);
   if (parsed.kind === "invalid") {
     reply.code(416);
@@ -34168,9 +34794,7 @@ async function loadAuthorizedHlsContext(req: any, reply: any): Promise<
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
-  const hls =
-    getHlsInfoFromManifest((manifest?.json as any) || {}, sourceObjectKey) ||
-    (await ensureEncryptedHlsRenditionOnce(content, files, manifest));
+  const hls = await ensureEncryptedHlsRenditionOnce(content, files, manifest);
   if (!hls || hls.sourceObjectKey !== sourceObjectKey) {
     return { ok: false, response: reply.code(503).send({ error: "Encrypted stream is not ready", code: "HLS_NOT_READY" }) };
   }
@@ -34215,11 +34839,11 @@ async function handlePublicHlsPlaylist(req: any, reply: any) {
 async function handlePublicHlsKey(req: any, reply: any) {
   const context = await loadAuthorizedHlsContext(req, reply);
   if (!context.ok) return context.response;
-  const resolved = resolveDeliveryPath(context.content.repoPath, context.hls.keyObjectKey);
-  if (!resolved.ok || !fsSync.existsSync(resolved.absPath)) return notFound(reply, "Stream key not found");
+  const keyPath = privateHlsKeyPath(context.content.id, context.sourceObjectKey);
+  if (!fsSync.existsSync(keyPath)) return notFound(reply, "Stream key not found");
   reply.type("application/octet-stream");
   reply.header("Cache-Control", "no-store");
-  return reply.send(fsSync.createReadStream(resolved.absPath));
+  return reply.send(fsSync.createReadStream(keyPath));
 }
 
 async function handlePublicHlsSegment(req: any, reply: any) {
@@ -34751,6 +35375,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   }
   const safeAvatarUrl = avatarSrc ? escHtml(avatarSrc) : "";
+  const creatorProfileBrowserTitle = asString(user.displayName || "").trim() || "Certifyd Creator Profile";
   const safeHandle = escHtml(`@${requested}`);
   const safeNodeUrl = escHtml(nodeUrl);
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
@@ -35716,7 +36341,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   })();
   const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
-  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.svg?v=20260601d";
+  const creatorProfileFaviconHref = safeAvatarUrl || safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.svg?v=20260601d";
 
   const profileMarkupStartMs = Date.now();
   const html = `<!doctype html>
@@ -35724,9 +36349,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Certifyd Creator Profile</title>
-  <link rel="icon" type="image/svg+xml" href="${creatorProfileFaviconHref}" />
-  <link rel="shortcut icon" type="image/svg+xml" href="${creatorProfileFaviconHref}" />
+  <title>${escHtml(creatorProfileBrowserTitle)}</title>
+  <link rel="icon" href="${creatorProfileFaviconHref}" />
+  <link rel="shortcut icon" href="${creatorProfileFaviconHref}" />
   <link rel="apple-touch-icon" href="${creatorProfileFaviconHref}" />
   <style>
     :root {
@@ -37433,9 +38058,6 @@ async function handleBuyPage(req: any, reply: any) {
     }
   });
   if (!content) return notFound(reply, "Not found");
-  // Server-side audience logging so Basic posture still records views even if
-  // client-side interaction fetch is skipped/interrupted.
-  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   const sellerDisplayName = content.owner?.displayName || content.owner?.email || null;
   const sellerLightningAddress = await resolveSellerLightningAddress(content.ownerUserId);
   const ownerAppearance = buildPublicAppearanceThemeCss(content.owner || null);
@@ -37449,8 +38071,12 @@ async function handleBuyPage(req: any, reply: any) {
     canonicalOrigin,
     `/oembed?url=${encodeURIComponent(canonicalBuyUrl || `/buy/${encodeURIComponent(content.id)}`)}`
   );
-  const initialMetaTitle = `${content.title || "Certifyd work"} · Certifyd`;
+  const workTitle = content.title || "Certifyd work";
+  const creatorName = sellerDisplayName || "Certifyd creator";
+  const browserTitle = `${workTitle} — ${creatorName}`;
+  const socialTitle = workTitle;
   const initialMetaDescription = content.description || `${sellerDisplayName || "A Certifyd creator"} work on Certifyd.`;
+  const buyPageFaviconHref = sellerAvatarUrl || "/certifyd-tab-icon.svg?v=20260601d";
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -37458,18 +38084,19 @@ async function handleBuyPage(req: any, reply: any) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="${escHtml(initialMetaDescription)}" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="${escHtml(initialMetaTitle)}" />
+  <meta property="og:title" content="${escHtml(socialTitle)}" />
   <meta property="og:description" content="${escHtml(initialMetaDescription)}" />
   <meta property="og:url" content="${escHtml(canonicalBuyUrl)}" />
   <meta property="og:image" content="${escHtml(buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`))}" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="${escHtml(initialMetaTitle)}" />
+  <meta name="twitter:title" content="${escHtml(socialTitle)}" />
   <meta name="twitter:description" content="${escHtml(initialMetaDescription)}" />
   <meta name="twitter:image" content="${escHtml(buildPublicUrlFromOrigin(canonicalOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`))}" />
-  <link rel="alternate" type="application/json+oembed" href="${escHtml(oembedUrl)}" title="${escHtml(initialMetaTitle)}" />
-  <link rel="icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
-  <link rel="shortcut icon" type="image/svg+xml" href="/certifyd-tab-icon.svg?v=20260601d" />
-  <title>${escHtml(initialMetaTitle)}</title>
+  <link rel="alternate" type="application/json+oembed" href="${escHtml(oembedUrl)}" title="${escHtml(socialTitle)}" />
+  <link rel="icon" href="${escHtml(buyPageFaviconHref)}" />
+  <link rel="shortcut icon" href="${escHtml(buyPageFaviconHref)}" />
+  <link rel="apple-touch-icon" href="${escHtml(buyPageFaviconHref)}" />
+  <title>${escHtml(browserTitle)}</title>
   <style>
     :root { color-scheme: dark; ${ownerAppearance.css} }
     * { box-sizing: border-box; }
@@ -38136,11 +38763,23 @@ async function handleBuyPage(req: any, reply: any) {
       showPlayer: false
     };
   }
+  let audienceViewSent = false;
+  let audienceViewWaiting = false;
   function logAudienceView(){
-    if (!contentId) return;
+    if (!contentId || audienceViewSent) return;
+    if (document.visibilityState !== "visible") {
+      if (!audienceViewWaiting) {
+        audienceViewWaiting = true;
+        document.addEventListener("visibilitychange", logAudienceView);
+      }
+      return;
+    }
+    if (audienceViewWaiting) document.removeEventListener("visibilitychange", logAudienceView);
+    audienceViewSent = true;
     fetch(apiBase + "/public/interactions", {
       method: "POST",
       credentials: "include",
+      keepalive: true,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contentId, eventType: "view" })
     }).catch(()=>{});
@@ -38510,10 +39149,20 @@ async function handleBuyPage(req: any, reply: any) {
     "</details>";
   }
 
+  let attributionRequest = 0;
+  let attributionController = null;
+  window.addEventListener("pagehide", () => {
+    attributionRequest++;
+    if (attributionController) attributionController.abort();
+  });
   async function loadAttribution(){
     const cid = resolveAttributionContentId();
     if (!cid) return;
+    const request = ++attributionRequest;
+    const pageUrl = location.href;
+    if (attributionController) attributionController.abort();
     const ctl = new AbortController();
+    attributionController = ctl;
     const timer = setTimeout(() => ctl.abort(), 2500);
     try {
       const res = await fetch("/public/content/" + encodeURIComponent(cid) + "/attribution", {
@@ -38522,12 +39171,14 @@ async function handleBuyPage(req: any, reply: any) {
       });
       if (!res.ok) return;
       const data = await res.json().catch(() => null);
-      if (!data || !data.primaryCreator) return;
+      if (!data || !data.primaryCreator || ctl.signal.aborted || request !== attributionRequest ||
+          pageUrl !== location.href || cid !== resolveAttributionContentId()) return;
       attributionData = data;
       renderAttribution();
     } catch {}
     finally {
       clearTimeout(timer);
+      if (attributionController === ctl) attributionController = null;
     }
   }
 
@@ -38918,49 +39569,90 @@ async function handleBuyPage(req: any, reply: any) {
       (playback.isAudio ? '<audio id="player" controls' + playback.controlsList + blockContextMenu + ' preload="metadata" src="' + playback.src + '"></audio>' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "image" ? '<img id="player" src="' + playback.src + '" alt="Preview image" loading="lazy" referrerpolicy="no-referrer" />' : '') +
       (!playback.isVideo && !playback.isAudio && playback.kind === "file" ? '<a class="muted" href="' + playback.src + '" target="_blank" rel="noreferrer">Open preview</a>' : '') +
+      ((playback.isVideo || playback.isAudio) ? '<div id="playbackStatus" class="muted" role="status" hidden></div>' : '') +
     '</div>';
   }
 
-  function bindPlaybackSourceRecovery(playback, entitlement, owned){
+  function bindPlaybackSourceRecovery(playback, entitlement){
     if (!playback?.src) return;
     const player = document.getElementById("player");
     if (!player || typeof player.setAttribute !== "function") return;
-    let refreshing = false;
-    const refreshSource = async () => {
-      if (refreshing) return;
-      refreshing = true;
-      const nextStatus = document.getElementById("status");
-      if (nextStatus) nextStatus.textContent = playback.mode === "full" ? "Refreshing access..." : "Refreshing preview...";
-      try {
-        const refreshedOffer = await fetchOfferWithAccessProof().catch(() => fetchJson("/buy/content/" + contentId + "/offer").catch(() => null));
-        if (!refreshedOffer) return;
-        currentOffer = refreshedOffer;
-        const nextToken = entitlement?.token || receiptToken || null;
-        const nextPlayback = resolveAuthorizedPlayback(refreshedOffer, {
-          entitlement,
-          owned: Boolean(owned || refreshedOffer?.owned),
-          token: nextToken
-        });
-        if (nextPlayback?.src && String(player.getAttribute("src") || "") !== nextPlayback.src) {
-          player.setAttribute("src", nextPlayback.src);
-          try { player.controls = true; } catch {}
-          try { if (typeof player.load === "function") player.load(); } catch {}
-        }
-        if (nextStatus) nextStatus.textContent = playback.mode === "full" ? "Access ready." : "Preview ready.";
-      } finally {
-        window.setTimeout(() => { refreshing = false; }, 500);
-      }
+    const status = document.getElementById("playbackStatus");
+    let refreshAttempted = false;
+    let probedSource = "";
+    let probePromise = null;
+    const showStatus = (message) => {
+      if (!status) return;
+      status.textContent = message;
+      status.hidden = !message;
     };
-    player.addEventListener("error", refreshSource);
-    player.addEventListener("stalled", () => {
-      if (Number(player.readyState || 0) === 0) refreshSource();
+    const probeStatus = (src) => {
+      if (probePromise && probedSource === src) return probePromise;
+      probedSource = src;
+      probePromise = (async () => {
+        try {
+          const url = new URL(src, window.location.href);
+          if (url.origin !== window.location.origin) return null;
+          const response = await fetch(url.href, {
+            method: "GET", credentials: "include", cache: "no-store", headers: { Range: "bytes=0-0" }
+          });
+          if (response.body) await response.body.cancel().catch(() => {});
+          return response.status;
+        } catch {
+          return null;
+        }
+      })();
+      return probePromise;
+    };
+    player.addEventListener("playing", () => showStatus(""));
+    player.addEventListener("error", async () => {
+      const source = String(player.getAttribute("src") || "");
+      const code = player.error?.code || 0;
+      if (!source || code === 1) return;
+      if (code === 3) {
+        showStatus("This media could not play in your browser. Try another browser.");
+        return;
+      }
+      const httpStatus = await probeStatus(source);
+      if (String(player.getAttribute("src") || "") !== source) return;
+      if ((httpStatus === 401 || httpStatus === 403) && !refreshAttempted) {
+        refreshAttempted = true;
+        showStatus("Refreshing playback access...");
+        try {
+          const refreshedOffer = await fetchOfferWithAccessProof();
+          const nextPlayback = resolveAuthorizedPlayback(refreshedOffer, {
+            entitlement,
+            owned: Boolean(refreshedOffer?.owned),
+            token: entitlement?.token || receiptToken || null
+          });
+          if (String(player.getAttribute("src") || "") !== source) return;
+          if (playback.mode === "full" && !refreshedOffer?.isFree && !refreshedOffer?.hasFullAccess) {
+            showStatus("Playback access could not be refreshed. Reload this page to try again.");
+            return;
+          }
+          if (nextPlayback?.src && nextPlayback.mode === playback.mode && nextPlayback.src !== source) {
+            currentOffer = refreshedOffer;
+            player.setAttribute("src", nextPlayback.src);
+            if (typeof player.load === "function") player.load();
+            showStatus("");
+            return;
+          }
+        } catch {}
+        showStatus("Playback access could not be refreshed. Reload this page to try again.");
+        return;
+      }
+      if (httpStatus === 401 || httpStatus === 403) {
+        showStatus("Playback access could not be refreshed. Reload this page to try again.");
+      } else if (httpStatus === 404 || (httpStatus !== null && httpStatus >= 500)) {
+        showStatus("This media is unavailable right now. Try again later.");
+      } else if (code === 4 && httpStatus !== null && httpStatus >= 200 && httpStatus < 300) {
+        showStatus("This media could not play in your browser. Try another browser.");
+      } else if (code === 4) {
+        showStatus("This media could not play here. Try again or try another browser.");
+      } else {
+        showStatus("Playback was interrupted. Try Play again.");
+      }
     });
-    player.addEventListener("pointerdown", () => {
-      if (Number(player.readyState || 0) === 0) refreshSource();
-    });
-    window.setTimeout(() => {
-      if (Number(player.readyState || 0) === 0) refreshSource();
-    }, 5000);
   }
 
   function bindPreviewLimit(playback, isPaid){
@@ -39050,6 +39742,7 @@ async function handleBuyPage(req: any, reply: any) {
         renderTipUnlockDetails(offer, null, Boolean(offer?.owned)) +
       "</div>";
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+    bindPlaybackSourceRecovery(playback, null);
     renderAttribution();
   }
 
@@ -39204,7 +39897,7 @@ async function handleBuyPage(req: any, reply: any) {
         };
       }
     }
-    bindPlaybackSourceRecovery(playback, entitlement, owned);
+    bindPlaybackSourceRecovery(playback, entitlement);
     bindPreviewLimit(playback, isPaid);
     renderAttribution();
     if (token) {
@@ -39588,20 +40281,18 @@ async function handleBuyPage(req: any, reply: any) {
 
   if (productTier === "basic") {
     logAudienceView();
-    Promise.all([
-      fetchJson("/buy/content/" + contentId + "/offer"),
-      loadAttribution().catch(()=>null)
-    ])
-      .then(([offer]) => renderBasicOffer(offer))
+    void loadAttribution();
+    fetchJson("/buy/content/" + contentId + "/offer")
+      .then((offer) => renderBasicOffer(offer))
       .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
     return;
   }
 
   const offerPromise = fetchJson("/buy/content/" + contentId + "/offer");
   const buyerBootstrapPromise = hydrateFromDurableReceipt().finally(() => fetchBuyerMe().catch(()=>{}));
-  const attributionPromise = loadAttribution().catch(()=>null);
+  void loadAttribution();
 
-  Promise.all([offerPromise, buyerBootstrapPromise, attributionPromise])
+  Promise.all([offerPromise, buyerBootstrapPromise])
     .then(async ([offer]) => {
       currentOffer = offer;
       livePaymentProof = null;
@@ -40301,9 +40992,6 @@ async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
-  // Additional server-side audience logging path for Basic posture reliability.
-  // Deduping is handled in recordAudienceViewEvent by session/content/time window.
-  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
     const dbg = await prisma.contentItem.findUnique({
       where: { id: contentId },
@@ -40334,10 +41022,7 @@ async function handlePublicOffer(req: any, reply: any) {
   const publishProof = manifest ? findLatestContentPublishProofForContent(contentId, manifest.sha256) : null;
 
   const manifestJson = (manifest?.json || {}) as any;
-  let primaryFileId =
-    (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
-    (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
-    null;
+  let primaryFileId = getPrimaryFileObjectKeyFromManifest(manifestJson);
   if (!primaryFileId && allowDraftPreview) {
     const latestFile = await prisma.contentFile.findFirst({
       where: { contentId },
@@ -40345,15 +41030,19 @@ async function handlePublicOffer(req: any, reply: any) {
     });
     primaryFileId = latestFile?.objectKey || null;
   }
-  let primaryFileMime: string | null = null;
-  if (primaryFileId) {
-    const f = await prisma.contentFile.findFirst({ where: { contentId, objectKey: primaryFileId } });
-    primaryFileMime = f?.mime || null;
-  }
+  const primaryFile = primaryFileId
+    ? await prisma.contentFile.findUnique({
+        where: { contentId_objectKey: { contentId, objectKey: primaryFileId } },
+        select: { objectKey: true, mime: true }
+      })
+    : null;
+  const primaryFileMime = getPrimaryFileMime(manifestJson, primaryFile ? [primaryFile] : []);
+  const freeContent = isFreeContent({ priceSats: content.priceSats });
+  const manifestPreviewObjectKey = asString(manifestJson?.preview || "").trim();
   const previewObjectKey =
-    (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
-    (typeof primaryFileId === "string" && primaryFileId) ||
-    null;
+    manifestPreviewObjectKey && manifestPreviewObjectKey !== primaryFileId && isStablePreviewObjectKey(contentId, manifestPreviewObjectKey)
+      ? manifestPreviewObjectKey
+      : freeContent ? primaryFileId : null;
   const coverAsset = getCoverAssetFromManifest(manifestJson);
   const coverObjectKey = coverAsset?.path || null;
 
@@ -40365,7 +41054,6 @@ async function handlePublicOffer(req: any, reply: any) {
 
   const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
   const rawPriceSats = content.priceSats ?? null;
-  const freeContent = isFreeContent({ priceSats: rawPriceSats });
   const hasStoredPrice = rawPriceSats != null && rawPriceSats > 0n;
   const paidCommerceActive = authority.authority;
   const priceSats = hasStoredPrice ? rawPriceSats : null;
@@ -40391,7 +41079,10 @@ async function handlePublicOffer(req: any, reply: any) {
       receiptId: receiptIdQuery || null
     }).catch(() => null);
     const intent = receiptContext?.intent as any;
-    if (intent && intent.contentId === contentId && String(intent.status || "").toLowerCase() === "paid") {
+    if (
+      intent && intent.contentId === contentId && String(intent.status || "").toLowerCase() === "paid" &&
+      Boolean(receiptTokenQuery && receiptContext?.token.matchesCurrent && receiptContext.token.expiresAt && !receiptContext.token.expired)
+    ) {
       receiptProofIntent = intent;
       receiptProofToken = asString(intent.receiptToken || receiptTokenQuery || "").trim() || null;
       entitled = true;
@@ -40399,7 +41090,7 @@ async function handlePublicOffer(req: any, reply: any) {
   }
   if (buyerId) {
     await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
-    entitled = await hasAccess(buyerId, contentId);
+    entitled = entitled || await hasAccess(buyerId, contentId);
   }
 
   let latestEntitlement: any | null = null;
@@ -40496,11 +41187,19 @@ async function handlePublicOffer(req: any, reply: any) {
           objectKey: primaryFileId,
           access: "full",
           buyerSessionId: freeContent || receiptProofIntent ? null : buyerSessionId,
-          receiptProofAccess: Boolean(!freeContent && receiptProofIntent)
+          receiptProofAccess: Boolean(!freeContent && receiptProofIntent),
+          receiptIntentId: receiptProofIntent?.id,
+          receiptTokenDigest: receiptProofIntent && receiptProofToken
+            ? crypto.createHash("sha256").update(receiptProofToken).digest("hex") : undefined
         })
       : null;
   const fullMediaUrl =
-    baseUrl && primaryFileId && fullDeliveryToken
+    baseUrl && primaryFileId && fullDeliveryToken &&
+    (isEncryptedHlsPlaybackEnabled() || !isProtectedStreamOnlyMedia({
+      paidContent: hasStoredPrice,
+      deliveryMode: (content as any).deliveryMode || null,
+      mime: primaryFileMime || ""
+    }))
       ? appendPublicDeliveryToken(
           shouldUseEncryptedHls
             ? `${baseUrl}/public/content/${encodeURIComponent(content.id)}/hls/master.m3u8?objectKey=${encodeURIComponent(primaryFileId)}`
@@ -40521,6 +41220,7 @@ async function handlePublicOffer(req: any, reply: any) {
 	    previewLimitSeconds: 20
 	  });
 
+  reply.header("Cache-Control", "no-store");
   return reply.send({
     contentId: content.id,
     title: content.title,
@@ -40585,7 +41285,10 @@ async function handlePublicContentAccessStatus(req: any, reply: any) {
       receiptId: receiptIdQuery || null
     }).catch(() => null);
     const intent = receiptContext?.intent as any;
-    if (intent && String(intent.status || "").toLowerCase() === "paid") {
+    if (
+      intent && String(intent.status || "").toLowerCase() === "paid" &&
+      Boolean(receiptTokenQuery && receiptContext?.token.matchesCurrent && receiptContext.token.expiresAt && !receiptContext.token.expired)
+    ) {
       const intentContentId = asString(intent.contentId || "").trim();
       const intentManifestSha = asString(intent.manifestSha256 || "").trim();
       let matchesContent = intentContentId === contentId;
@@ -40888,6 +41591,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         ipHash: buyerScopeHash
       }
     });
+    if (buyerId) await bindPurchaseBuyer(prisma, intent.id, buyerId);
     const intentWithReceipt = await ensureStableReceiptIdForIntent(intent as any);
 
     let lightningAddress: string | null = null;
@@ -41809,6 +42513,9 @@ async function resolveBuyerIdFromIntent(intent: any): Promise<string | null> {
   const direct = String(intent?.buyerId || "").trim();
   if (direct) return direct;
 
+  const boundBuyer = await readPurchaseBuyerBinding(prisma, String(intent?.id || ""));
+  if (boundBuyer) return boundBuyer;
+
   // Current public-commerce path: recover buyer binding through provider-intent
   // metadata (buyerSessionId) when available.
   const paymentIntentId = String(intent?.id || "").trim();
@@ -42408,9 +43115,14 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
   const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
   if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
 
-  try {
-    await finalizePurchase(latestIntent.id, prisma);
-  } catch {}
+  const fulfillment = await recoverPurchaseFulfillment(prisma, latestIntent.id);
+  if (fulfillment.status === "pending") return reply.code(409).send({
+    status: "paid", code: "PURCHASE_FULFILLMENT_PENDING",
+    message: "Payment received. Fulfillment is pending; do not pay again."
+  });
+  if (fulfillment.status === "legacy_untracked") {
+    try { await finalizePurchase(latestIntent.id, prisma); } catch {}
+  }
 
   // Entitlement is now keyed by buyerId from cookie session.
 
@@ -43889,7 +44601,6 @@ async function handlePublicContentFile(req: any, reply: any) {
   }
 
   if (
-    isEncryptedHlsPlaybackEnabled() &&
     isProtectedStreamOnlyMedia({
       paidContent: !freeContent && priceSats > 0n,
       deliveryMode: (content as any).deliveryMode || null,
@@ -43914,7 +44625,11 @@ async function handlePublicContentFile(req: any, reply: any) {
   const range = req.headers.range as string | undefined;
 
   reply.header("Accept-Ranges", "bytes");
-  reply.type(mime || "application/octet-stream");
+  const storedFile = await prisma.contentFile.findUnique({
+    where: { contentId_objectKey: { contentId: content.id, objectKey } },
+    select: { objectKey: true, mime: true }
+  });
+  reply.type(getStoredFileMime(manifestJson, objectKey, storedFile ? [storedFile] : []) || "application/octet-stream");
   reply.header("X-ContentBox-Access", accessMode);
 
   const effectiveSize = fileSize;
@@ -47227,7 +47942,11 @@ async function bridgeDirectSaleToParticipantPayouts(
     } catch (err: any) {
       if (!isMissingParticipantPayoutTableError(err)) throw err;
     }
+    const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
     const settledAfterBridgeGuard =
+      // Preparation is deliberately skipped when this subsystem is disabled.
+      // Execution disabled alone still requires the allocation snapshot.
+      payoutRuntime.participantPayoutsEnabled &&
       settled.payoutExecutionMode === "participant" &&
       settled.status === "paid" &&
       allocationCount === 0
@@ -47272,9 +47991,27 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
   const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
   if (!content) throw new Error("Content not found");
 
+  const finalizeLegacy = () => finalizePurchase(intentId, prisma).catch((error) => {
+    // Do not swallow an allocation failure and then report successful fulfillment
+    // or enter the payout bridge. The payment already recorded as paid stays paid.
+    if (error?.code === SETTLEMENT_ALLOCATION_INVALID) {
+      throw Object.assign(new Error("Payment received. Required settlement allocations are invalid; fulfillment is pending. Do not pay again."), {
+        code: SETTLEMENT_ALLOCATION_INVALID, statusCode: 409
+      });
+    }
+    return null;
+  });
+
+  const tracked = await prisma.auditEvent.findUnique({ where: { id: `purchase-fulfillment:${intentId}` } });
+  if (tracked) {
+    const fulfillment = await recoverPurchaseFulfillment(prisma, intentId);
+    const sale = await prisma.sale.findUnique({ where: { intentId } });
+    return { sale, receiptToken: fulfillment.receiptToken || intent.receiptToken, fulfillment };
+  }
+
   const existingSale = await prisma.sale.findUnique({ where: { intentId } });
   if (intent.status === "paid" && existingSale && !skipSettlement) {
-    const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    const finalized = await finalizeLegacy();
     await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_existing_sale");
     return { sale: existingSale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
@@ -47300,7 +48037,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
       });
     }
 
-    const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    const finalized = await finalizeLegacy();
     await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_basic_skip_settlement");
     return { sale: null, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
@@ -47359,7 +48096,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
     });
   });
 
-  const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+  const finalized = await finalizeLegacy();
   await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_sale_upsert");
   // TODO(certifyd-entitlement-boundary): delegated/provider invoice execution must not become entitlement truth ownership.
   return { sale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
@@ -49583,84 +50320,209 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
 }
 
 app.get("/audience/summary", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const query = parseAudienceQuery(req.query);
+  if (!query) return reply.code(400).send({ error: "Invalid audience query", code: "INVALID_AUDIENCE_QUERY", allowedRanges: ["7d", "30d", "90d", "all"] });
   const userId = (req.user as JwtUser).sub;
-  const productTier = resolveProductTier().productTier;
-  const isBasicPosture = productTier === "basic";
-  const ownedContent = await prisma.contentItem.findMany({
-    where: { ownerUserId: userId, deletedAt: null },
-    select: { id: true, title: true, status: true, createdAt: true, updatedAt: true },
-    orderBy: { updatedAt: "desc" }
-  });
-  const contentIds = ownedContent.map((row) => String(row.id || "").trim()).filter(Boolean);
-  if (contentIds.length === 0) {
-    return reply.send({
-      posture: isBasicPosture ? "basic" : "sovereign",
-      supportsCommerceMetrics: !isBasicPosture,
-      totalViews: 0,
-      totalPurchases: isBasicPosture ? null : 0,
-      conversionRate: isBasicPosture ? null : 0,
-      items: []
-    });
+  const isBasicPosture = resolveProductTier().productTier === "basic";
+  return reply.send(await buildAudienceReport(prisma, userId, isBasicPosture, query.range, query.page));
+});
+
+app.get("/audience/export", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const { format, ...queryValues } = (req.query || {}) as Record<string, unknown>;
+  const query = parseAudienceQuery(queryValues);
+  if (!query || (format !== "csv" && format !== "json")) {
+    return reply.code(400).send({ error: "Invalid audience export query" });
   }
+  const userId = (req.user as JwtUser).sub;
+  const report = await buildAudienceReport(prisma, userId, resolveProductTier().productTier === "basic", query.range, query.page);
+  try {
+    const output = serializeAudienceExport(report, format);
+    reply.header("Content-Type", format === "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8");
+    reply.header("Content-Disposition", `attachment; filename="${audienceExportFilename(query.range, query.page, format)}"`);
+    reply.header("Cache-Control", "private, no-store");
+    return reply.send(output);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("per-page size limit")) {
+      return reply.code(413).send({ error: "Audience export is too large for one page" });
+    }
+    throw err;
+  }
+});
 
-  const viewCountsRaw = await prisma.audienceEvent.groupBy({
-    by: ["contentId"],
-    where: {
-      contentId: { in: contentIds },
-      eventType: "view" as any
-    },
-    _count: { _all: true }
-  });
-
-  const purchaseCountsRaw = isBasicPosture
-    ? []
-    : await prisma.paymentIntent.groupBy({
-        by: ["contentId"],
-        where: {
-          contentId: { in: contentIds },
-          purpose: "CONTENT_PURCHASE" as any,
-          status: "paid" as any
-        },
-        _count: { _all: true }
+let audienceAllExportBusy = false;
+app.get("/audience/export-all", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const { format, ...queryValues } = (req.query || {}) as Record<string, unknown>;
+  const query = parseAudienceQuery(queryValues);
+  if (!query || query.page !== 1 || (format !== "csv" && format !== "json")) {
+    return reply.code(400).send({ error: "Invalid audience export query" });
+  }
+  if (audienceAllExportBusy) return reply.code(429).send({ error: "Another Audience export is running. Please retry shortly." });
+  audienceAllExportBusy = true;
+  let output: Awaited<ReturnType<typeof buildAudienceAllFile>>;
+  try {
+    const userId = (req.user as JwtUser).sub;
+    const isBasicPosture = resolveProductTier().productTier === "basic";
+    output = await buildAudienceAllFile((page, asOf) =>
+      buildAudienceReport(prisma, userId, isBasicPosture, query.range, page, asOf), format, {
+        cloudflare: cloudflareAudienceExportSource(prisma, userId)
       });
+  } catch (err) {
+    if (err instanceof AudienceAllExportLimitError || (err instanceof Error && err.message.includes("per-page size limit"))) {
+      return reply.code(413).send({ error: "Audience report exceeds the safe export limit" });
+    }
+    if (err instanceof AudienceAllExportChangedError) return reply.code(409).send({ error: err.message });
+    throw err;
+  } finally {
+    audienceAllExportBusy = false;
+  }
+  if (req.raw.aborted) { await output.cleanup(); return reply; }
+  const stream = fsSync.createReadStream(output.filePath);
+  stream.once("close", () => { void output.cleanup(); });
+  reply.header("Content-Type", format === "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8");
+  reply.header("Content-Disposition", `attachment; filename="certifyd-audience-all-${query.range}-${new Date().toISOString().slice(0, 10)}.${format}"`);
+  reply.header("Content-Length", String(output.size));
+  reply.header("Cache-Control", "private, no-store");
+  return reply.send(stream);
+});
 
-  const viewCounts = new Map<string, number>();
-  for (const row of viewCountsRaw) viewCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
+const cloudflareAudienceSyncing = new Set<string>();
+const cloudflareAudienceErrorStatus = (error: unknown) => error instanceof CloudflareAudienceError ? error.code : "unavailable";
 
-  const purchaseCounts = new Map<string, number>();
-  for (const row of purchaseCountsRaw) purchaseCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
-
-  const toPct = (purchases: number, views: number): number => {
-    if (!views) return 0;
-    return Number(((purchases / views) * 100).toFixed(2));
-  };
-
-  const items = ownedContent.map((row) => {
-    const contentId = String(row.id || "");
-    const views = viewCounts.get(contentId) || 0;
-    const purchases = purchaseCounts.get(contentId) || 0;
-    return {
-      contentId,
-      title: String(row.title || "Untitled"),
-      status: String(row.status || "").toLowerCase(),
-      views,
-      purchases: isBasicPosture ? null : purchases,
-      conversionRate: isBasicPosture ? null : toPct(purchases, views),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt
-    };
+app.get("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const row = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+  if (!row) return reply.send({ configured: false, status: "disconnected" });
+  let status = row.lastStatus || "configured";
+  if (status === "connected") {
+    try {
+      const token = decryptSecret({ ciphertextB64: row.tokenCiphertext,
+        ivB64: row.tokenIv, tagB64: row.tokenTag }).toString("utf8");
+      await verifyCloudflareAudienceHostname(token, { zoneId: row.zoneId, hostname: row.hostname });
+    } catch { status = "unverified"; }
+  }
+  const cachedDays = await prisma.cloudflareAnalyticsSnapshot.count({
+    where: { userId, zoneId: row.zoneId, hostname: row.hostname, metric: "traffic", committed: true,
+      ...(row.lastSyncAt ? { fetchedAt: { lte: row.lastSyncAt } } : { id: "__never__" }) }
   });
+  return reply.send({ configured: true, zoneId: row.zoneId, accountId: row.accountId, hostname: row.hostname,
+    status, error: row.lastError, lastCheckedAt: row.lastCheckedAt,
+    lastSyncAt: row.lastSyncAt, cachedDays, tokenConfigured: true });
+});
 
-  const totalViews = items.reduce((sum, row) => sum + row.views, 0);
-  const totalPurchases = items.reduce((sum, row) => sum + Number(row.purchases || 0), 0);
-  return reply.send({
-    posture: isBasicPosture ? "basic" : "sovereign",
-    supportsCommerceMetrics: !isBasicPosture,
-    totalViews,
-    totalPurchases: isBasicPosture ? null : totalPurchases,
-    conversionRate: isBasicPosture ? null : toPct(totalPurchases, totalViews),
-    items
+app.patch("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body || {}) as Record<string, unknown>;
+  const scope = normalizeCloudflareAudienceScope(body);
+  const token = typeof body.token === "string" ? body.token.trim() : "";
+  if (!scope || token.length < 20 || token.length > 4096 || /\s/.test(token)) {
+    return reply.code(400).send({ error: "A zone ID, creator hostname, and Analytics Read token are required." });
+  }
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics operation is in progress." });
+  cloudflareAudienceSyncing.add(userId);
+  try {
+    let capabilities: Awaited<ReturnType<typeof verifyCloudflareAudienceAccess>>;
+    try { capabilities = await verifyCloudflareAudienceAccess(token, scope); }
+    catch (error) { return reply.code(error instanceof CloudflareAudienceError && error.code === "unauthorized" ? 403 : 503)
+      .send({ error: "Cloudflare Analytics could not be verified for this zone.", code: cloudflareAudienceErrorStatus(error) }); }
+    const encrypted = encryptSecret(Buffer.from(token, "utf8"));
+    await prisma.cloudflareAnalyticsConnection.upsert({ where: { userId },
+      create: { userId, zoneId: scope.zoneId, accountId: scope.accountId, hostname: scope.hostname,
+        tokenCiphertext: encrypted.ciphertextB64, tokenIv: encrypted.ivB64, tokenTag: encrypted.tagB64,
+        lastCheckedAt: new Date(), lastStatus: "connected" },
+      update: { zoneId: scope.zoneId, accountId: scope.accountId, hostname: scope.hostname,
+        tokenCiphertext: encrypted.ciphertextB64, tokenIv: encrypted.ivB64, tokenTag: encrypted.tagB64,
+        lastCheckedAt: new Date(), lastStatus: "connected", lastError: null, lastSyncAt: null }
+    });
+    return reply.send({ ok: true, zoneId: scope.zoneId, hostname: scope.hostname, capabilities });
+  } finally { cloudflareAudienceSyncing.delete(userId); }
+});
+
+app.delete("/api/settings/cloudflare-analytics", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics refresh is in progress." });
+  await prisma.cloudflareAnalyticsConnection.deleteMany({ where: { userId } });
+  return reply.send({ ok: true, cachedAggregatesPreserved: true });
+});
+
+app.post("/api/settings/cloudflare-analytics/refresh", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  if (cloudflareAudienceSyncing.has(userId)) return reply.code(409).send({ error: "Analytics refresh is already in progress." });
+  cloudflareAudienceSyncing.add(userId);
+  let stagedAt: Date | null = null;
+  try {
+    const connection = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+    if (!connection) return reply.code(404).send({ error: "Cloudflare Analytics is not connected." });
+    if (connection.lastSyncAt && Date.now() - connection.lastSyncAt.getTime() < 5 * 60_000) {
+      return reply.code(429).send({ error: "Cloudflare Analytics was refreshed recently. Try again in a few minutes." });
+    }
+    const token = decryptSecret({ ciphertextB64: connection.tokenCiphertext,
+      ivB64: connection.tokenIv, tagB64: connection.tokenTag }).toString("utf8");
+    const scope = { zoneId: connection.zoneId, accountId: connection.accountId, hostname: connection.hostname };
+    const capabilities = await verifyCloudflareAudienceAccess(token, scope);
+    const fetchedAt = new Date(Math.max(Date.now(), (connection.lastSyncAt?.getTime() || 0) + 1));
+    stagedAt = fetchedAt;
+    const snapshots = await fetchCloudflareAudienceAggregates(token, scope, { now: fetchedAt, webAnalytics: capabilities.webAnalytics });
+    for (let index = 0; index < snapshots.length; index++) {
+      const snapshot = snapshots[index];
+      const rowsJson = JSON.stringify(snapshot.rows);
+      if (Buffer.byteLength(rowsJson) > 128 * 1024) throw new CloudflareAudienceError("invalid_response");
+      const data = { rowsJson, sampleInterval: snapshot.sampleInterval, coverage: snapshot.coverage, fetchedAt };
+      await prisma.cloudflareAnalyticsSnapshot.create({ data: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, source: snapshot.source, metric: snapshot.metric, day: snapshot.day, ...data } });
+      if (index % 25 === 24) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    await prisma.$transaction([
+      prisma.cloudflareAnalyticsSnapshot.updateMany({ where: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, fetchedAt }, data: { committed: true } }),
+      prisma.cloudflareAnalyticsConnection.update({ where: { userId }, data: {
+        lastCheckedAt: fetchedAt, lastSyncAt: fetchedAt, lastStatus: "connected", lastError: null } })
+    ]);
+    for (const source of ["cloudflare_http", "cloudflare_web_analytics"]) {
+      const sourceDays = snapshots.filter((row) => row.source === source).map((row) => row.day);
+      if (!sourceDays.length) continue;
+      await prisma.cloudflareAnalyticsSnapshot.deleteMany({ where: { userId, zoneId: scope.zoneId,
+        hostname: scope.hostname, source, day: { gte: sourceDays.sort()[0] },
+        fetchedAt: { not: fetchedAt } } }).catch(() => {});
+    }
+    return reply.send({ ok: true, cachedDays: snapshots.filter((row) => row.metric === "traffic").length,
+      webAnalytics: capabilities.webAnalytics, fetchedAt });
+  } catch (error) {
+    const code = cloudflareAudienceErrorStatus(error);
+    if (stagedAt) await prisma.cloudflareAnalyticsSnapshot.deleteMany({ where: {
+      userId, fetchedAt: stagedAt, committed: false } }).catch(() => {});
+    await prisma.cloudflareAnalyticsConnection.updateMany({ where: { userId },
+      data: { lastCheckedAt: new Date(), lastStatus: "error", lastError: code } });
+    return reply.code(code === "unauthorized" ? 403 : code === "rate_limited" ? 429 : 503)
+      .send({ error: "Cloudflare Analytics refresh failed. Native Audience remains available.", code });
+  } finally { cloudflareAudienceSyncing.delete(userId); }
+});
+
+app.get("/api/audience/cloudflare/cache", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const connection = await prisma.cloudflareAnalyticsConnection.findUnique({ where: { userId } });
+  if (!connection) return reply.send({ configured: false, snapshots: [] });
+  const rows = await prisma.cloudflareAnalyticsSnapshot.findMany({
+    where: { userId, zoneId: connection.zoneId, hostname: connection.hostname, committed: true,
+      ...(connection.lastSyncAt ? { fetchedAt: { lte: connection.lastSyncAt } } : { id: "__never__" }) },
+    orderBy: [{ day: "desc" }, { source: "asc" }, { metric: "asc" }, { fetchedAt: "desc" }], take: 600
   });
+  let remainingBytes = 1024 * 1024;
+  let truncated = rows.length === 600;
+  const snapshots: Array<{ source: string; metric: string; day: string; rows: unknown;
+    sampleInterval: number | null; coverage: string; fetchedAt: Date }> = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const key = `${row.source}:${row.metric}:${row.day}`;
+    if (seen.has(key)) continue;
+    remainingBytes -= Buffer.byteLength(row.rowsJson);
+    if (remainingBytes < 0) { truncated = true; break; }
+    seen.add(key);
+    snapshots.push({ source: row.source, metric: row.metric, day: row.day,
+      rows: JSON.parse(row.rowsJson), sampleInterval: row.sampleInterval,
+      coverage: row.coverage, fetchedAt: row.fetchedAt });
+  }
+  return reply.send({ configured: true, zoneId: connection.zoneId, hostname: connection.hostname,
+    lastSyncAt: connection.lastSyncAt, snapshots, truncated });
 });
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
@@ -50838,20 +51700,10 @@ async function settlePaymentIntentFromRails(intentId: string) {
   const resolvedBuyerId = await resolveBuyerIdFromIntent(intent);
 
   if (intent.status === "paid") {
-    try {
-      await finalizePurchase(intent.id, prisma);
-    } catch {}
-    const providerIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
-    if (providerIntent) {
-      await ensureProviderPaymentSettlement(
-        updateProviderPaymentIntent(providerIntent.id, {
-          status: "paid",
-          paidAt: providerIntent.paidAt || intent.paidAt?.toISOString() || new Date().toISOString()
-        }) || providerIntent
-      );
-    }
-    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
-    return { intent: updated || intent, paid: true, paidVia: updated?.paidVia || intent.paidVia || null };
+    // Local fulfillment recovery must never retry financial transfers or rotate
+    // historical tokens. Untracked historical purchases remain read-only here.
+    const fulfillment = await recoverPurchaseFulfillment(prisma, intent.id);
+    return { intent, paid: true, paidVia: intent.paidVia, paidAt: intent.paidAt?.toISOString(), fulfillment };
   }
 
   let paidVia: "lightning" | "onchain" | null = null;
@@ -50913,9 +51765,11 @@ async function settlePaymentIntentFromRails(intentId: string) {
   }
 
   if (paidVia) {
-    await prisma.$transaction(async (tx) => {
-      const updatedIntent = await tx.paymentIntent.update({
-        where: { id: intent.id },
+    const newlySettled = await prisma.$transaction(async (tx) => {
+      const fresh = await tx.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+      if (fresh.status === "paid") return false;
+      const transition = await tx.paymentIntent.updateMany({
+        where: { id: intent.id, status: { not: "paid" } },
         data: {
           status: "paid" as any,
           paidVia: paidVia as any,
@@ -50925,32 +51779,20 @@ async function settlePaymentIntentFromRails(intentId: string) {
           confirmations: onchainUpdate.confirmations ?? intent.confirmations
         }
       });
-
-      const buyerId = resolvedBuyerId;
-      if (buyerId) {
-        const existing = await tx.entitlement.findFirst({
-          where: { buyerId, contentId: updatedIntent.contentId },
-          orderBy: { grantedAt: "asc" }
-        });
-        if (existing) {
-          await tx.entitlement.update({
-            where: { id: existing.id },
-            data: { paymentIntentId: updatedIntent.id }
-          });
-        } else {
-          await tx.entitlement.create({
-            data: {
-              buyerId,
-              buyerUserId: updatedIntent.buyerUserId,
-              contentId: updatedIntent.contentId,
-              manifestSha256: updatedIntent.manifestSha256 || "",
-              paymentIntentId: updatedIntent.id
-            }
-          });
-        }
-      }
+      if (!transition.count) return false;
+      const updatedIntent = await tx.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+      await trackSettledPurchase(tx, { intentId: updatedIntent.id, buyerId: resolvedBuyerId, rail: pickIntentRail(updatedIntent) });
+      return true;
     });
+    if (!newlySettled) return settlePaymentIntentFromRails(intent.id);
     const finalized = await finalizePaymentIntent(intent.id, { rail: pickIntentRail(intent) });
+    if ((finalized as any).fulfillment?.status === "pending") {
+      const updatedIntent = await prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+      return { intent: updatedIntent, paid: true, paidVia, paidAt, fulfillment: (finalized as any).fulfillment };
+    }
+    // Preserve the existing initial-settlement bridge only for the transaction
+    // that first observed payment. Local recovery never invokes this bridge.
+    await bridgeDirectSaleToParticipantPayouts(intent.id, "finalize_sale_upsert");
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
     const seller = await prisma.contentItem.findUnique({ where: { id: intent.contentId }, select: { ownerUserId: true } });
     const sale = await prisma.sale.findUnique({ where: { intentId: intent.id } });
@@ -51126,7 +51968,13 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     const refreshed = await settlePaymentIntentFromRails(intent.id);
     if (!refreshed) return notFound(reply, "PaymentIntent not found");
     if (refreshed.paid) {
+      const fulfillment = (refreshed as any).fulfillment || (refreshed as any).finalized?.fulfillment;
       return reply.send({
+        fulfillment: fulfillment?.status || "legacy_untracked",
+        ...(fulfillment?.status === "pending" ? {
+          code: "PURCHASE_FULFILLMENT_PENDING",
+          message: "Payment received. Fulfillment is pending; do not pay again."
+        } : {}),
         ok: true,
         status: "paid",
         paidVia: refreshed.paidVia,
@@ -51160,10 +52008,16 @@ app.post("/api/payments/intents/:intentId/mark-paid", { preHandler: requireAuth 
   const isManual = !intent.bolt11 && !intent.providerId && !intent.onchainAddress;
   if (!isManual) return badRequest(reply, "PaymentIntent is not manual");
 
-  const finalized = await finalizePaymentIntent(intentId, {
-    rail: "manual_lightning",
-    confirmedByUserId: userId
-  });
+  let finalized;
+  try {
+    finalized = await finalizePaymentIntent(intentId, {
+      rail: "manual_lightning",
+      confirmedByUserId: userId
+    });
+  } catch (error: any) {
+    if (error?.code !== SETTLEMENT_ALLOCATION_INVALID) throw error;
+    return reply.code(409).send({ status: "paid", fulfillment: "pending", code: error.code, message: error.message });
+  }
   return reply.send({ ok: true, status: "paid", receiptToken: finalized.receiptToken || null });
 });
 
@@ -51378,37 +52232,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
     });
   }
 
-  const state = getPublicLinkState();
-  if (state.mode === "quick") {
-    const consent = getPublicSharingConsent();
-    const consentGranted = consent.granted || consent.dontAskAgain;
-    if (consentGranted && getPublicSharingAutoStart()) {
-      const st = tunnelManager.status();
-      if (st.status !== "ACTIVE") {
-        tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
-      }
-    }
-  } else if (state.mode === "named") {
-    const cfg = getNamedTunnelConfig();
-    if (cfg) {
-      const defer = shouldDeferNamedTunnelToServiceControl();
-      if (defer.shouldDefer) {
-        reconcileNamedTunnelOwnership(true);
-        app.log.info(
-          { mode: defer.tunnelControl.mode, activeProcessToken: defer.tunnelControl.activeProcessToken },
-          "invite.named.defer_to_service_control"
-        );
-      } else {
-      const namedToken = getNamedTunnelToken();
-      tunnelManager.startNamed({
-        publicOrigin: cfg.publicOrigin,
-        tunnelName: String(cfg.tunnelName || "").trim(),
-        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
-        token: namedToken
-      }).catch((e) => app.log.warn(String(e?.message || e)));
-      }
-    }
-  }
+  triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
 
   const ttlHoursIn = num((req.body as Record<string, unknown>).ttlHours ?? 168);
   const ttlHours = Math.max(1, Math.min(24 * 30, ttlHoursIn));
@@ -53311,9 +54135,25 @@ async function start() {
   await ensurePayoutMethods();
   await preflightPrismaReadiness();
   await preflightDb();
+  audienceTrackingWindowId = await beginAudienceTracking(prisma, isAudienceCollectionEnabled(process.env.CONTENTBOX_AUDIENCE_ENABLED));
   scheduleReceiptIdBackfillBestEffort();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: PRIVATE_API_BIND_HOST });
+  // Retention also runs when no new visits arrive; the existing bounded prune
+  // removes at most one small batch per run and never blocks API startup.
+  audienceRetentionTimer = setInterval(() => { void runAudienceRetention(); }, 60 * 60 * 1000);
+  audienceRetentionTimer.unref();
+  if (audienceTrackingWindowId) {
+    audienceTrackingTimer = setInterval(() => {
+      if (audienceHeartbeatInFlight || !audienceTrackingWindowId) return;
+      audienceHeartbeatInFlight = true;
+      void heartbeatAudienceTracking(prisma, audienceTrackingWindowId)
+        .then((id) => { audienceTrackingWindowId = id; })
+        .catch((err) => app.log.warn({ err }, "audience.heartbeat_failed"))
+        .finally(() => { audienceHeartbeatInFlight = false; });
+    }, 60 * 1000);
+    audienceTrackingTimer.unref();
+  }
   // Run provider verification in the background so startup/health becomes
   // available immediately even when remote provider endpoints are slow.
   setTimeout(() => {
@@ -53348,13 +54188,16 @@ async function start() {
     );
   }
   const state = getPublicLinkState();
-  if (state.mode !== "off") {
-    const host = getPublicBindHost(state.mode);
-    await startPublicServer(registerPublicRoutes, host);
-    const autoStart = state.mode === "quick" ? true : getPublicSharingAutoStart();
-    if (autoStart) {
-      triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
-    }
+  if (state.mode === "named") {
+    await startNamedRuntimeAtStartup({
+      mutex: publicLifecycleMutex,
+      startListener: () => publicServerLifecycle.ensureStarted(registerPublicRoutes, getPublicBindHost("named")).then(() => undefined),
+      shouldStartTunnel: getPublicSharingAutoStart,
+      startTunnel: triggerPublicStartBestEffortUnlocked,
+      onTunnelError: (e) => app.log.warn(String((e as any)?.message || e))
+    });
+  } else if (state.mode === "quick") {
+    triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
   }
   logPublicHostInvariantOnStartup();
   setTimeout(() => {
@@ -53364,22 +54207,40 @@ async function start() {
   }, 25);
 }
 
-process.on("SIGTERM", () => {
+let runtimeShutdownStarted = false;
+async function shutdownRuntime(signal: "SIGTERM" | "SIGINT") {
+  if (runtimeShutdownStarted) return;
+  runtimeShutdownStarted = true;
+  if (audienceRetentionTimer) clearInterval(audienceRetentionTimer);
+  if (audienceTrackingTimer) clearInterval(audienceTrackingTimer);
+  if (audienceTrackingWindowId) {
+    try { await endAudienceTracking(prisma, audienceTrackingWindowId); }
+    catch (err) { app.log.warn({ err }, "audience.coverage_close_failed"); }
+  }
+  try {
+    await publicLifecycleMutex.runExclusive(async () => {
+      await tunnelManager.stop();
+      await publicServerLifecycle.stop();
+      await app.close();
+    });
+  } catch (err: any) {
+    app.log.warn({ err: String(err?.message || err), signal }, "runtime.shutdown_cleanup_failed");
+  }
   releaseApiRuntimeLock();
   persistRuntimeHealthFromApi({
     apiReady: false,
     reason: "api_exit_code_0",
     statusIfUnsupervised: "stopped"
   });
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => {
+  void shutdownRuntime("SIGTERM");
 });
 
 process.on("SIGINT", () => {
-  releaseApiRuntimeLock();
-  persistRuntimeHealthFromApi({
-    apiReady: false,
-    reason: "api_exit_code_0",
-    statusIfUnsupervised: "stopped"
-  });
+  void shutdownRuntime("SIGINT");
 });
 
 process.on("uncaughtException", () => {

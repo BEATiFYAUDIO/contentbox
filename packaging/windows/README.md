@@ -52,15 +52,15 @@ The Start Menu/Desktop launcher:
 4. Generates a JWT secret if missing.
 5. Sets SQLite `DATABASE_URL` to `%LOCALAPPDATA%\ContentBox\contentbox.db`.
 6. Creates the SQLite file only if missing.
-7. Runs bundled Prisma validate/generate/db push.
+7. Runs bundled Prisma validation/client generation and preservation-safe database preparation: initialize an empty database, or validate an existing database without schema synchronization.
 8. Starts the existing API/runtime.
 9. Opens `http://127.0.0.1:4000`.
 
 Existing databases and user data are never truncated, overwritten, replaced, or deleted by the launcher.
 
-For a dedicated LAN machine, use the `Certifyd Core (LAN Access)` Start Menu or
-Desktop shortcut. LAN mode binds the private dashboard/API to the local network,
-records detected LAN addresses in the private host allowlist, and opens the LAN
+Use the Certifyd Core tray menu to enable or refresh LAN access. LAN mode binds
+the private dashboard/API to the local network, records detected LAN addresses
+in the private host allowlist, and opens the LAN
 dashboard URL. The launcher also accepts `-Lan` for scripted use.
 
 ## Optional External Tools

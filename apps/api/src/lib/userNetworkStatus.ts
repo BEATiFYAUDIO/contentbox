@@ -50,7 +50,8 @@ export function deriveUserNetworkStatusFromState(input: UserNetworkStatusInput):
       reason: "runtime_not_ready"
     };
   }
-  if (input.participationMode === "sovereign_node" || (input.nodeMode === "lan" && input.sovereignReady)) {
+  const sovereignNodeSelected = input.participationMode === "sovereign_node" || input.nodeMode === "lan";
+  if (sovereignNodeSelected && input.sovereignReady) {
     return {
       status: "ready",
       title: "Ready",
@@ -59,7 +60,7 @@ export function deriveUserNetworkStatusFromState(input: UserNetworkStatusInput):
       reason: "sovereign_node_ready"
     };
   }
-  if (input.nodeMode === "lan" && !input.sovereignReady) {
+  if (sovereignNodeSelected && !input.sovereignReady) {
     if (!input.namedTunnelDetected) {
       return {
         status: "action_required",
@@ -79,6 +80,20 @@ export function deriveUserNetworkStatusFromState(input: UserNetworkStatusInput):
       message: `Sovereign Node is missing readiness: ${blockers.join(", ")}.`,
       actionLabel: "Fix local node stack",
       reason: "sovereign_local_stack_missing"
+    };
+  }
+  if (
+    (input.participationMode === "sovereign_creator" ||
+      input.participationMode === "sovereign_creator_with_provider" ||
+      input.nodeMode === "advanced") &&
+    !input.namedTunnelDetected
+  ) {
+    return {
+      status: "action_required",
+      title: "Action Required",
+      message: "Sovereign Creator requires a canonical public origin with a stable host route.",
+      actionLabel: "Configure canonical public origin",
+      reason: "sovereign_public_origin_missing"
     };
   }
   if (input.participationMode === "sovereign_creator") {

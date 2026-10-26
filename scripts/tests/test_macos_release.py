@@ -15,6 +15,15 @@ from unittest.mock import patch
 SPEC = importlib.util.spec_from_file_location("macos_release", Path(__file__).resolve().parents[1] / "macos-release.py")
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
+PWA_SPEC = importlib.util.spec_from_file_location("validate_pwa_chrome", Path(__file__).resolve().parents[1] / "validate-pwa-chrome.py")
+pwa_validation = importlib.util.module_from_spec(PWA_SPEC)
+PWA_SPEC.loader.exec_module(pwa_validation)
+
+
+class ChromePwaValidation(unittest.TestCase):
+    def test_websocket_target_does_not_add_an_empty_query(self):
+        self.assertEqual(pwa_validation.websocket_request_target("ws://127.0.0.1:9222/devtools/page/abc"), "/devtools/page/abc")
+        self.assertEqual(pwa_validation.websocket_request_target("ws://127.0.0.1:9222/devtools/page/abc?token=1"), "/devtools/page/abc?token=1")
 
 
 class Versions(unittest.TestCase):
@@ -203,7 +212,7 @@ if sys.argv[1] == 'sign-app':
 
 
 class PrismaLauncher(unittest.TestCase):
-    def run_launcher(self, arch, missing=None, moved=False):
+    def run_launcher(self, arch, missing=None, moved=False, fail_prepare=False):
         with tempfile.TemporaryDirectory(prefix='prisma launcher ') as tmp:
             root = Path(tmp)
             app = root / 'Certifyd Core.app'
@@ -212,7 +221,7 @@ class PrismaLauncher(unittest.TestCase):
             engines = api / 'node_modules/@prisma/engines'
             engines.mkdir(parents=True)
             for name in ['prisma/schema.prisma', 'node_modules/prisma/build/index.js',
-                         'node_modules/.prisma/client/index.js']:
+                         'node_modules/.prisma/client/index.js', 'scripts/prepare-local-database.mjs']:
                 path = api / name; path.parent.mkdir(parents=True, exist_ok=True); path.touch()
             target = 'darwin-arm64' if arch == 'arm64' else 'darwin'
             for kind, name in [('schema', f'schema-engine-{target}'),
@@ -223,7 +232,7 @@ class PrismaLauncher(unittest.TestCase):
             shutil.copyfile(Path(__file__).resolve().parents[2] / 'packaging/macos/CertifydCoreLauncher.sh', launcher)
             node = resources / 'runtime/node/bin/node'; node.parent.mkdir(parents=True)
             node.write_text(f'#!{sys.executable}\n' + '''
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 if sys.argv[1:] == ['-p', 'process.arch']:
     print(os.environ['TEST_NODE_ARCH'])
@@ -231,11 +240,29 @@ elif sys.argv[1].endswith('/prisma/build/index.js'):
     with open(os.environ['TEST_PRISMA_CALLS'], 'a') as f:
         f.write(json.dumps({'args': sys.argv[2:], 'schema': os.environ['PRISMA_SCHEMA_ENGINE_BINARY'],
                             'query': os.environ['PRISMA_QUERY_ENGINE_LIBRARY']}) + '\\n')
-# Health is already ready: the launcher exits before starting a real API.
+elif sys.argv[1].endswith('/scripts/prepare-local-database.mjs'):
+    with open(os.environ['TEST_PRISMA_CALLS'], 'a') as f:
+        f.write(json.dumps({'args': ['prepare-local-database.mjs'], 'schema': os.environ['PRISMA_SCHEMA_ENGINE_BINARY'],
+                            'query': os.environ['PRISMA_QUERY_ENGINE_LIBRARY']}) + '\\n')
+    if os.environ.get('TEST_FAIL_PREPARE') == '1':
+        sys.exit(42)
+elif sys.argv[1] == '-e':
+    sys.exit(0 if Path(os.environ['TEST_HEALTH_MARKER']).exists() else 1)
+elif sys.argv[1:3] == ['--import', 'tsx'] and sys.argv[3:] == ['src/server.ts']:
+    Path(os.environ['TEST_HEALTH_MARKER']).touch()
+    while True:
+        time.sleep(1)
+else:
+    sys.exit(2)
 ''')
             node.chmod(0o755)
             data = root / 'data'; (data / 'config').mkdir(parents=True)
+            (data / 'state').mkdir()
             (data / 'config/api.env').write_text('PRISMA_SCHEMA_ENGINE_BINARY="/stale/schema"\nPRISMA_QUERY_ENGINE_LIBRARY="/stale/query"\n')
+            (data / 'contentbox.db').write_bytes(b'original-sqlite-data')
+            (resources / 'app/app-version.txt').write_text('0.2.0\n')
+            # A live unrelated PID must never be trusted as the Core process.
+            (data / 'state/certifyd-core.pid').write_text(str(os.getpid()))
             if moved:
                 destination = root / 'Moved Core.app'
                 app.rename(destination)
@@ -243,37 +270,87 @@ elif sys.argv[1].endswith('/prisma/build/index.js'):
             resources = app / 'Contents/Resources'
             engines = resources / 'app/apps/api/node_modules/@prisma/engines'
             calls_file = root / 'calls.jsonl'
+            health_marker = root / 'health-ready'
             env = {**os.environ, 'CONTENTBOX_ROOT': str(data), 'CERTIFYD_NO_BROWSER': '1',
-                   'JWT_SECRET': 'test-only', 'TEST_NODE_ARCH': arch, 'TEST_PRISMA_CALLS': str(calls_file)}
+                   'JWT_SECRET': 'test-only', 'TEST_NODE_ARCH': arch, 'TEST_PRISMA_CALLS': str(calls_file),
+                   'TEST_HEALTH_MARKER': str(health_marker), 'TEST_FAIL_PREPARE': '1' if fail_prepare else '0'}
             result = subprocess.run(['bash', str(resources / 'CertifydCoreLauncher.sh')],
                                     env=env, capture_output=True, text=True)
+            first_pid = (data / 'state/certifyd-core.pid').read_text().strip() if (data / 'state/certifyd-core.pid').exists() else ''
+            if result.returncode == 0:
+                second = subprocess.run(['bash', str(resources / 'CertifydCoreLauncher.sh')],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                self.assertEqual((data / 'state/certifyd-core.pid').read_text().strip(), first_pid)
             calls = [json.loads(line) for line in calls_file.read_text().splitlines()] if calls_file.exists() else []
-            return result, calls, str(engines), target
+            if result.returncode == 0 and first_pid.isdigit() and int(first_pid) != os.getpid():
+                try:
+                    os.kill(int(first_pid), 15)
+                except ProcessLookupError:
+                    pass
+            backup_files = list((data / 'backups/pre-upgrade').glob('*/contentbox.db'))
+            marker_exists = (data / 'state/database-prepared-version.txt').exists()
+            return result, calls, str(engines), target, (data / 'contentbox.db').read_bytes(), backup_files, marker_exists
 
     def test_prisma_uses_current_bundled_engines_for_both_architectures_and_after_move(self):
         for arch in ['x64', 'arm64']:
             for moved in [False, True]:
                 with self.subTest(arch=arch, moved=moved):
-                    result, calls, engines, target = self.run_launcher(arch, moved=moved)
+                    result, calls, engines, target, _, backups, marker_exists = self.run_launcher(arch, moved=moved)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(len(calls), 2)
+                    self.assertEqual(len(backups), 1)
+                    self.assertTrue(marker_exists)
                     self.assertEqual(calls[0]['args'][0], 'validate')
-                    self.assertEqual(calls[1]['args'][:2], ['db', 'push'])
-                    self.assertIn('--skip-generate', calls[1]['args'])
+                    self.assertEqual(calls[1]['args'], ['prepare-local-database.mjs'])
+                    self.assertFalse(any(call['args'][:2] == ['db', 'push'] for call in calls))
                     for call in calls:
                         self.assertEqual(call['schema'], f'{engines}/schema-engine-{target}')
                         self.assertEqual(call['query'], f'{engines}/libquery_engine-{target}.dylib.node')
 
+    def test_launcher_serializes_startup_and_validates_process_identity(self):
+        source = (Path(__file__).resolve().parents[2] / 'packaging/macos/CertifydCoreLauncher.sh').read_text()
+        self.assertIn('launcher.lock', source)
+        self.assertIn('is_launcher_process', source)
+        self.assertIn('is_core_process', source)
+        self.assertIn('ps -p "$pid" -o command=', source)
+        self.assertIn('wait_for_core_health 45 "$started_pid"', source)
+        self.assertNotIn('open "$app_url" >/dev/null 2>&1 || true', source)
+
+    def test_native_launcher_uses_branded_status_window_and_headless_ci_path(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / 'packaging/macos/CertifydCoreLauncher.c').read_text()
+        build = (root / 'scripts/build-macos-package.sh').read_text()
+        shell = (root / 'packaging/macos/CertifydCoreLauncher.sh').read_text()
+        self.assertIn('#import <Cocoa/Cocoa.h>', source)
+        self.assertIn('assets/certifyd-core.png', source)
+        self.assertIn('@"Retry"', source)
+        self.assertIn('@"View Logs"', source)
+        self.assertIn('CERTIFYD_LAUNCHER_NO_UI', source)
+        self.assertIn('CERTIFYD_SPLASH_STATUS_FILE', source)
+        self.assertIn('-framework Cocoa', build)
+        self.assertIn('set_launcher_status "Validating local data..."', shell)
+        self.assertIn('set_launcher_status "Waiting for the dashboard to become ready', shell)
+
     def test_missing_bundled_engine_fails_before_prisma_can_download(self):
         for missing in ['schema', 'query']:
             with self.subTest(missing=missing):
-                result, calls, _, _ = self.run_launcher('arm64', missing=missing)
+                result, calls, _, _, _, _, _ = self.run_launcher('arm64', missing=missing)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f'Bundled Prisma {missing} engine missing', result.stderr)
                 self.assertEqual(calls, [])
 
+    def test_failed_database_preparation_preserves_recovery_point_and_does_not_mark_version(self):
+        result, calls, _, _, database, backups, marker_exists = self.run_launcher('arm64', fail_prepare=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls[-1]['args'], ['prepare-local-database.mjs'])
+        self.assertEqual(database, b'original-sqlite-data')
+        self.assertEqual(len(backups), 1)
+        self.assertFalse(marker_exists)
+        self.assertIn('Recovery point:', result.stderr)
 
-@unittest.skipUnless(shutil.which('cc'), 'C compiler required')
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'), 'native macOS compiler required')
 class Launcher(unittest.TestCase):
     def test_path_arguments_and_move(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -284,17 +361,11 @@ class Launcher(unittest.TestCase):
             script = resources / 'CertifydCoreLauncher.sh'
             script.write_text('printf "%s\\n" "$@"\n')
             source = Path(__file__).resolve().parents[2] / 'packaging/macos/CertifydCoreLauncher.c'
-            args = ['cc', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(macos / 'CertifydCoreLauncher')]
-            if sys.platform != 'darwin':
-                # Test path/exec/argument handling on Linux; not a Mach-O build test.
-                include = root / 'mach-o'; include.mkdir()
-                (include / 'dyld.h').write_text('#include <stdint.h>\nint _NSGetExecutablePath(char *, uint32_t *);\n')
-                stub = root / 'dyld.c'
-                stub.write_text('#include <stdint.h>\n#include <unistd.h>\nint _NSGetExecutablePath(char *p,uint32_t *s){ssize_t n=readlink("/proc/self/exe",p,*s-1);if(n<0)return -1;p[n]=0;return 0;}\n')
-                args += ['-I', str(root), str(stub)]
+            args = ['xcrun', 'clang', '-x', 'objective-c', '-fobjc-arc', '-fblocks', '-framework', 'Cocoa',
+                    '-Wall', '-Wextra', '-Werror', str(source), '-o', str(macos / 'CertifydCoreLauncher')]
             subprocess.run(args, check=True, capture_output=True)
             injected = root / 'injected.sh'; injected.write_text('exit 42\n')
-            env = {**os.environ, 'BASH_ENV': str(injected)}
+            env = {**os.environ, 'BASH_ENV': str(injected), 'CERTIFYD_LAUNCHER_NO_UI': '1'}
             for location in [app, root / 'Moved Core.app']:
                 if location != app:
                     app.rename(location)

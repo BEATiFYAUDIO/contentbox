@@ -26,6 +26,17 @@ function readStateFlag(): boolean {
 export type PublicMode = "off" | "quick" | "named";
 export type PublicStatus = "starting" | "online" | "offline" | "error";
 
+export function publicAvailability(input: {
+  mode: PublicMode;
+  status: PublicStatus;
+  listenerStarted: boolean;
+  routeMatchesThisCore: boolean;
+}): "reachable" | "unverified" | "unavailable" {
+  if (input.mode === "off") return "unavailable";
+  return input.status === "online" && input.listenerStarted && input.routeMatchesThisCore
+    ? "reachable" : "unverified";
+}
+
 export interface PublicLinkState {
   mode: PublicMode;
   status: PublicStatus;
@@ -49,6 +60,53 @@ export interface PublicLinkStateInput {
   quick: { status: "STOPPED" | "STARTING" | "ACTIVE" | "ERROR"; publicOrigin: string | null; lastError?: string | null; lastCheckedAt?: string | null };
   namedHealthOk?: boolean | null;
   directOrigin?: string | null;
+}
+
+export function resolveConfiguredPublicMode(input: {
+  envMode?: string | null;
+  persistedMode?: PublicMode | null;
+  consentGranted?: boolean;
+  autoStartEnabled?: boolean;
+}): PublicMode {
+  return resolvePublicModeSelection(input).mode;
+}
+
+export function resolvePublicModeSelection(input: {
+  envMode?: string | null;
+  persistedMode?: PublicMode | null;
+  consentGranted?: boolean;
+  autoStartEnabled?: boolean;
+}): { mode: PublicMode; source: "environment" | "user" | "legacy" | "default" } {
+  const envMode = String(input.envMode || "").trim().toLowerCase();
+  if (envMode === "named" || envMode === "quick") return { mode: envMode, source: "environment" };
+  if (input.persistedMode === "off" || input.persistedMode === "quick" || input.persistedMode === "named") {
+    return { mode: input.persistedMode, source: "user" };
+  }
+  if (input.consentGranted) return { mode: input.autoStartEnabled ? "quick" : "off", source: "legacy" };
+  return { mode: "off", source: "default" };
+}
+
+export function resolveEffectivePublicMode(input: {
+  selection: ReturnType<typeof resolvePublicModeSelection>;
+  nodeMode: "basic" | "advanced" | "lan";
+  namedConfigured: boolean;
+}): PublicMode {
+  // Existing consent + autostart are evidence of an authorized legacy public
+  // connection. Preserve its Named route on Advanced/LAN upgrades. A configured
+  // domain or posture alone never activates sharing for a new installation.
+  if (input.selection.source === "legacy" && input.namedConfigured &&
+      (input.nodeMode === "advanced" || input.nodeMode === "lan")) return "named";
+  return input.selection.mode;
+}
+
+export function shouldAutoStartSelectedQuick(input: {
+  selection: ReturnType<typeof resolvePublicModeSelection>;
+  consentGranted: boolean;
+  autoStartEnabled: boolean;
+}): boolean {
+  if (input.selection.mode !== "quick") return false;
+  if (input.selection.source === "environment") return true;
+  return input.consentGranted && input.autoStartEnabled;
 }
 
 const normalizeMode = (value: string | undefined): PublicMode => {

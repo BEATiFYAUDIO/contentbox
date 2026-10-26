@@ -1,5 +1,15 @@
 # Certifyd Core Linux Package
 
+On Debian or a compatible desktop, open the `.deb` package with the graphical
+package installer. Then launch **Certifyd Core** from the application menu.
+Installing the package does not start Core or enable public sharing. Removing
+the package does not remove creator data in your home directory.
+
+If you used a portable Certifyd Core archive before, stop that copy before
+starting the installed application. The two copies must not use the same data
+directory and ports at the same time.
+
+The portable `.tar.gz` package remains available for advanced installations.
 Extract the archive and run:
 
 ```sh
@@ -38,7 +48,9 @@ Optional desktop integration:
 ./install-desktop.sh
 ```
 
-This installs both normal local and LAN access launchers:
-
-- `Certifyd Core`
-- `Certifyd Core (LAN Access)`
+This installs one `Certifyd Core` launcher. On desktops with GTK 3 and a
+StatusNotifier/AppIndicator host, it also provides a tray menu with Core health,
+Open Dashboard, Start Core, Stop Core, View Logs, and Quit. The desktop actions
+remain available when a tray is unsupported. Stopping Core closes its public
+listener and any Core-owned tunnel process; it does not stop an OS-managed
+cloudflared service. No terminal window is needed for the desktop launcher.

@@ -164,6 +164,9 @@ model User {
   paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
   entitlements         Entitlement[] @relation("EntitlementBuyer")
   audienceEvents       AudienceEvent[]
+  audienceTrackingActivation AudienceTrackingActivation?
+  cloudflareAnalyticsConnection CloudflareAnalyticsConnection?
+  cloudflareAnalyticsSnapshots CloudflareAnalyticsSnapshot[]
   remoteInvites        RemoteInvite[]
   salesAsSeller        Sale[] @relation("SaleSeller")
   salesConfirmed       Sale[] @relation("SaleConfirmer")
@@ -816,6 +819,7 @@ model AudienceEvent {
   eventType   AudienceEventType
   sessionId   String?
   actorUserId String?
+  definition  String?
   createdAt   DateTime          @default(now())
 
   content   ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
@@ -824,6 +828,33 @@ model AudienceEvent {
   @@index([contentId, eventType, createdAt])
   @@index([sessionId, contentId, eventType, createdAt])
   @@index([actorUserId, createdAt])
+  @@index([definition, createdAt])
+}
+
+model AudienceViewClaim {
+  contentId        String
+  sessionId        String
+  lastRecordedAtMs BigInt
+
+  @@id([contentId, sessionId])
+  @@index([lastRecordedAtMs])
+}
+
+model AudienceTrackingActivation {
+  userId      String   @id
+  activatedAt DateTime
+  freshAccount Boolean @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AudienceTrackingWindow {
+  id           String    @id @default(cuid())
+  startedAt    DateTime
+  coveredUntil DateTime
+  endedAt      DateTime?
+
+  @@index([startedAt, coveredUntil])
 }
 
 model Sale {
@@ -887,6 +918,45 @@ model MetadataProviderConfig {
   lastError              String?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
+}
+
+model CloudflareAnalyticsConnection {
+  userId          String   @id
+  zoneId          String
+  accountId       String?
+  hostname        String
+  tokenCiphertext String
+  tokenIv         String
+  tokenTag        String
+  lastCheckedAt   DateTime?
+  lastSyncAt      DateTime?
+  lastStatus      String?
+  lastError       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CloudflareAnalyticsSnapshot {
+  id             String   @id @default(cuid())
+  userId         String
+  zoneId         String
+  hostname       String
+  source         String
+  metric         String
+  day            String
+  rowsJson       String
+  sampleInterval Float?
+  coverage       String
+  fetchedAt      DateTime
+  committed      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, zoneId, hostname, source, metric, day, fetchedAt])
+  @@index([userId, zoneId, hostname, fetchedAt])
+  @@index([userId, source, metric, day])
 }
 
 model Entitlement {
