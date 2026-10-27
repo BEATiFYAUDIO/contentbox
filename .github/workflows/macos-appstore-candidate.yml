@@ -44,8 +44,16 @@ jobs:
         run: |
           set -euo pipefail
           app='.dist/macos-${{ matrix.arch }}/stage/Certifyd Core.app'
-          codesign -d --entitlements :- "$app" 2>/dev/null | plutil -extract com.apple.security.app-sandbox raw -o - -
-          codesign -d --entitlements :- "$app" 2>/dev/null | plutil -extract com.apple.security.network.server raw -o - -
+          python3 - "$app" <<'PY'
+          import plistlib, subprocess, sys
+          app = sys.argv[1]
+          xml = subprocess.check_output(["codesign", "-d", "--entitlements", ":-", app], stderr=subprocess.DEVNULL)
+          rights = plistlib.loads(xml)
+          assert rights.get("com.apple.security.app-sandbox") is True, rights
+          assert rights.get("com.apple.security.network.client") is True, rights
+          assert rights.get("com.apple.security.network.server") is True, rights
+          print("Sandbox and network entitlements: PASS")
+          PY
           bash scripts/validate-macos-appstore-candidate.sh '${{ matrix.arch }}' '${{ matrix.port }}'
       - name: Upload failure logs only
         if: failure()
