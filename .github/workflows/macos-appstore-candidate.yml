@@ -1,0 +1,56 @@
+name: macOS App Store Candidate Validation
+
+on:
+  push:
+    branches:
+      - feature/macos-app-store-sandbox-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: Sandbox candidate ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-14-large
+            port: 4584
+          - arch: arm64
+            runner: macos-14-xlarge
+            port: 4585
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source and runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          sw_vers
+          uname -m
+      - name: Stage Mac app without a release DMG
+        shell: bash
+        run: bash scripts/build-macos-package.sh --arch '${{ matrix.arch }}' --version 0.1.0-beta.27 --stage-only
+      - name: Apply validation-only ad-hoc sandbox signature
+        shell: bash
+        run: python3 scripts/sign-macos-appstore-candidate.py '.dist/macos-${{ matrix.arch }}/stage/Certifyd Core.app'
+      - name: Check sandbox entitlements and local runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          app='.dist/macos-${{ matrix.arch }}/stage/Certifyd Core.app'
+          codesign -d --entitlements :- "$app" 2>/dev/null | plutil -extract com.apple.security.app-sandbox raw -o - -
+          codesign -d --entitlements :- "$app" 2>/dev/null | plutil -extract com.apple.security.network.server raw -o - -
+          bash scripts/validate-macos-appstore-candidate.sh '${{ matrix.arch }}' '${{ matrix.port }}'
+      - name: Upload failure logs only
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appstore-candidate-logs-${{ matrix.arch }}
+          path: ~/Library/Containers/me.certifyd.core/Data/Library/Application Support/ContentBox/logs/*.log
+          if-no-files-found: ignore

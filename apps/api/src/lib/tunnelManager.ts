@@ -173,6 +173,10 @@ async function downloadCloudflared(
   execRunner: ExecFileRunner = execFileAsync,
   requestedSpec?: DownloadSpec
 ) {
+  // A sandboxed Mac App Store build cannot fetch and execute new code.
+  if (process.env.CERTIFYD_APP_STORE_CANDIDATE === "1") {
+    throw new Error("Public tunnels require a bundled cloudflared helper in this Mac App Store candidate.");
+  }
   const spec = requestedSpec || pickDownloadSpec();
   if (!String(process.env.CLOUDFLARED_VERSION || "").trim()) {
     logger?.warn?.("CLOUDFLARED_VERSION not set; downloading latest cloudflared");

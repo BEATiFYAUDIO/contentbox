@@ -128,6 +128,16 @@ detect_lan_hosts() {
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# The App Store candidate keeps its data and generated keys inside its own
+# container. This marker is included only in the isolated validation build.
+if [[ -f "$script_dir/app-store-candidate" ]]; then
+  case "$HOME" in
+    */Library/Containers/me.certifyd.core/Data) ;;
+    *) export HOME="$HOME/Library/Containers/me.certifyd.core/Data" ;;
+  esac
+  mkdir -p "$HOME"
+  export CERTIFYD_APP_STORE_CANDIDATE=1
+fi
 set_launcher_status "Checking the local runtime..."
 resources_dir="$script_dir"
 app_dir="$resources_dir/app"
