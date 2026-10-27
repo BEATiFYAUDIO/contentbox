@@ -81,15 +81,14 @@ merge_host_lists() {
 }
 
 subtract_host_lists() {
-  local existing="${1:-}" removed="${2:-}" item remove old
-  while IFS= read -r item; do
-    [[ -n "$item" ]] || continue
-    remove=0
-    while IFS= read -r old; do
-      [[ "$item" == "$old" ]] && remove=1 && break
-    done < <(printf '%s' "$removed" | tr ',' '\n')
-    [[ "$remove" -eq 0 ]] && printf '%s\n' "$item"
-  done < <(printf '%s' "$existing" | tr ',' '\n') | normalize_host_list
+  local existing="${1:-}" removed="${2:-}"
+  # Bash process substitution opens /dev/fd, which App Sandbox denies.
+  awk -v existing="$existing" -v removed="$removed" 'BEGIN {
+    count = split(removed, old, ",")
+    for (i = 1; i <= count; i++) if (old[i] != "") exclude[old[i]] = 1
+    count = split(existing, item, ",")
+    for (i = 1; i <= count; i++) if (item[i] != "" && !exclude[item[i]]) print item[i]
+  }' | normalize_host_list
 }
 
 detect_primary_lan_host() {
