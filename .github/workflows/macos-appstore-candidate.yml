@@ -60,9 +60,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ".dist/macos-${{ matrix.arch }}/candidate"
-          output=".dist/macos-${{ matrix.arch }}/candidate/Certifyd-Core-AppStore-CANDIDATE-${{ matrix.arch }}.zip"
-          ditto -c -k --sequesterRsrc --keepParent ".dist/macos-${{ matrix.arch }}/stage/Certifyd Core.app" "$output"
-          shasum -a 256 "$output" > "$output.sha256"
+          candidate_dir=".dist/macos-${{ matrix.arch }}/candidate"
+          archive="Certifyd-Core-AppStore-CANDIDATE-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent ".dist/macos-${{ matrix.arch }}/stage/Certifyd Core.app" "$candidate_dir/$archive"
+          (cd "$candidate_dir" && shasum -a 256 "$archive" > "$archive.sha256")
           {
             echo "source_commit=${GITHUB_SHA}"
             echo "architecture=${{ matrix.arch }}"
