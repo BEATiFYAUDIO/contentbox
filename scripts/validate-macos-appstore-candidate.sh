@@ -26,7 +26,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$launcher"
+if ! "$launcher"; then
+  echo "Candidate startup failed; process and logs follow:" >&2
+  ps -ax -o pid=,command= | grep -F 'src/server.ts' || true
+  tail -n 80 "$data_root/logs/certifyd-core.err.log" >&2 || true
+  tail -n 80 "$data_root/logs/certifyd-core.out.log" >&2 || true
+  exit 1
+fi
 test -s "$data_root/config/api.env"
 test -s "$data_root/contentbox.db"
 test -s "$data_root/.node/node_private.pem"

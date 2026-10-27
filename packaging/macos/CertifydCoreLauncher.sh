@@ -400,8 +400,15 @@ wait_for_core_health() {
     if check_health; then
       return 0
     fi
-    if [[ -n "$pid" ]] && { ! kill -0 "$pid" >/dev/null 2>&1 || ! is_core_process "$pid"; }; then
-      return 1
+    if [[ -n "$pid" ]]; then
+      if ! kill -0 "$pid" >/dev/null 2>&1; then
+        return 1
+      fi
+      # macOS App Sandbox can hide another process's command line from ps.
+      # The PID came directly from this launcher; health is the authority.
+      if [[ "${CERTIFYD_APP_STORE_CANDIDATE:-}" != "1" ]] && ! is_core_process "$pid"; then
+        return 1
+      fi
     fi
     sleep 0.75
   done
