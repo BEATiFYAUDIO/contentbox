@@ -42,20 +42,20 @@ test -s "$data_root/.node/node_private.pem"
 test -s "$data_root/.node/node_public.pem"
 curl -fsS "http://127.0.0.1:$port/health" >/dev/null
 private_hash="$(shasum -a 256 "$data_root/.node/node_private.pem" | cut -d' ' -f1)"
-config_hash="$(shasum -a 256 "$data_root/config/api.env" | cut -d' ' -f1)"
+jwt_line="$(grep '^JWT_SECRET=' "$data_root/config/api.env")"
 CONTENTBOX_ROOT="$data_root" bash "$resources/stop.sh"
 
 "$launcher" --lan
 curl -fsS "http://127.0.0.1:$port/health" >/dev/null
 test "$private_hash" = "$(shasum -a 256 "$data_root/.node/node_private.pem" | cut -d' ' -f1)"
-test "$config_hash" = "$(shasum -a 256 "$data_root/config/api.env" | cut -d' ' -f1)"
+test "$jwt_line" = "$(grep '^JWT_SECRET=' "$data_root/config/api.env")"
 test "$legacy_hash" = "$(shasum -a 256 "$legacy_root/appstore-validation-sentinel" | cut -d' ' -f1)"
 
 lan_url="$(sed -n 's/^APP_BASE_URL="\(.*\)"$/\1/p' "$data_root/config/api.env" | tail -n 1)"
 if [[ "$lan_url" == "http://127.0.0.1:"* ]]; then
   echo "LAN address: UNTESTED (runner has no private interface)"
 else
-  curl --max-time 5 -fsS "$lan_url/health" >/dev/null
+  curl --noproxy '*' --max-time 5 -fsS "$lan_url/health" >/dev/null
   echo "Runner private-interface LAN health: PASS ($lan_url)"
 fi
 
