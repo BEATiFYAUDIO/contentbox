@@ -26,6 +26,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+CERTIFYD_SANDBOX_PROBE_PATH="$legacy_root/appstore-validation-probe" "$launcher" --sandbox-probe
+test ! -e "$legacy_root/appstore-validation-probe"
+
 if ! "$launcher"; then
   echo "Candidate startup failed; process and logs follow:" >&2
   ps -ax -o pid=,command= | grep -F 'src/server.ts' || true
@@ -42,13 +45,22 @@ private_hash="$(shasum -a 256 "$data_root/.node/node_private.pem" | cut -d' ' -f
 config_hash="$(shasum -a 256 "$data_root/config/api.env" | cut -d' ' -f1)"
 CONTENTBOX_ROOT="$data_root" bash "$resources/stop.sh"
 
-"$launcher"
+"$launcher" --lan
 curl -fsS "http://127.0.0.1:$port/health" >/dev/null
 test "$private_hash" = "$(shasum -a 256 "$data_root/.node/node_private.pem" | cut -d' ' -f1)"
 test "$config_hash" = "$(shasum -a 256 "$data_root/config/api.env" | cut -d' ' -f1)"
 test "$legacy_hash" = "$(shasum -a 256 "$legacy_root/appstore-validation-sentinel" | cut -d' ' -f1)"
 
+lan_url="$(sed -n 's/^APP_BASE_URL="\(.*\)"$/\1/p' "$data_root/config/api.env" | tail -n 1)"
+if [[ "$lan_url" == "http://127.0.0.1:"* ]]; then
+  echo "LAN address: UNTESTED (runner has no private interface)"
+else
+  curl --max-time 5 -fsS "$lan_url/health" >/dev/null
+  echo "Runner private-interface LAN health: PASS ($lan_url)"
+fi
+
 echo "Candidate startup/restart: PASS"
 echo "Sandbox-container data/key persistence: PASS"
 echo "Legacy data path unchanged: PASS"
+echo "Outside-container write denied: PASS"
 echo "LAN-device reachability: UNTESTED (CI has no phone on runner LAN)"

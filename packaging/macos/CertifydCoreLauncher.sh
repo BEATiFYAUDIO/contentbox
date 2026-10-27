@@ -146,6 +146,15 @@ api_dir="$app_dir/apps/api"
 schema_path="$api_dir/prisma/schema.prisma"
 prisma_cli="$api_dir/node_modules/prisma/build/index.js"
 
+if [[ "${CERTIFYD_APP_STORE_CANDIDATE:-}" == "1" && " ${*:-} " == *" --sandbox-probe "* ]]; then
+  [[ -n "${CERTIFYD_SANDBOX_PROBE_PATH:-}" ]] || fail "Sandbox probe path is required."
+  if "$node_bin" -e 'require("fs").writeFileSync(process.argv[1], "sandbox-escaped")' "$CERTIFYD_SANDBOX_PROBE_PATH" >/dev/null 2>&1; then
+    fail "Sandbox allowed a write outside the app container."
+  fi
+  echo "[Certifyd Core] Sandbox denied an outside-container write."
+  exit 0
+fi
+
 [[ -x "$node_bin" ]] || fail "Bundled Node runtime missing: $node_bin"
 [[ -d "$api_dir" ]] || fail "API runtime missing: $api_dir"
 [[ -f "$schema_path" ]] || fail "Prisma schema missing: $schema_path"
