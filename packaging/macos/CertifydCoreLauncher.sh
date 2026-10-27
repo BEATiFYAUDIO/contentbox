@@ -81,15 +81,14 @@ merge_host_lists() {
 }
 
 subtract_host_lists() {
-  local existing="${1:-}" removed="${2:-}" item remove old
-  while IFS= read -r item; do
-    [[ -n "$item" ]] || continue
-    remove=0
-    while IFS= read -r old; do
-      [[ "$item" == "$old" ]] && remove=1 && break
-    done < <(printf '%s' "$removed" | tr ',' '\n')
-    [[ "$remove" -eq 0 ]] && printf '%s\n' "$item"
-  done < <(printf '%s' "$existing" | tr ',' '\n') | normalize_host_list
+  local existing="${1:-}" removed="${2:-}"
+  # Bash process substitution opens /dev/fd, which App Sandbox denies.
+  awk -v existing="$existing" -v removed="$removed" 'BEGIN {
+    count = split(removed, old, ",")
+    for (i = 1; i <= count; i++) if (old[i] != "") exclude[old[i]] = 1
+    count = split(existing, item, ",")
+    for (i = 1; i <= count; i++) if (item[i] != "" && !exclude[item[i]]) print item[i]
+  }' | normalize_host_list
 }
 
 detect_primary_lan_host() {
@@ -128,6 +127,16 @@ detect_lan_hosts() {
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# The App Store candidate keeps its data and generated keys inside its own
+# container. This marker is included only in the isolated validation build.
+if [[ -f "$script_dir/app-store-candidate" ]]; then
+  case "$HOME" in
+    */Library/Containers/me.certifyd.core/Data) ;;
+    *) export HOME="$HOME/Library/Containers/me.certifyd.core/Data" ;;
+  esac
+  mkdir -p "$HOME"
+  export CERTIFYD_APP_STORE_CANDIDATE=1
+fi
 set_launcher_status "Checking the local runtime..."
 resources_dir="$script_dir"
 app_dir="$resources_dir/app"
@@ -135,6 +144,15 @@ node_bin="$resources_dir/runtime/node/bin/node"
 api_dir="$app_dir/apps/api"
 schema_path="$api_dir/prisma/schema.prisma"
 prisma_cli="$api_dir/node_modules/prisma/build/index.js"
+
+if [[ "${CERTIFYD_APP_STORE_CANDIDATE:-}" == "1" && " ${*:-} " == *" --sandbox-probe "* ]]; then
+  [[ -n "${CERTIFYD_SANDBOX_PROBE_PATH:-}" ]] || fail "Sandbox probe path is required."
+  if "$node_bin" -e 'require("fs").writeFileSync(process.argv[1], "sandbox-escaped")' "$CERTIFYD_SANDBOX_PROBE_PATH" >/dev/null 2>&1; then
+    fail "Sandbox allowed a write outside the app container."
+  fi
+  echo "[Certifyd Core] Sandbox denied an outside-container write."
+  exit 0
+fi
 
 [[ -x "$node_bin" ]] || fail "Bundled Node runtime missing: $node_bin"
 [[ -d "$api_dir" ]] || fail "API runtime missing: $api_dir"
@@ -390,8 +408,15 @@ wait_for_core_health() {
     if check_health; then
       return 0
     fi
-    if [[ -n "$pid" ]] && { ! kill -0 "$pid" >/dev/null 2>&1 || ! is_core_process "$pid"; }; then
-      return 1
+    if [[ -n "$pid" ]]; then
+      if ! kill -0 "$pid" >/dev/null 2>&1; then
+        return 1
+      fi
+      # macOS App Sandbox can hide another process's command line from ps.
+      # The PID came directly from this launcher; health is the authority.
+      if [[ "${CERTIFYD_APP_STORE_CANDIDATE:-}" != "1" ]] && ! is_core_process "$pid"; then
+        return 1
+      fi
     fi
     sleep 0.75
   done
