@@ -55,6 +55,27 @@ jobs:
           print("Sandbox and network entitlements: PASS")
           PY
           bash scripts/validate-macos-appstore-candidate.sh '${{ matrix.arch }}' '${{ matrix.port }}'
+      - name: Package validation-only app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ".dist/macos-${{ matrix.arch }}/candidate"
+          output=".dist/macos-${{ matrix.arch }}/candidate/Certifyd-Core-AppStore-CANDIDATE-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent ".dist/macos-${{ matrix.arch }}/stage/Certifyd Core.app" "$output"
+          shasum -a 256 "$output" > "$output.sha256"
+          {
+            echo "source_commit=${GITHUB_SHA}"
+            echo "architecture=${{ matrix.arch }}"
+            echo "signing=ad-hoc; not valid for App Store submission"
+            echo "validation=local sandbox startup, restart, key persistence, outside write denial, private interface health"
+          } > ".dist/macos-${{ matrix.arch }}/candidate/BUILD.txt"
+      - name: Upload validation-only app
+        uses: actions/upload-artifact@v4
+        with:
+          name: appstore-validation-only-${{ matrix.arch }}
+          path: .dist/macos-${{ matrix.arch }}/candidate/*
+          if-no-files-found: error
+          retention-days: 7
       - name: Upload failure logs only
         if: failure()
         uses: actions/upload-artifact@v4
