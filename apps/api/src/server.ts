@@ -3791,6 +3791,27 @@ async function resolveParticipantPayoutReadinessForAllocation(
     };
   }
 
+  const splitParticipantPinned =
+    Boolean(asString(allocationCtx?.splitParticipantId || "").trim()) ||
+    String(allocationCtx?.allocationSource || "").trim().toLowerCase() === "split_locked" ||
+    String(allocationCtx?.participantRef || "").trim().startsWith("split_participant:");
+
+  // A locked split must use the participant's current destination. An address in
+  // the delegated blueprint was captured when the intent was created and may
+  // belong to a wallet the participant has since replaced.
+  if (splitParticipantPinned) {
+    return {
+      status: "pending",
+      readinessReason: "SPLIT_PARTICIPANT_DESTINATION_MISSING",
+      destinationType: null,
+      destinationSummary: null,
+      destinationSource: null,
+      destinationFingerprint: null,
+      destinationResolvedAt: null,
+      blockedReason: null
+    };
+  }
+
   const delegatedBlueprintDestination = resolveDelegatedBlueprintDestination({
     paymentIntentId: intent.paymentIntentId,
     contentId: allocationCtx?.contentId || intent.contentId || null,
@@ -3814,24 +3835,6 @@ async function resolveParticipantPayoutReadinessForAllocation(
       destinationSource: delegatedBlueprintDestination.destinationSource,
       destinationFingerprint: delegatedBlueprintDestination.destinationFingerprint,
       destinationResolvedAt: delegatedBlueprintDestination.destinationResolvedAt,
-      blockedReason: null
-    };
-  }
-
-  const splitParticipantPinned =
-    Boolean(asString(allocationCtx?.splitParticipantId || "").trim()) ||
-    String(allocationCtx?.allocationSource || "").trim().toLowerCase() === "split_locked" ||
-    String(allocationCtx?.participantRef || "").trim().startsWith("split_participant:");
-
-  if (splitParticipantPinned) {
-    return {
-      status: "pending",
-      readinessReason: "SPLIT_PARTICIPANT_DESTINATION_MISSING",
-      destinationType: null,
-      destinationSummary: null,
-      destinationSource: null,
-      destinationFingerprint: null,
-      destinationResolvedAt: null,
       blockedReason: null
     };
   }
