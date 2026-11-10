@@ -6,6 +6,8 @@ import ts from "typescript";
 import Fastify from "fastify";
 import crypto from "node:crypto";
 import { mapParticipantCheckoutError, mapPublicPaymentsIntentError } from "./publicPaymentsIntentErrors.js";
+import { CheckoutSafetyError, isCheckoutFailureCode } from "../payments/checkoutSafety.js";
+import { participantPayoutPreflightError } from "../payments/payoutPreflight.js";
 import { recoverAcceptedRemoteIdentity } from "./participantOriginRecovery.js";
 import { isCommerceEligibleLockedParticipant } from "./splitAuthority.js";
 
@@ -71,8 +73,8 @@ test("checkout recovers recreated collaborator row and fetches the current walle
 // Real Fastify request/response serialization and production checkout, allocation,
 // routing and provider-client functions. Database, creator endpoint and provider
 // are fixtures: no live data, external requests or spendable invoices are used.
-for (const evidence of [true, false]) {
-  test(`public checkout ${evidence ? "sends recovered 50/50 destinations to provider" : "preserves provider payout rejection and removes failed intent"}`, async (t) => {
+for (const preflight of [false, true]) for (const evidence of [true, false]) {
+  test(`public checkout (local preflight ${preflight}) ${evidence ? "sends recovered 50/50 destinations to provider" : "rejects unresolved collaborator"}`, async (t) => {
     const f = fixture({ evidence });
     const api = Fastify(); const provider = Fastify();
     t.after(async () => { await api.close(); await provider.close(); });
@@ -99,7 +101,7 @@ for (const evidence of [true, false]) {
     const context = {
       ...f.context, crypto, AbortController, setTimeout, clearTimeout,
       app: { log: { info() {}, warn() {}, error(value: unknown) { errors.push(value); } } },
-      mapParticipantCheckoutError, mapPublicPaymentsIntentError,
+      mapParticipantCheckoutError, mapPublicPaymentsIntentError, CheckoutSafetyError, isCheckoutFailureCode, participantPayoutPreflightError,
       parseSats: (x: unknown) => BigInt(String(x || 0)), rateLimit: () => true,
       isSaleable: () => true, resolveBuyerSession: async () => null,
       getRequestIp: () => null, hashIp: () => null,
@@ -133,17 +135,18 @@ for (const evidence of [true, false]) {
       findProviderPaymentIntentByPaymentIntentId: () => null,
       normalizeProviderFallbackPolicy: () => ({ payoutPolicy: "strict", allowProviderFallback: false }),
       resolveNodeIdForRuntimeStatus: () => "fixture-node", upsertProviderPaymentIntentByPaymentIntentId() {},
-      resolveNewIntentPayoutExecutionMode: () => "fixture",
+      resolveNewIntentPayoutExecutionMode: () => preflight ? "participant" : "fixture",
       resolveDurableReceiptOriginForSeller: async () => null, deriveProviderFeeReasonLabel: () => "fixture"
     };
     const handler = runInNewContext(js + "\nhandlePublicPaymentsIntents", context);
     api.post("/buy/payments/intents", handler);
     const response = await api.inject({ method: "POST", url: "/buy/payments/intents", payload: { contentId: "work", amountSats: "200" } });
     assert.equal(errors.length, 0, JSON.stringify(errors));
-    assert.equal(providerCalls, 1);
+    assert.equal(providerCalls, preflight && !evidence ? 0 : 1);
     assert.equal(response.statusCode, evidence ? 200 : 409, response.body);
-    assert.equal(deleted, !evidence);
-    assert.deepEqual(providerBody.participantAllocations.map((p: any) => p.bps), [5000, 5000]);
+    assert.equal(deleted, !evidence && !preflight);
+    if (providerBody) assert.deepEqual(providerBody.participantAllocations.map((p: any) => p.bps), [5000, 5000]);
+    if (preflight && !evidence) assert.equal(intent, undefined, "No invoice or pending purchase should exist when a payee is unresolved");
     if (evidence) {
       assert.equal(providerBody.participantAllocations[1].destinationValue, "first@walletofsatoshi.com");
       assert.equal(response.json().paymentOptions.lightning.available, true);

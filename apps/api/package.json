@@ -35,7 +35,7 @@
     "test:public-playback": "npx tsx --test src/lib/publicPlayback.test.ts src/lib/derivedPreview.test.ts",
     "test:purchase-fulfillment": "tsx --test src/payments/purchaseFulfillment.test.ts src/payments/finalizePurchase.test.ts",
     "test:upgrade-integrity": "tsx --test src/lib/hlsRendition.test.ts src/scripts/local_database_upgrade.test.ts",
-    "test:payout-status": "tsx --test src/payments/payoutStatus.test.ts src/payments/lightning.payoutSafety.test.ts",
+    "test:payout-status": "tsx --test src/payments/payoutStatus.test.ts src/payments/lightning.payoutSafety.test.ts src/payments/checkoutSafety.test.ts",
     "test:fan-handoff": "tsx src/scripts/fan_receipt_handoff_regression_test.ts",
     "test:delivery-security": "npx tsx --test src/lib/deliverySecurity.test.ts",
     "test:delivery-security-integration": "npx tsx --test src/lib/deliverySecurity.integration.test.ts",

@@ -167,7 +167,7 @@ test("both public provider invoice handlers reject an unpayable split before iss
     });
     vm.runInContext(ts.transpileModule(`var handler = ${handler};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, ctx);
     const reply: any = { code: (value: number) => { status = value; return reply; }, send: (value: any) => { response = value; } };
-    await ctx.handler({ body: { creatorNodeId: "fixture-creator", contentId: "fixture-content", paymentIntentId: "fixture-payment", amountSats: "200", participantAllocations: [{ bps: 5000, destinationVerified: false }] } }, reply);
+    await ctx.handler({ body: { creatorNodeId: "fixture-creator", contentId: "fixture-content", paymentIntentId: "fixture-payment", amountSats: "200", participantAllocations: [{ bps: 10000, destinationVerified: false }] } }, reply);
     assert.equal(status!, 409); assert.equal(response.error, "PARTICIPANT_PAYOUT_DESTINATION_REQUIRED");
   }
   assert.equal(participantPayoutPreflightError([{ bps: 10000, destinationVerified: true, destinationType: "lightning_address", destinationValue: "fixture@example.com" }]), null);

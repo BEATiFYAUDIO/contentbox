@@ -88,6 +88,7 @@ import {
   type LightningCredentialRole
 } from "./payments/lightning.js";
 import { participantPayoutPreflightError } from "./payments/payoutPreflight.js";
+import { CheckoutSafetyError, checkoutFailureBody, isCheckoutFailureCode, verifiedProviderStatus } from "./payments/checkoutSafety.js";
 import { finalizePurchase, SETTLEMENT_ALLOCATION_INVALID } from "./payments/finalizePurchase.js";
 import { bindPurchaseBuyer, readPurchaseBuyerBinding, recoverPurchaseFulfillment, trackSettledPurchase } from "./payments/purchaseFulfillment.js";
 import {
@@ -1800,6 +1801,9 @@ app.addHook("onRequest", async (req, reply) => {
 });
 
 app.setErrorHandler((error, req, reply) => {
+  if (error instanceof CheckoutSafetyError) {
+    return reply.code(error.statusCode).send(checkoutFailureBody(error));
+  }
   const id = (req as any).requestId || null;
   try {
     app.log.error({ requestId: id, message: String((error as any)?.message || error) }, "Unhandled error");
@@ -7782,26 +7786,10 @@ async function fetchDelegatedProviderPaymentIntentStatus(paymentIntentId: string
       signal: controller.signal
     } as any);
     const json: any = await res.json().catch(() => null);
-    if (!res.ok) return { paid: false, paidAt: null, status: "unavailable" };
-    const status = String(json?.status || "unknown").trim().toLowerCase();
-    const payoutStatus = String(json?.payoutStatus || "").trim().toLowerCase();
-    const payoutSummaryStatus = String(json?.payoutSummaryStatus || "").trim().toLowerCase();
-    const payoutReference = String(json?.payoutReference || "").trim();
-    const remittedAtRaw = String(json?.remittedAt || "").trim();
-    const paidAtRaw = String(json?.paidAt || "").trim();
-    const remittedAt =
-      remittedAtRaw && !Number.isNaN(new Date(remittedAtRaw).getTime()) ? new Date(remittedAtRaw).toISOString() : null;
-    const paidAt = paidAtRaw && !Number.isNaN(new Date(paidAtRaw).getTime()) ? new Date(paidAtRaw).toISOString() : null;
-    const paid =
-      Boolean(json?.paid) ||
-      status === "paid" ||
-      payoutStatus === "paid" ||
-      payoutSummaryStatus === "paid" ||
-      Boolean(remittedAt) ||
-      Boolean(payoutReference);
-    return { paid, paidAt, status: status || "unknown" };
+    if (!res.ok) throw new CheckoutSafetyError("PAYMENT_VERIFICATION_UNAVAILABLE");
+    return verifiedProviderStatus(json, paymentIntentId);
   } catch {
-    return { paid: false, paidAt: null, status: "unavailable" };
+    throw new CheckoutSafetyError("PAYMENT_VERIFICATION_UNAVAILABLE");
   } finally {
     clearTimeout(timeout);
   }
@@ -7820,6 +7808,7 @@ async function createLightningInvoiceWithRetry(
       if (invoice?.bolt11) return invoice;
       lastError = new Error("invoice_not_created");
     } catch (e: any) {
+      if (e instanceof CheckoutSafetyError) throw e;
       lastError = e;
     }
   }
@@ -14062,7 +14051,10 @@ function registerPublicRoutes(appPublic: any) {
       });
       bolt11 = invoice?.bolt11 || null;
       providerInvoiceRef = invoice?.providerId || null;
-    } catch {}
+    } catch (error) {
+      return reply.code(503).send(checkoutFailureBody(error));
+    }
+    if (!bolt11 || !providerInvoiceRef) return reply.code(503).send(checkoutFailureBody(null));
     const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
     const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
     const fee = computeProviderFeeBreakdown(amountSats, {
@@ -14154,7 +14146,12 @@ function registerPublicRoutes(appPublic: any) {
     let current = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
     if (!current) return notFound(reply, "Provider payment intent not found");
     if (current.status !== "paid" && current.providerInvoiceRef) {
-      const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef).catch(() => null);
+      let invoiceStatus;
+      try {
+        invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef, BigInt(current.amountSats));
+      } catch {
+        return reply.code(503).send({ ...checkoutFailureBody(null, "PAYMENT_VERIFICATION_UNAVAILABLE"), status: "unknown", paid: null, paidAt: null });
+      }
       if (invoiceStatus?.paid) {
         const patched = updateProviderPaymentIntent(current.id, {
           status: "paid",
@@ -18468,7 +18465,10 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     });
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
-  } catch {}
+  } catch (error) {
+    return reply.code(503).send(checkoutFailureBody(error));
+  }
+  if (!bolt11 || !providerInvoiceRef) return reply.code(503).send(checkoutFailureBody(null));
   const fee = computeProviderFeeBreakdown(amountSats, {
     providerInvoicing: body.needsProviderInvoicing !== false,
     durablePublicHosting: Boolean(body.needsDurablePublicHosting)
@@ -18561,7 +18561,12 @@ app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: 
   let current = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
   if (!current) return notFound(reply, "Provider payment intent not found");
   if (current.status !== "paid" && current.providerInvoiceRef) {
-    const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef).catch(() => null);
+    let invoiceStatus;
+    try {
+      invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef, BigInt(current.amountSats));
+    } catch {
+      return reply.code(503).send({ ...checkoutFailureBody(null, "PAYMENT_VERIFICATION_UNAVAILABLE"), status: "unknown", paid: null, paidAt: null });
+    }
     if (invoiceStatus?.paid) {
       const patched = updateProviderPaymentIntent(current.id, {
         status: "paid",
@@ -22008,7 +22013,10 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     });
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
-  } catch {}
+  } catch (error) {
+    return reply.code(503).send(checkoutFailureBody(error));
+  }
+  if (!bolt11 || !providerInvoiceRef) return reply.code(503).send(checkoutFailureBody(null));
   const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
@@ -22098,7 +22106,10 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     });
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
-  } catch {}
+  } catch (error) {
+    return reply.code(503).send(checkoutFailureBody(error));
+  }
+  if (!bolt11 || !providerInvoiceRef) return reply.code(503).send(checkoutFailureBody(null));
   const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
@@ -22163,7 +22174,7 @@ app.patch("/api/provider/payment-intents/:id", { preHandler: requireAuth }, asyn
         message: "This payment intent cannot be marked paid without a verifiable provider invoice reference."
       });
     }
-    const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef).catch(() => null);
+    const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef, BigInt(current.amountSats));
     if (!invoiceStatus?.paid) {
       return reply.code(409).send({
         error: "PAYMENT_NOT_SETTLED",
@@ -41696,6 +41707,27 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       }
     }
 
+    // Validate the complete automatic split before any buyer invoice is minted,
+    // including a locally invoiced purchase that never reaches the provider API.
+    let checkoutAllocationBlueprint: Awaited<ReturnType<typeof buildDelegatedAllocationBlueprint>> | null = null;
+    if (resolveNewIntentPayoutExecutionMode() === "participant" && (parseProviderRemitMode(payoutDestination.providerRemitMode) || "auto_forward") === "auto_forward") {
+      let allocationError: string | null;
+      try {
+        const fee = computeProviderFeeBreakdown(amountSats.toString(), {
+          providerInvoicing: serviceProfile.needsProviderInvoicing,
+          durablePublicHosting: serviceProfile.needsDurablePublicHosting
+        });
+        checkoutAllocationBlueprint = await buildDelegatedAllocationBlueprint({ contentId, distributableSats: BigInt(fee.creatorNetSats) });
+        allocationError = participantPayoutPreflightError(checkoutAllocationBlueprint?.participants);
+      } catch {
+        allocationError = "PARTICIPANT_PAYOUT_DESTINATION_REQUIRED";
+      }
+      if (allocationError) {
+        const mapped = mapParticipantCheckoutError(allocationError)!;
+        return reply.code(mapped.statusCode).send(mapped.body);
+      }
+    }
+
     const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
     const receiptToken = crypto.randomBytes(24).toString("hex");
     const receiptTokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
@@ -41809,8 +41841,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         if (invoice) lightning = invoice;
         intentLog.invoiceCreation = lightning ? "created" : "not_configured";
       } catch (e: any) {
-        lightningReason = "INVOICE_GENERATION_FAILED";
-        lndProbe = await diagnoseLightning();
+        lightningReason = e instanceof CheckoutSafetyError ? e.code : "INVOICE_GENERATION_FAILED";
+        if (!(e instanceof CheckoutSafetyError)) lndProbe = await diagnoseLightning();
         intentLog.invoiceCreation = "failed";
         app.log.warn(
           {
@@ -41859,7 +41891,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               providerInvoicing: serviceProfile.needsProviderInvoicing,
               durablePublicHosting: serviceProfile.needsDurablePublicHosting
             });
-            delegatedAllocationBlueprint = await buildDelegatedAllocationBlueprint({
+            delegatedAllocationBlueprint = checkoutAllocationBlueprint || await buildDelegatedAllocationBlueprint({
               contentId,
               distributableSats: BigInt(String(feeBreakdown.creatorNetSats || "0"))
             });
@@ -41945,7 +41977,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               // Invoice was created after repairing the provider delegated-publish record.
             } else {
               intentLog.delegatedLightning = providerCode || String(providerError?.message || "provider_unavailable");
-              if (mapParticipantCheckoutError(providerCode)) {
+              if (mapParticipantCheckoutError(providerCode) || isCheckoutFailureCode(providerCode)) {
                 lightningReason = providerCode;
               } else if (providerCode === "DELEGATED_PUBLISH_REQUIRED") {
                 lightningReason = "PROVIDER_DELEGATED_PUBLISH_REQUIRED";
@@ -42004,6 +42036,10 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
     if (!onchain && !lightning) {
       await prisma.paymentIntent.delete({ where: { id: intent.id } }).catch(() => {});
+      if (isCheckoutFailureCode(lightningReason)) {
+        const mapped = mapPublicPaymentsIntentError({ code: lightningReason });
+        return reply.code(mapped.statusCode).send(mapped.body);
+      }
       const participantError = mapParticipantCheckoutError(lightningReason);
       if (participantError) {
         app.log.warn({ ...intentLog, mappedCode: participantError.body.code, lightningReason }, "publicPaymentsIntents.participant_payout_not_ready");
@@ -42672,7 +42708,7 @@ async function settleLocalProviderPaymentIntentRecord(
   if (!providerIntent) return null;
   let current = providerIntent;
   if (current.status !== "paid" && current.providerInvoiceRef) {
-    const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef).catch(() => null);
+    const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef, BigInt(current.amountSats));
     if (invoiceStatus?.paid) {
       const patched = updateProviderPaymentIntent(current.id, {
         status: "paid",
@@ -51598,23 +51634,13 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
 
     if (hasExisting && intent.providerId?.startsWith("lnd:")) {
       try {
-        const chk = await checkLightningInvoice(prisma as any, intent.providerId);
+        const chk = await checkLightningInvoice(prisma as any, intent.providerId, intent.amountSats);
         const st = normalizeRemoteInvoiceState((chk as any)?.state);
         if (chk.paid || st === "SETTLED") return intent;
-        if ((st === "OPEN" || st === "ACCEPTED") && !existingInvoiceExpired) return intent;
-        if (st === "CANCELED") {
-          // rotate below
-        } else {
-          if (existingInvoiceExpired) {
-            // local expiry is authoritative for customer UX; rotate below.
-          } else {
-            return intent;
-          }
-        }
+        // Only LND can confirm cancellation; local expiry is not settlement truth.
+        if (st !== "CANCELED") return intent;
       } catch {
-        const createdAtMs = intent.createdAt ? new Date(intent.createdAt).getTime() : 0;
-        const ageMs = createdAtMs > 0 ? Date.now() - createdAtMs : Number.MAX_SAFE_INTEGER;
-        if (ageMs < 2 * 60 * 1000) return intent;
+        throw new CheckoutSafetyError("PAYMENT_VERIFICATION_UNAVAILABLE");
       }
     } else if (hasExisting) {
       const delegatedWithoutExpiry = intent.providerId?.startsWith("providerpi:") && !intent.lightningExpiresAt;
@@ -51835,7 +51861,7 @@ async function settlePaymentIntentFromRails(intentId: string) {
       }
     }
   } else if (intent.providerId && lndRHashB64FromProviderId(intent.providerId)) {
-    const res = await checkLightningInvoice(prisma as any, intent.providerId);
+    const res = await checkLightningInvoice(prisma as any, intent.providerId, intent.amountSats);
     if (res.paid) {
       paidVia = "lightning";
       paidAt = res.paidAt || new Date().toISOString();

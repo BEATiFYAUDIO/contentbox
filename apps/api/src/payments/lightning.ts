@@ -4,6 +4,7 @@ import type { PrismaClient } from "@prisma/client";
 import fsSync from "node:fs";
 import { decryptSecret, encryptSecret } from "../lib/cryptoConfig.js";
 import { Cooldown, Semaphore, SingleFlight, TTLCache } from "../lib/asyncPrimitives.js";
+import { CheckoutSafetyError, lndReceiveFailure, verifiedLndInvoice } from "./checkoutSafety.js";
 
 type PrismaLike = Pick<PrismaClient, "$queryRaw" | "$executeRaw">;
 
@@ -1271,6 +1272,8 @@ export function mapLightningReadinessFromLnd(input: { getinfo: any; channels: an
   if (!syncedToChain) hints.push("Node is not yet synced to chain.");
   if (!syncedToGraph) hints.push("Node graph is still syncing.");
   if (channelCount === 0) hints.push("No channels. You can’t receive Lightning yet.");
+  const receiveFailure = lndReceiveFailure(gi, input.channels, 1n);
+  if (receiveFailure) hints.push(new CheckoutSafetyError(receiveFailure).message);
 
   return {
     ok: true,
@@ -1283,7 +1286,7 @@ export function mapLightningReadinessFromLnd(input: { getinfo: any; channels: an
     },
     wallet: { syncedToChain, syncedToGraph, blockHeight },
     channels: { count: channelCount },
-    receiveReady: syncedToChain && syncedToGraph && channelCount > 0,
+    receiveReady: receiveFailure === null,
     hints
   };
 }
@@ -2551,9 +2554,28 @@ export async function refreshIntentFromLnd(
  *   providerId encoded as: "lnd:<r_hash_base64>"
  * - Else fallback to LNbits (existing behavior).
  */
+export async function assertLightningReceiveCapacity(prisma: PrismaLike, amountSats: bigint, invoiceConfig: RuntimeLndConfig) {
+  try {
+    const readConfig = await getLndConfig(prisma, "read");
+    if (!readConfig || readConfig.restUrl !== invoiceConfig.restUrl || readConfig.network !== invoiceConfig.network) {
+      throw new CheckoutSafetyError("LIGHTNING_RECEIVE_UNAVAILABLE");
+    }
+    const [getinfo, channels] = await Promise.all([
+      lndFetchJson(readConfig, "/v1/getinfo", { method: "GET" }),
+      lndFetchJson(readConfig, "/v1/channels", { method: "GET" })
+    ]);
+    const failure = lndReceiveFailure(getinfo, channels, amountSats);
+    if (failure) throw new CheckoutSafetyError(failure);
+  } catch (error) {
+    if (error instanceof CheckoutSafetyError) throw error;
+    throw new CheckoutSafetyError("LIGHTNING_RECEIVE_UNAVAILABLE");
+  }
+}
+
 export async function createLightningInvoice(prisma: PrismaLike, amountSats: bigint, memo: string) {
   const lnd = await getLndConfig(prisma, "invoice");
   if (lnd) {
+    await assertLightningReceiveCapacity(prisma, amountSats, lnd);
     const expirySeconds = Math.max(60, Math.floor(Number(process.env.LIGHTNING_INVOICE_EXPIRY_SECONDS || "3600")));
 
     const data = await lndFetchJson(lnd, "/v1/invoices", {
@@ -2564,11 +2586,11 @@ export async function createLightningInvoice(prisma: PrismaLike, amountSats: big
         memo,
         expiry: expirySeconds
       })
-    });
+    }).catch(() => { throw new CheckoutSafetyError("LIGHTNING_INVOICE_UNAVAILABLE"); });
 
     const bolt11 = data.payment_request as string | undefined;
     const rHashB64 = data.r_hash as string | undefined;
-    if (!bolt11 || !rHashB64) throw new Error("LND invoice response missing payment_request or r_hash");
+    if (!bolt11 || !rHashB64) throw new CheckoutSafetyError("LIGHTNING_INVOICE_UNAVAILABLE");
 
     const expiresAt = new Date(Date.now() + expirySeconds * 1000).toISOString();
 
@@ -2600,22 +2622,16 @@ export async function createLightningInvoice(prisma: PrismaLike, amountSats: big
   };
 }
 
-export async function checkLightningInvoice(prisma: PrismaLike, providerId: string) {
+export async function checkLightningInvoice(prisma: PrismaLike, providerId: string, expectedAmountSats?: bigint) {
   if (providerId?.startsWith("lnd:")) {
-    const paymentHashHex = derivePaymentHashHexFromProvider(providerId);
-    if (!paymentHashHex) throw new Error("Invalid LND providerId: missing/invalid payment hash");
-    const data = await getInvoiceByPaymentHashHex(prisma, paymentHashHex);
-
-    const stateRaw = String(data?.state || "").toUpperCase();
-    const state =
-      stateRaw === "SETTLED" || stateRaw === "OPEN" || stateRaw === "CANCELED" || stateRaw === "ACCEPTED"
-        ? stateRaw
-        : Boolean(data?.settled)
-          ? "SETTLED"
-          : "OPEN";
-    const paid = state === "SETTLED" || Boolean(data?.settled);
-    const paidAt = data?.settle_date ? new Date(Number(data.settle_date) * 1000).toISOString() : null;
-    return { paid, paidAt, state };
+    try {
+      const paymentHashHex = derivePaymentHashHexFromProvider(providerId);
+      if (!paymentHashHex) throw new CheckoutSafetyError("PAYMENT_VERIFICATION_UNAVAILABLE");
+      const data = await getInvoiceByPaymentHashHex(prisma, paymentHashHex);
+      return verifiedLndInvoice(data, paymentHashHex, expectedAmountSats);
+    } catch {
+      throw new CheckoutSafetyError("PAYMENT_VERIFICATION_UNAVAILABLE");
+    }
   }
 
   // LNbits fallback

@@ -1,3 +1,5 @@
+import { CheckoutSafetyError, isCheckoutFailureCode } from "../payments/checkoutSafety.js";
+
 export type PublicPaymentsIntentMappedError = {
   statusCode: number;
   body: {
@@ -20,6 +22,10 @@ function hasMessage(err: unknown, needle: string): boolean {
 }
 
 export function mapParticipantCheckoutError(code: string | null | undefined): PublicPaymentsIntentMappedError | null {
+  if (code === "PARTICIPANT_ALLOCATIONS_INVALID" || code === "PARTICIPANT_ALLOCATIONS_REQUIRED") {
+    return { statusCode: 409, category: "participant_payout_not_ready", body: { code,
+      message: "The creator needs to verify a complete payout split before this work can be purchased." } };
+  }
   if (code !== "PARTICIPANT_PAYOUT_DESTINATION_REQUIRED") return null;
   return {
     statusCode: 409,
@@ -34,6 +40,9 @@ export function mapParticipantCheckoutError(code: string | null | undefined): Pu
 export function mapPublicPaymentsIntentError(err: unknown): PublicPaymentsIntentMappedError {
   const e = (err || {}) as KnownError;
   const code = String(e.code || "");
+  if (isCheckoutFailureCode(code)) {
+    return { statusCode: 503, category: "lightning_checkout_unavailable", body: { code, message: new CheckoutSafetyError(code).message } };
+  }
   const participantError = mapParticipantCheckoutError(code);
   if (participantError) return participantError;
 

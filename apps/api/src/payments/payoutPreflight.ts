@@ -3,8 +3,12 @@
 // their access; this is not a claim that future Lightning routing is guaranteed.
 export function participantPayoutPreflightError(allocations: unknown): string | null {
   if (!Array.isArray(allocations) || !allocations.length) return "PARTICIPANT_ALLOCATIONS_REQUIRED";
+  if (allocations.some(row => !Number.isSafeInteger(Number(row?.bps)) || Number(row?.bps) < 0 || Number(row?.bps) > 10000)) {
+    return "PARTICIPANT_ALLOCATIONS_INVALID";
+  }
   const payable = allocations.filter(row => Number(row?.bps) > 0);
   if (!payable.length) return "PARTICIPANT_ALLOCATIONS_REQUIRED";
+  if (payable.reduce((sum, row) => sum + Number(row.bps), 0) !== 10000) return "PARTICIPANT_ALLOCATIONS_INVALID";
   for (const row of payable) {
     const address = String(row.destinationValue || row.destinationSummary || "").trim();
     if (row.destinationVerified !== true || row.destinationType !== "lightning_address" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
