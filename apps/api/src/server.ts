@@ -3496,7 +3496,12 @@ async function resolveParticipantDestinationHandshake(input: {
   const routingRef = participant
     ? await resolveAcceptedParticipantRoutingRef(participant, participant.splitVersionId)
     : snapshot?.identityRef || null;
-  const parsedIdentity = parseRemoteIdentityRef(routingRef);
+  const recoveredIdentity = parseRemoteIdentityRef(routingRef);
+  // Preserve an existing locked remote binding when the live row only has a
+  // legacy local reference and no recoverable acceptance audit remains.
+  const parsedIdentity = recoveredIdentity.origin
+    ? recoveredIdentity
+    : parseRemoteIdentityRef(snapshot?.identityRef || null);
   const origin = parsedIdentity.origin || snapshot?.participantOrigin || null;
   // A signed remote identity can differ from a legacy local target ID.
   const remoteUserId = parsedIdentity.userId || effectiveUserId || null;
