@@ -27,6 +27,12 @@ jobs:
       - name: Generate Prisma client
         run: npm --prefix apps/api run prisma:generate
 
+      - name: Check API types
+        run: npx --prefix apps/api tsc --project apps/api/tsconfig.json --pretty false
+
+      - name: Run collaborator payout regression tests
+        run: npm --prefix apps/api run test:participant-origin
+
       - name: Run invite/split smoke flow
         run: ./scripts/smoke-invite-split.sh
 

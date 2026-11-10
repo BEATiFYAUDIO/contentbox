@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mapPublicPaymentsIntentError } from "./publicPaymentsIntentErrors.js";
+import { mapParticipantCheckoutError, mapPublicPaymentsIntentError } from "./publicPaymentsIntentErrors.js";
+
+test("preserves participant payout rejection instead of reporting a wallet/network outage", () => {
+  const mapped = mapPublicPaymentsIntentError({ code: "PARTICIPANT_PAYOUT_DESTINATION_REQUIRED", message: "provider rejected" });
+  assert.equal(mapped.statusCode, 409);
+  assert.equal(mapped.body.code, "PARTICIPANT_PAYOUT_DESTINATION_REQUIRED");
+  assert.match(mapped.body.message, /collaborator link and payout settings/);
+  assert.equal(mapped.category, "participant_payout_not_ready");
+  assert.equal(mapParticipantCheckoutError("PROVIDER_UNREACHABLE"), null);
+});
 
 test("maps prisma duplicate to pending purchase conflict", () => {
   const mapped = mapPublicPaymentsIntentError({ code: "P2002", message: "Unique constraint failed" });

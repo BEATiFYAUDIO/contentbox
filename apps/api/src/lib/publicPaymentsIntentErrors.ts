@@ -19,9 +19,23 @@ function hasMessage(err: unknown, needle: string): boolean {
   return msg.toLowerCase().includes(needle.toLowerCase());
 }
 
+export function mapParticipantCheckoutError(code: string | null | undefined): PublicPaymentsIntentMappedError | null {
+  if (code !== "PARTICIPANT_PAYOUT_DESTINATION_REQUIRED") return null;
+  return {
+    statusCode: 409,
+    category: "participant_payout_not_ready",
+    body: {
+      code,
+      message: "A creator or collaborator payout destination could not be verified. The creator needs to check the collaborator link and payout settings before this work can be purchased."
+    }
+  };
+}
+
 export function mapPublicPaymentsIntentError(err: unknown): PublicPaymentsIntentMappedError {
   const e = (err || {}) as KnownError;
   const code = String(e.code || "");
+  const participantError = mapParticipantCheckoutError(code);
+  if (participantError) return participantError;
 
   if (code === "P2002") {
     return {
