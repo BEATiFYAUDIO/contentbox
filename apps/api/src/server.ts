@@ -86,6 +86,7 @@ import {
   testLightningNodeCredential,
   type LightningCredentialRole
 } from "./payments/lightning.js";
+import { participantPayoutPreflightError } from "./payments/payoutPreflight.js";
 import { finalizePurchase, SETTLEMENT_ALLOCATION_INVALID } from "./payments/finalizePurchase.js";
 import { bindPurchaseBuyer, readPurchaseBuyerBinding, recoverPurchaseFulfillment, trackSettledPurchase } from "./payments/purchaseFulfillment.js";
 import {
@@ -5473,7 +5474,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           nextRetryAt: preserveExecutedState
             ? (existingPayoutRow?.nextRetryAt || null)
             : undefined,
-          ...(resolvedStatus === "ready" || resolvedStatus === "forwarding" ? { nextRetryAt: null } : {})
+          ...(resolvedStatus === "ready" || resolvedStatus === "forwarding" ? { nextRetryAt: existingPayoutRow?.nextRetryAt || null } : {})
         },
         create: {
           allocationId: allocation.id,
@@ -6267,8 +6268,10 @@ type LndSendContext = {
   providerPaymentIntentId?: string | null;
   paymentIntentId?: string | null;
   participantPayoutId?: string | null;
+  attemptId?: string | null;
   payoutKey?: string | null;
   expectedAmountSats?: number | null;
+  beforeSend?: (paymentHash: string) => Promise<void>;
 };
 
 async function payBolt11ViaLnd(
@@ -6332,7 +6335,15 @@ async function payBolt11ViaLnd(
       paymentRequest: bolt11,
       timeoutSeconds: 60,
       feeLimitSat: 50,
-      expectedAmountSats: context?.expectedAmountSats ?? null
+      expectedAmountSats: context?.expectedAmountSats ?? null,
+      beforeSend: context.beforeSend || (entrypoint === "participant_payout" ? async (paymentHash) => {
+        if (!context.attemptId) throw new Error("PAYOUT_ATTEMPT_REQUIRED");
+        const saved = await prisma.participantPayout.updateMany({
+          where: { id: context.participantPayoutId!, attemptId: context.attemptId, status: "forwarding", payoutReference: null, remittedAt: null },
+          data: { payoutReference: paymentHash, readinessReason: "LND_RESULT_UNKNOWN_VERIFY_REQUIRED", lastCheckedAt: new Date() }
+        });
+        if (saved.count !== 1) throw new Error("PAYOUT_ATTEMPT_PERSIST_FAILED");
+      } : undefined)
     });
     app.log.info(
       { paymentRequestTag, sendStatus: String(send.status || "unknown"), paymentHashPresent: Boolean(send.paymentHash) },
@@ -6500,7 +6511,8 @@ function markRemittanceFailed(intentId: string, attemptId: string, message: stri
   if (!current) return null;
   if (current.remittanceAttemptId && current.remittanceAttemptId !== attemptId) return current;
   return updateProviderPaymentIntent(intentId, {
-    payoutStatus: "failed",
+    payoutStatus: message.startsWith("LND_SEND_RESULT_UNKNOWN:") ? "pending" : "failed",
+    ...(message.startsWith("LND_SEND_NOT_PAID:") ? { payoutReference: null } : {}),
     payoutLastError: message,
     remittanceAttemptId: null,
     remittanceLockedAt: null,
@@ -6717,26 +6729,9 @@ async function forceReconcileSuccessfulParticipantPayoutRows(providerPaymentInte
       nextRetryAt: null
     }
   });
-  const withReferenceOnly = await prisma.participantPayout.updateMany({
-    where: {
-      providerPaymentIntentId,
-      status: { in: ["pending", "ready", "forwarding"] },
-      remittedAt: null,
-      payoutReference: { not: null }
-    },
-    data: {
-      status: "paid",
-      remittedAt: now,
-      lockedAt: null,
-      attemptId: null,
-      lastCheckedAt: now,
-      readinessReason: null,
-      lastError: null,
-      blockedReason: null,
-      nextRetryAt: null
-    }
-  });
-  return (withRemitted.count || 0) + (withReferenceOnly.count || 0);
+  // A stored payment hash tracks an attempt, not a successful settlement.
+  // Reference-only rows are verified against LND by the execution loop.
+  return withRemitted.count || 0;
 }
 
 async function markParticipantPayoutFailed(id: string, attemptId: string, message: string) {
@@ -6747,6 +6742,7 @@ async function markParticipantPayoutFailed(id: string, attemptId: string, messag
     data: {
       status: "failed",
       lastError: message,
+      ...(message.startsWith("LND_SEND_NOT_PAID:") ? { payoutReference: null, readinessReason: null } : {}),
       lockedAt: null,
       attemptId: null,
       lastCheckedAt: new Date(),
@@ -6806,13 +6802,13 @@ async function markParticipantPayoutFailedAfterVerification(
   payoutReference: string | null
 ) {
   await prisma.participantPayout.updateMany({
-    where: { id, status: "pending", readinessReason: "LND_RESULT_UNKNOWN_VERIFY_REQUIRED" },
+    where: { id, status: { in: ["pending", "ready", "forwarding", "failed"] }, payoutReference, remittedAt: null },
     data: {
       status: "failed",
-      payoutReference: payoutReference || null,
+      payoutReference: null,
       readinessReason: null,
       blockedReason: null,
-      lastError: message,
+      lastError: `${message}:${payoutReference || ""}`,
       lockedAt: null,
       attemptId: null,
       lastCheckedAt: new Date(),
@@ -6932,7 +6928,7 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
       logParticipantPayoutAttempt(intent.id, row, "executed", "ALREADY_EXECUTED");
       continue;
     }
-    if (row.status === "pending" && row.readinessReason === "LND_RESULT_UNKNOWN_VERIFY_REQUIRED") {
+    if ((!row.remittedAt && row.payoutReference) || row.readinessReason === "LND_RESULT_UNKNOWN_VERIFY_REQUIRED") {
       const payoutRef = String(row.payoutReference || "").trim().toLowerCase();
       if (/^[0-9a-f]{64}$/.test(payoutRef)) {
         try {
@@ -7104,6 +7100,7 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
           paymentIntentId: intent.paymentIntentId,
           participantPayoutId: payout.id,
           payoutKey: payout.payoutKey || null,
+          attemptId: lock.attemptId,
           expectedAmountSats: Number(String(payout.amountSats || "0"))
         });
         const intendedAmountSats = Number(String(payout.amountSats || "0")) || 0;
@@ -7315,6 +7312,23 @@ async function executeCreatorRemittance(intent: ProviderPaymentIntentRecord, rea
   }
   REMITTANCE_FLIGHTS.add(intent.id);
   try {
+    intent = listProviderPaymentIntents().find((row) => row.id === intent.id) || intent;
+    if (intent.payoutReference && !intent.remittedAt && intent.payoutStatus !== "paid") {
+      const payment = await lookupOutgoingPaymentByHash(prisma as any, intent.payoutReference).catch(() => null);
+      if (payment?.status === "SUCCEEDED") {
+        if (payment.valueSats !== Number(intent.creatorNetSats)) return intent;
+        return updateProviderPaymentIntent(intent.id, {
+          payoutStatus: "paid", payoutRail: "forwarded", remittedAt: new Date().toISOString(),
+          payoutLastError: null, remittanceAttemptId: null, remittanceLockedAt: null,
+          remittanceLastCheckedAt: new Date().toISOString()
+        }) || intent;
+      }
+      if (payment?.status !== "FAILED") return intent;
+      intent = updateProviderPaymentIntent(intent.id, {
+        payoutStatus: "failed", payoutReference: null, remittanceAttemptId: null,
+        remittanceLockedAt: null, payoutLastError: "LND_SEND_NOT_PAID:FAILED_VERIFIED"
+      }) || intent;
+    }
     const lock = acquirePersistentRemittanceLock(intent, reason);
     if (!lock.acquired || !lock.attemptId) return lock.intent;
     const forwarding = lock.intent;
@@ -7359,7 +7373,18 @@ async function executeCreatorRemittance(intent: ProviderPaymentIntentRecord, rea
       const send = await payBolt11ViaLnd(invoice, {
         entrypoint: "creator_remittance",
         providerPaymentIntentId: forwarding.id,
-        paymentIntentId: forwarding.paymentIntentId
+        paymentIntentId: forwarding.paymentIntentId,
+        expectedAmountSats: Number(forwarding.creatorNetSats),
+        beforeSend: async (paymentHash) => {
+          const current = listProviderPaymentIntents().find((row) => row.id === forwarding.id);
+          if (!current || current.remittanceAttemptId !== lock.attemptId || current.payoutReference || current.remittedAt) {
+            throw new Error("PAYOUT_ATTEMPT_PERSIST_FAILED");
+          }
+          if (!updateProviderPaymentIntent(forwarding.id, {
+            payoutReference: paymentHash,
+            payoutLastError: `LND_SEND_RESULT_UNKNOWN:IN_FLIGHT:${paymentHash}`
+          })) throw new Error("PAYOUT_ATTEMPT_PERSIST_FAILED");
+        }
       });
       const paidAt = new Date().toISOString();
       const paid =
@@ -13975,6 +14000,10 @@ function registerPublicRoutes(appPublic: any) {
       });
     }
 
+    if (resolveNewIntentPayoutExecutionMode() === "participant" && (parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward") === "auto_forward") {
+      const error = participantPayoutPreflightError(body.participantAllocations);
+      if (error) return reply.code(409).send({ error, message: "Every participant needs a verified payout destination before checkout." });
+    }
     const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
     const providerNodeId = providerIdentity?.nodeId || "node:provider-unavailable";
     const memo = await buildRemittanceMemo({
@@ -18377,6 +18406,10 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     });
   }
 
+  if (resolveNewIntentPayoutExecutionMode() === "participant" && (parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward") === "auto_forward") {
+    const error = participantPayoutPreflightError(body.participantAllocations);
+    if (error) return reply.code(409).send({ error, message: "Every participant needs a verified payout destination before checkout." });
+  }
   const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
   const providerNodeId = providerIdentity?.nodeId || "node:provider-unavailable";
   const memo = await buildRemittanceMemo({
@@ -50115,31 +50148,7 @@ async function reconcileParticipantPayoutStatusTruthForUser(
       if (isMissingParticipantPayoutTableError(err)) return null;
       throw err;
     });
-  await prisma.participantPayout
-    .updateMany({
-      where: {
-        status: { in: ["pending", "ready", "forwarding"] },
-        remittedAt: null,
-        payoutReference: { not: null },
-        allocation: allocationWhere
-      },
-      data: {
-        status: "paid",
-        remittedAt: now,
-        lockedAt: null,
-        attemptId: null,
-        readinessReason: null,
-        blockedReason: null,
-        lastError: null,
-        nextRetryAt: null,
-        lastCheckedAt: now
-      }
-    })
-    .catch((err: any) => {
-      if (isMissingParticipantPayoutTableError(err)) return null;
-      throw err;
-    });
-
+  // Do not promote an unconfirmed outgoing payment merely because it has a hash.
   const unresolvedRows = await prisma.participantPayout
     .findMany({
       where: {
@@ -50181,6 +50190,7 @@ async function reconcileParticipantPayoutStatusTruthForUser(
         where: {
           paymentIntentId,
           status: { in: ["pending", "ready", "forwarding"] },
+          payoutReference: null,
           allocation: allocationWhere
         },
         data: {

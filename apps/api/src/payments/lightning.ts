@@ -660,6 +660,8 @@ async function lndRestJson(
       (resp) => {
         const chunks: Buffer[] = [];
         resp.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        resp.on("error", reject);
+        resp.on("aborted", () => reject(new Error("LND_RESPONSE_ABORTED")));
         resp.on("end", () => {
           resolve({
             statusCode: Number(resp.statusCode || 0),
@@ -669,7 +671,11 @@ async function lndRestJson(
         });
       }
     );
-    req.setTimeout(8000);
+    // SendPaymentV2 streams while routing; the transport must outlive its route budget.
+    const requestTimeoutMs = path === "/v2/router/send"
+      ? (Math.max(5, Math.min(300, Number((body as any)?.timeout_seconds) || 60)) + 15) * 1000
+      : 8000;
+    req.setTimeout(requestTimeoutMs);
     req.on("timeout", () => {
       const err: any = new Error("timeout");
       err.code = "ETIMEDOUT";
@@ -708,6 +714,13 @@ async function lndRestJson(
       });
     } catch {}
     throw new Error(`LND ${path} failed: ${msg}`);
+  }
+  if (path === "/v2/router/send") {
+    // grpc-gateway emits newline-delimited { result: Payment } envelopes.
+    const updates = res.text.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+    const last = updates[updates.length - 1];
+    if (last?.error) throw new Error("LND_SEND_STREAM_ERROR");
+    return last?.result || last || {};
   }
   return json;
 }
@@ -2056,15 +2069,8 @@ export async function lookupOutgoingPaymentStatusByHash(
   if (!match) return "UNKNOWN";
   const normalized = normalizeOutgoingPaymentStatus(match?.status);
   if (normalized !== "UNKNOWN") return normalized;
-  const hasPreimage = String(match?.payment_preimage || "").trim().length > 0;
-  if (hasPreimage) return "SUCCEEDED";
-  if (Array.isArray(match?.htlcs)) {
-    const htlcs = match.htlcs as any[];
-    const hasFailure = htlcs.some((h) => String(h?.status || "").toUpperCase() === "FAILED");
-    const hasInFlight = htlcs.some((h) => String(h?.status || "").toUpperCase() === "IN_FLIGHT");
-    if (hasFailure && !hasInFlight) return "FAILED";
-    if (hasInFlight) return "IN_FLIGHT";
-  }
+  // An individual failed HTLC (or a zero preimage placeholder) is not a final
+  // payment result: LND may still be finding another route.
   return "UNKNOWN";
 }
 
@@ -2095,7 +2101,7 @@ export async function lookupOutgoingPaymentByHash(
 
 export async function sendBolt11Payment(
   prisma: PrismaLike,
-  input: { paymentRequest: string; timeoutSeconds?: number; feeLimitSat?: number; expectedAmountSats?: number | null }
+  input: { paymentRequest: string; timeoutSeconds?: number; feeLimitSat?: number; expectedAmountSats?: number | null; beforeSend?: (paymentHash: string) => Promise<void> }
 ): Promise<LightningSendPaymentResult> {
   const paymentRequest = String(input.paymentRequest || "").trim();
   if (!paymentRequest) throw new Error("BOLT11_REQUIRED");
@@ -2108,6 +2114,12 @@ export async function sendBolt11Payment(
       ? null
       : Math.max(0, Math.floor(Number(input.expectedAmountSats)));
   const decoded = await decodeBolt11PaymentRequest(lnd, paymentRequest);
+  if (!decoded.paymentHash || !/^[0-9a-f]{64}$/.test(decoded.paymentHash)) {
+    throw new Error("LND_SEND_INVOICE_UNVERIFIED");
+  }
+  if (expectedAmountSats !== null && decoded.valueSats === null) {
+    throw new Error("LND_SEND_INVOICE_UNVERIFIED");
+  }
   if (
     expectedAmountSats !== null &&
     Number.isFinite(expectedAmountSats) &&
@@ -2126,13 +2138,15 @@ export async function sendBolt11Payment(
     // LND can return non-final send responses while payment state settles asynchronously.
     let last: "SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN" = "UNKNOWN";
     for (let i = 0; i < 5; i += 1) {
-      const status = await lookupOutgoingPaymentStatusByHash(prisma, paymentHash);
+      const status = await lookupOutgoingPaymentStatusByHash(prisma, paymentHash).catch(() => "UNKNOWN" as const);
       if (status === "SUCCEEDED" || status === "FAILED") return status;
       last = status;
       await wait(800);
     }
     return last;
   };
+  // Persist correlation before the external side effect. Failure here sends nothing.
+  await input.beforeSend?.(decoded.paymentHash);
   try {
     const res = await lndFetchJson(lnd, "/v2/router/send", {
       method: "POST",
@@ -2192,7 +2206,12 @@ export async function sendBolt11Payment(
     ) {
       throw error;
     }
-    throw new Error(classifyLndTransportError(error));
+    // Losing HTTP does not cancel LND's payment. Never request a fresh invoice
+    // until this exact payment is known to have failed.
+    const verified = await verifyOutgoingAfterSend(decoded.paymentHash);
+    if (verified === "SUCCEEDED") return { paymentHash: decoded.paymentHash, status: "paid" };
+    if (verified === "FAILED") throw new Error("LND_SEND_NOT_PAID:FAILED");
+    throw new Error(`LND_SEND_RESULT_UNKNOWN:${verified}:${decoded.paymentHash}`);
   }
 }
 

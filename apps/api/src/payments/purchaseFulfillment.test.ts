@@ -79,8 +79,8 @@ test("isolated SQLite purchase fulfillment and legacy compatibility", async t =>
     await t.test("disabled storefront does not change valid settled purchase fulfillment",async()=>{
       const {intent}=await fixture({disabled:true,user:true});assert.equal((await recoverPurchaseFulfillment(db,intent.id)).status,"complete");
     });
-    await t.test("pending payment cannot grant ownership",async()=>{
-      const {intent}=await fixture({tracked:false});await db.paymentIntent.update({where:{id:intent.id},data:{status:"pending"}});
+    for (const status of ["pending", "failed", "expired"] as const) await t.test(`${status} payment cannot grant ownership`,async()=>{
+      const {intent}=await fixture({tracked:false});await db.paymentIntent.update({where:{id:intent.id},data:{status}});
       await assert.rejects(db.$transaction(tx=>trackSettledPurchase(tx,{intentId:intent.id,buyerId:buyer.id,rail:"node_invoice"})),/SETTLED_PURCHASE_REQUIRED/);
       assert.equal((await recoverPurchaseFulfillment(db,intent.id)).status,"legacy_untracked");assert.equal(await db.entitlement.count({where:{paymentIntentId:intent.id}}),0);
     });
