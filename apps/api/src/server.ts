@@ -1,4 +1,5 @@
 ﻿import "dotenv/config";
+import { recoverAcceptedRemoteIdentity } from "./lib/participantOriginRecovery.js";
 import { availablePreviewKey } from "./lib/derivedPreview.js";
 import { probePublicRoute } from "./lib/publicRouteProbe.js";
 import { getPrimaryFileObjectKeyFromManifest, getPrimaryFileMime, getStoredFileMime } from "./lib/primaryFileMetadata.js";
@@ -164,7 +165,7 @@ import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
 import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
 import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
-import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
+import { mapParticipantCheckoutError, mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import {
   evaluatePublicMediaDelivery,
   isCurrentPaidReceiptDelivery,
@@ -3428,6 +3429,33 @@ async function fetchRemoteParticipantPayoutDestination(
   }
 }
 
+// Resolve historical routing evidence without rewriting an accepted invite or signed split.
+async function resolveAcceptedParticipantRoutingRef(participant: any, splitVersionId: string, db: any = prisma): Promise<string | null> {
+  const currentRef = asString(participant?.invitation?.acceptedIdentityRef || participant?.identityRef || inferLockedParticipantIdentityRef(participant) || "").trim() || null;
+  if (parseRemoteIdentityRef(currentRef).origin) return currentRef;
+  const participantUserId = asString(participant?.participantUserId || parseUserIdFromParticipantRef(currentRef) || "").trim();
+  if (!participantUserId || !splitVersionId || !isActiveLedgerParticipant(participant)) return currentRef;
+  // Existing local identities retain their local routing; never redirect them by name/email.
+  const localUser = await db.user.findUnique({ where: { id: participantUserId }, select: { id: true } });
+  if (localUser) return currentRef;
+  const events = await db.auditEvent.findMany({
+    where: { entityType: "SplitVersion", entityId: splitVersionId, action: "invite.accept" },
+    select: { id: true, action: true, entityType: true, entityId: true, payloadJson: true }
+  });
+  const recovery = recoverAcceptedRemoteIdentity({
+    splitVersionId, participantUserId, accepted: true, acceptedIdentityRef: currentRef, events
+  });
+  if (recovery.source === "verified_acceptance_audit") {
+    app.log.info({ splitVersionId, splitParticipantId: participant?.id || participant?.splitParticipantId || null,
+      participantUserId, participantOrigin: recovery.origin, evidenceIds: recovery.evidenceIds }, "payoutDestination.origin_recovered");
+    return recovery.identityRef;
+  }
+  if (recovery.source === "ambiguous") {
+    app.log.warn({ splitVersionId, participantUserId, evidenceIds: recovery.evidenceIds }, "payoutDestination.origin_ambiguous");
+  }
+  return currentRef;
+}
+
 async function resolveParticipantDestinationHandshake(input: {
   participantUserId: string | null;
   splitParticipantId?: string | null;
@@ -3461,9 +3489,17 @@ async function resolveParticipantDestinationHandshake(input: {
   }
 
   const snapshot = getLockedSnapshotBySplitParticipantId(splitParticipantId);
-  const parsedIdentity = parseRemoteIdentityRef(snapshot?.identityRef || null);
-  const origin = snapshot?.participantOrigin || parsedIdentity.origin || null;
-  const remoteUserId = effectiveUserId || parsedIdentity.userId || null;
+  const participant = splitParticipantId ? await prisma.splitParticipant.findUnique({
+    where: { id: splitParticipantId },
+    include: { invitation: { select: { status: true, acceptedAt: true, acceptedIdentityRef: true } } }
+  }) : null;
+  const routingRef = participant
+    ? await resolveAcceptedParticipantRoutingRef(participant, participant.splitVersionId)
+    : snapshot?.identityRef || null;
+  const parsedIdentity = parseRemoteIdentityRef(routingRef);
+  const origin = parsedIdentity.origin || snapshot?.participantOrigin || null;
+  // A signed remote identity can differ from a legacy local target ID.
+  const remoteUserId = parsedIdentity.userId || effectiveUserId || null;
   if (!effectiveUserId && parsedIdentity.userId) {
     const localFromRemoteIdentity = await resolveParticipantDestinationLocal(parsedIdentity.userId);
     if (localFromRemoteIdentity?.isVerified) {
@@ -41904,7 +41940,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               // Invoice was created after repairing the provider delegated-publish record.
             } else {
               intentLog.delegatedLightning = providerCode || String(providerError?.message || "provider_unavailable");
-              if (providerCode === "DELEGATED_PUBLISH_REQUIRED") {
+              if (mapParticipantCheckoutError(providerCode)) {
+                lightningReason = providerCode;
+              } else if (providerCode === "DELEGATED_PUBLISH_REQUIRED") {
                 lightningReason = "PROVIDER_DELEGATED_PUBLISH_REQUIRED";
               } else if (providerCode === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED") {
                 lightningReason = "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED";
@@ -41961,6 +41999,11 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
     if (!onchain && !lightning) {
       await prisma.paymentIntent.delete({ where: { id: intent.id } }).catch(() => {});
+      const participantError = mapParticipantCheckoutError(lightningReason);
+      if (participantError) {
+        app.log.warn({ ...intentLog, mappedCode: participantError.body.code, lightningReason }, "publicPaymentsIntents.participant_payout_not_ready");
+        return reply.code(participantError.statusCode).send(participantError.body);
+      }
       if (
         lightningReason === "CREATOR_PAYOUT_DESTINATION_REQUIRED" ||
         lightningReason === "PROVIDER_DELEGATED_PUBLISH_REQUIRED" ||
@@ -45361,7 +45404,7 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
       const bindNow = prevActive || selfBind;
       const acceptedAt = bindNow ? prev?.acceptedAt || new Date() : null;
       const verifiedAt = bindNow ? prev?.verifiedAt || new Date() : null;
-      const previousAcceptedIdentityRef = asString((prev as any)?.invitation?.acceptedIdentityRef || "").trim();
+      const previousAcceptedIdentityRef = prev ? await resolveAcceptedParticipantRoutingRef(prev, latest.id, tx) || "" : "";
       const boundUserId = bindNow
         ? prev?.participantUserId || p.participantUserId || (selfBind ? userId : null)
         : null;
@@ -45523,7 +45566,10 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
             ? normalizeEmail(p.participantEmail)
             : asString(p.participantUserId).trim());
         const accepted = isActiveLedgerParticipant(p as any);
-        const acceptedIdentityRef = asString((p as any)?.invitation?.acceptedIdentityRef || "").trim();
+        const acceptedIdentityRef = await resolveAcceptedParticipantRoutingRef(p, latest.id, tx) || "";
+        const acceptedLocalUser = accepted && p.participantUserId && !parseRemoteIdentityRef(acceptedIdentityRef).origin
+          ? await tx.user.findUnique({ where: { id: p.participantUserId }, select: { id: true } })
+          : null;
         const createdParticipant = await tx.splitParticipant.create({
           data: {
             splitVersionId: sv.id,
@@ -45555,7 +45601,7 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
             status: accepted ? "accepted" : "pending",
             expiresAt: new Date(Date.now() + 168 * 60 * 60 * 1000),
             acceptedAt: accepted ? (p.acceptedAt || new Date()) : null,
-            acceptedByUserId: accepted && p.participantUserId ? (p.participantUserId || null) : null,
+            acceptedByUserId: acceptedLocalUser?.id || null,
             acceptedIdentityRef: accepted ? acceptedIdentityRef || (p.participantUserId ? `user:${p.participantUserId}` : null) : null
           } as any
         });
@@ -46603,6 +46649,7 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
         invitation: live?.invitation || null
       });
       const mergedIdentityRef =
+        await resolveAcceptedParticipantRoutingRef({ ...row, ...live, invitation: live?.invitation }, normalized) ||
         asString(live?.invitation?.acceptedIdentityRef || "").trim() ||
         asString(inferredIdentityRefFromLive || "").trim() ||
         asString(row.identityRef || "").trim() ||

@@ -1911,7 +1911,8 @@ function isForbiddenPreviewError(message?: string | null): boolean {
 }
 
 function readinessLabel(readiness: LibraryRightsSummary["commercialReadiness"]): string {
-  if (readiness === "ready") return "Ready to sell";
+  if (readiness === "ready") return "Published";
+  if (readiness === "payout_unchecked") return "Published — payout readiness not checked";
   if (readiness === "needs_split") return "Needs split setup";
   if (readiness === "not_published") return "Not published";
   if (readiness === "missing_payment_config") return "No price/payment config";

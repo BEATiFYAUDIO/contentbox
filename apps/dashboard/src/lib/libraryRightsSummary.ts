@@ -2,6 +2,7 @@ export type LibraryOwnershipKind = "owned" | "collaboration" | "derivative" | "u
 export type LibrarySplitState = "solo" | "shared" | "draft_incomplete" | "missing" | "unknown";
 export type LibraryCommercialReadiness =
   | "ready"
+  | "payout_unchecked"
   | "needs_split"
   | "not_published"
   | "missing_payment_config"
@@ -108,6 +109,10 @@ function resolveCommercialReadiness(input: {
     if (potentiallyMonetized && !hasPriceSignal) return "missing_payment_config";
   }
 
+  // Publication/split metadata cannot establish whether every payee is reachable
+  // and verified. Checkout performs the live payout checks.
+  const price = normalizePriceSats(input.priceSats);
+  if (price === null || price > 0) return "payout_unchecked";
   return "ready";
 }
 
